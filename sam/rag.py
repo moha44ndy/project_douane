@@ -18,9 +18,22 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openai import OpenAI
 
 load_dotenv()
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+
+# Variable globale pour le client OpenAI (initialisée de manière paresseuse)
+_client = None
+
+def get_openai_client():
+    """Obtient le client OpenAI, en le créant si nécessaire."""
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY n'est pas définie. "
+                "Veuillez configurer cette variable d'environnement dans les paramètres de Streamlit Cloud."
+            )
+        _client = OpenAI(api_key=api_key)
+    return _client
 # Configuration
 from_code = "en"
 to_code = "fr"
@@ -261,6 +274,7 @@ def use_llm(prompt_text):
             "Si tu dois faire une déduction, indique-le dans \"justification\"."
         )
 
+        client = get_openai_client()
         response = client.responses.create(
             model="gpt-5-nano",
             input=[
