@@ -6,6 +6,10 @@ import html
 from datetime import datetime, timedelta
 import pandas as pd
 from pathlib import Path
+from auth import (
+    load_users, save_users, create_user, 
+    require_admin, get_current_user, logout, initialize_default_users
+)
 
 # Configuration de la page
 st.set_page_config(
@@ -567,29 +571,7 @@ st.markdown(f"""
 </script>
 """, unsafe_allow_html=True)
 
-def load_users():
-    """Charge la liste des utilisateurs"""
-    current_dir = Path(__file__).parent
-    users_file = current_dir.parent / "users.json"
-    try:
-        if users_file.exists():
-            with open(users_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        st.error(f"Erreur lors du chargement des utilisateurs: {e}")
-    return []
-
-def save_users(users):
-    """Sauvegarde la liste des utilisateurs"""
-    current_dir = Path(__file__).parent
-    users_file = current_dir.parent / "users.json"
-    try:
-        with open(users_file, 'w', encoding='utf-8') as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        st.error(f"Erreur lors de la sauvegarde: {e}")
-        return False
+# Les fonctions load_users et save_users sont maintenant importées depuis auth.py
 
 def load_table_data():
     """Charge les données de classification"""
@@ -603,42 +585,25 @@ def load_table_data():
         st.error(f"Erreur lors du chargement des données: {e}")
     return []
 
-def initialize_default_users():
-    """Initialise les utilisateurs par défaut si le fichier n'existe pas"""
-    current_dir = Path(__file__).parent
-    users_file = current_dir.parent / "users.json"
-    if not users_file.exists():
-        default_users = [
-            {
-                "user_id": 1,
-                "nom_user": "Admin Principal",
-                "identifiant_user": "admin",
-                "email": "admin@douane.ci",
-                "statut": "actif",
-                "is_admin": True,
-                "date_creation": "2025-01-01T00:00:00Z",
-                "derniere_connexion": datetime.now().isoformat()
-            },
-            {
-                "user_id": 2,
-                "nom_user": "Agent Douanes",
-                "identifiant_user": "agent.douanes",
-                "email": "agent@douane.ci",
-                "statut": "actif",
-                "is_admin": False,
-                "date_creation": "2025-01-02T00:00:00Z",
-                "derniere_connexion": "2025-01-07T14:30:00Z"
-            }
-        ]
-        save_users(default_users)
-        return default_users
-    return []
+# La fonction initialize_default_users est maintenant dans auth.py
 
 def main():
+    # Vérifier que l'utilisateur est admin
+    require_admin()
+    
     # Initialiser les utilisateurs par défaut si nécessaire
-    if 'users_initialized' not in st.session_state:
-        initialize_default_users()
-        st.session_state.users_initialized = True
+    initialize_default_users()
+    
+    # Afficher les informations de l'utilisateur connecté
+    current_user = get_current_user()
+    if current_user:
+        st.sidebar.markdown(f"### 👤 Connecté en tant que")
+        st.sidebar.markdown(f"**{current_user.get('nom_user', 'Utilisateur')}**")
+        st.sidebar.markdown(f"*{current_user.get('email', '')}*")
+        if current_user.get('is_admin'):
+            st.sidebar.markdown("👑 **Administrateur**")
+        if st.sidebar.button("🚪 Déconnexion", use_container_width=True):
+            logout()
     
     # Bouton pour ouvrir la sidebar
     st.markdown(f"""
@@ -755,29 +720,18 @@ def main():
             submitted = st.form_submit_button("✅ Créer l'Utilisateur", use_container_width=True)
             
             if submitted:
-                if not all([nom_user, identifiant_user, email, password]):
-                    st.error("⚠️ Veuillez remplir tous les champs obligatoires")
-                elif len(password) < 6:
-                    st.error("⚠️ Le mot de passe doit contenir au moins 6 caractères")
-                elif any(u.get('identifiant_user') == identifiant_user for u in users):
-                    st.error("⚠️ Cet identifiant existe déjà")
+                success, message = create_user(
+                    nom_user=nom_user,
+                    identifiant_user=identifiant_user,
+                    email=email,
+                    password=password,
+                    is_admin=is_admin
+                )
+                if success:
+                    st.success(f"✅ {message}")
+                    st.rerun()
                 else:
-                    new_user = {
-                        "user_id": max([u.get('user_id', 0) for u in users], default=0) + 1,
-                        "nom_user": nom_user,
-                        "identifiant_user": identifiant_user,
-                        "email": email,
-                        "statut": "actif",
-                        "is_admin": is_admin,
-                        "date_creation": datetime.now().isoformat(),
-                        "derniere_connexion": None
-                    }
-                    users.append(new_user)
-                    if save_users(users):
-                        st.success(f"✅ Utilisateur créé avec succès : {nom_user}")
-                        st.rerun()
-                    else:
-                        st.error("❌ Erreur lors de la création de l'utilisateur")
+                    st.error(f"❌ {message}")
     
     # Tab 2: Gestion des utilisateurs
     with tab2:

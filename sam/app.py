@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from rag import initialize_chatbot, process_user_input
+from auth import is_authenticated, get_current_user, logout, initialize_default_users
 
 SECTION_RANGES = [
     ("I", range(1, 6)),
@@ -1436,6 +1437,28 @@ def display_main_content():
     render_table_component()
 
 def main():
+    # Initialiser les utilisateurs par défaut si nécessaire
+    initialize_default_users()
+    
+    # Vérifier l'authentification
+    if not is_authenticated():
+        st.switch_page("pages/Login.py")
+        return
+    
+    # Afficher les informations de l'utilisateur dans la sidebar
+    current_user = get_current_user()
+    if current_user:
+        with st.sidebar:
+            st.markdown("---")
+            st.markdown(f"### 👤 {current_user.get('nom_user', 'Utilisateur')}")
+            st.markdown(f"*{current_user.get('email', '')}*")
+            if current_user.get('is_admin'):
+                st.markdown("👑 **Administrateur**")
+                if st.button("🛡️ Administration", use_container_width=True):
+                    st.switch_page("pages/Administration.py")
+            if st.button("🚪 Déconnexion", use_container_width=True):
+                logout()
+    
     display_main_content()
 
 if __name__ == "__main__":
