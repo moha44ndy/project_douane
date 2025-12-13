@@ -130,6 +130,90 @@ def save_users(users: list) -> bool:
     return False
 
 
+def save_session_to_cookie(user: Dict[str, Any]):
+    """Sauvegarde l'identifiant de l'utilisateur dans un cookie pour la persistance"""
+    import streamlit as st
+    identifiant = user.get('identifiant_user', '')
+    if identifiant:
+        st.markdown(f"""
+        <script>
+            // Sauvegarder l'identifiant dans un cookie (expire dans 7 jours)
+            const expires = new Date();
+            expires.setTime(expires.getTime() + (7 * 24 * 60 * 60 * 1000));
+            document.cookie = "streamlit_user_id={identifiant}; expires=" + expires.toUTCString() + "; path=/";
+        </script>
+        """, unsafe_allow_html=True)
+
+def restore_session_from_cookie():
+    """Restaure la session depuis le cookie si elle existe"""
+    import streamlit as st
+    try:
+        # Si la session existe déjà, ne rien faire
+        if 'user' in st.session_state and st.session_state.get('user') is not None:
+            return
+        
+        # Vérifier si on a déjà essayé de restaurer (éviter les boucles infinies)
+        if st.session_state.get('_restore_attempted', False):
+            return
+        
+        st.session_state['_restore_attempted'] = True
+        
+        # Utiliser JavaScript pour lire le cookie et le passer via query params
+        # Cette approche nécessite un rafraîchissement, donc on va utiliser une autre méthode
+        # On va plutôt utiliser un script qui lit le cookie et recharge la page avec l'identifiant
+        
+        # Méthode alternative : utiliser un composant pour lire le cookie
+        # Pour l'instant, on va utiliser une approche avec query params via JavaScript
+        st.markdown("""
+        <script>
+            function getCookie(name) {
+                const value = `; ${document.cookie}`;
+                const parts = value.split(`; ${name}=`);
+                if (parts.length === 2) return parts.pop().split(';').shift();
+                return null;
+            }
+            const userId = getCookie('streamlit_user_id');
+            if (userId && !window.location.search.includes('user_id=')) {
+                // Recharger la page avec l'identifiant dans l'URL pour que Python puisse le lire
+                const url = new URL(window.location);
+                url.searchParams.set('user_id', userId);
+                window.history.replaceState({}, '', url);
+                // Forcer un rerun de Streamlit
+                window.location.reload();
+            }
+        </script>
+        """, unsafe_allow_html=True)
+        
+        # Lire l'identifiant depuis les query params
+        user_id_from_url = st.query_params.get('user_id', None)
+        if user_id_from_url and USE_DATABASE:
+            try:
+                db = get_db()
+                if db.test_connection():
+                    query = "SELECT * FROM users WHERE identifiant_user = %s AND statut = 'actif'"
+                    users = db.execute_query(query, (user_id_from_url,))
+                    if users and len(users) > 0:
+                        user = users[0]
+                        # Convertir au format compatible
+                        st.session_state['user'] = {
+                            'user_id': user['user_id'],
+                            'nom_user': user['nom_user'],
+                            'identifiant_user': user['identifiant_user'],
+                            'email': user['email'],
+                            'password_hash': user['password_hash'],
+                            'statut': user['statut'],
+                            'is_admin': bool(user['is_admin']),
+                            'date_creation': user['date_creation'].isoformat() if hasattr(user['date_creation'], 'isoformat') else str(user['date_creation']),
+                            'derniere_connexion': user['derniere_connexion'].isoformat() if user['derniere_connexion'] and hasattr(user['derniere_connexion'], 'isoformat') else (str(user['derniere_connexion']) if user['derniere_connexion'] else None)
+                        }
+                        # Nettoyer l'URL
+                        st.query_params.clear()
+            except Exception:
+                pass
+        
+    except Exception:
+        pass
+
 def authenticate_user(identifiant: str, password: str) -> Optional[Dict[str, Any]]:
     """
     Authentifie un utilisateur avec son identifiant et mot de passe.
@@ -248,11 +332,17 @@ def create_user(nom_user: str, identifiant_user: str, email: str,
 
 def get_current_user() -> Optional[Dict[str, Any]]:
     """Retourne l'utilisateur actuellement connecté depuis la session"""
+    # Essayer de restaurer la session depuis les cookies si elle n'existe pas
+    if 'user' not in st.session_state or st.session_state.get('user') is None:
+        restore_session_from_cookie()
     return st.session_state.get('user')
 
 
 def is_authenticated() -> bool:
     """Vérifie si un utilisateur est authentifié"""
+    # Essayer de restaurer la session depuis les cookies si elle n'existe pas
+    if 'user' not in st.session_state or st.session_state.get('user') is None:
+        restore_session_from_cookie()
     return 'user' in st.session_state and st.session_state.get('user') is not None
 
 
@@ -280,6 +370,13 @@ def logout():
     """Déconnecte l'utilisateur actuel"""
     if 'user' in st.session_state:
         del st.session_state['user']
+    # Supprimer le cookie
+    st.markdown("""
+    <script>
+        // Supprimer le cookie
+        document.cookie = "streamlit_user_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+    </script>
+    """, unsafe_allow_html=True)
     st.rerun()
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from rag import initialize_chatbot, process_user_input
-from auth import is_authenticated, get_current_user, logout, initialize_default_users
+from auth_db import is_authenticated, get_current_user, logout, initialize_default_users
 
 SECTION_RANGES = [
     ("I", range(1, 6)),
@@ -1439,6 +1439,10 @@ def display_main_content():
 def main():
     # Initialiser les utilisateurs par défaut si nécessaire
     initialize_default_users()
+    
+    # Restaurer la session depuis le cookie si nécessaire
+    from auth_db import restore_session_from_cookie
+    restore_session_from_cookie()
     
     # Vérifier l'authentification
     if not is_authenticated():

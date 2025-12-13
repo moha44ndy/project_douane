@@ -200,6 +200,10 @@ st.markdown(f"""
 # Initialiser les utilisateurs par défaut si nécessaire
 initialize_default_users()
 
+# Restaurer la session depuis le cookie si nécessaire
+from auth_db import restore_session_from_cookie
+restore_session_from_cookie()
+
 # Si l'utilisateur est déjà connecté, rediriger vers l'application principale
 if is_authenticated():
     st.switch_page("app.py")
@@ -234,8 +238,11 @@ with st.form("login_form", clear_on_submit=False):
         else:
             user = authenticate_user(identifiant, password)
             if user:
-                # Stocker l'utilisateur dans la session
+                # Stocker l'utilisateur dans la session (persistant)
                 st.session_state['user'] = user
+                # Sauvegarder dans un cookie pour la persistance après rafraîchissement
+                from auth_db import save_session_to_cookie
+                save_session_to_cookie(user)
                 st.success(f"✅ Bienvenue {user.get('nom_user', identifiant)}!")
                 st.rerun()
             else:

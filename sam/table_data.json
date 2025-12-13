@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "product": {
+      "description": "Voiture (véhicule automobile pour le transport de personnes)",
+      "value": "Non renseigné",
+      "origin": "Non renseigné"
+    },
+    "classification": {
+      "code": "8703.23.00.00",
+      "section": {
+        "number": "XVII"
+      },
+      "confidence": 92
+    }
+  }
+]

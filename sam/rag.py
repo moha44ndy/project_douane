@@ -18,6 +18,13 @@ import json
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openai import OpenAI
 
+# Importer l'exception Streamlit pour les secrets
+try:
+    from streamlit.errors import StreamlitSecretNotFoundError
+except ImportError:
+    # Pour les versions plus anciennes de Streamlit
+    StreamlitSecretNotFoundError = Exception
+
 # Charger le .env depuis la racine du projet
 env_path = Path(__file__).parent.parent / '.env'
 if env_path.exists():
@@ -32,11 +39,36 @@ def get_openai_client():
     """Obtient le client OpenAI, en le créant si nécessaire."""
     global _client
     if _client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
+        # Essayer d'abord Streamlit secrets (pour production)
+        api_key = None
+        try:
+            import streamlit as st
+            if hasattr(st, 'secrets'):
+                try:
+                    # Tenter d'accéder aux secrets (peut lever StreamlitSecretNotFoundError)
+                    secrets = st.secrets
+                    if 'OPENAI_API_KEY' in secrets:
+                        api_key = secrets['OPENAI_API_KEY']
+                    elif 'openai' in secrets and 'api_key' in secrets['openai']:
+                        api_key = secrets['openai']['api_key']
+                except StreamlitSecretNotFoundError:
+                    # Fichier secrets.toml non trouvé, utiliser .env
+                    pass
+                except (KeyError, AttributeError, TypeError):
+                    # Erreur lors de l'accès aux secrets, utiliser .env
+                    pass
+        except ImportError:
+            pass
+        
+        # Sinon, utiliser les variables d'environnement
+        if not api_key:
+            api_key = os.getenv("OPENAI_API_KEY")
+        
         if not api_key:
             raise ValueError(
                 "OPENAI_API_KEY n'est pas définie. "
-                "Veuillez configurer cette variable d'environnement dans les paramètres de Streamlit Cloud."
+                "Veuillez configurer cette variable d'environnement dans le fichier .env "
+                "ou dans les paramètres de Streamlit Cloud (secrets)."
             )
         _client = OpenAI(api_key=api_key)
     return _client
