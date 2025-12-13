@@ -10,39 +10,40 @@ from datetime import datetime
 import streamlit as st
 from typing import Optional, Dict, Any
 
+# Fonctions pour le fallback JSON (toujours disponibles)
+def get_users_file():
+    """Retourne le chemin du fichier users.json"""
+    current_dir = Path(__file__).parent
+    return current_dir / "users.json"
+
+def load_users_json():
+    """Charge la liste des utilisateurs depuis users.json"""
+    users_file = get_users_file()
+    try:
+        if users_file.exists():
+            with open(users_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        st.error(f"Erreur lors du chargement des utilisateurs: {e}")
+    return []
+
+def save_users_json(users):
+    """Sauvegarde la liste des utilisateurs dans users.json"""
+    users_file = get_users_file()
+    try:
+        with open(users_file, 'w', encoding='utf-8') as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        st.error(f"Erreur lors de la sauvegarde: {e}")
+        return False
+
 # Essayer d'importer le module database
 try:
     from database import get_db
     USE_DATABASE = True
 except ImportError:
     USE_DATABASE = False
-    # Fallback vers JSON
-    def get_users_file():
-        """Retourne le chemin du fichier users.json"""
-        current_dir = Path(__file__).parent
-        return current_dir / "users.json"
-
-    def load_users_json():
-        """Charge la liste des utilisateurs depuis users.json"""
-        users_file = get_users_file()
-        try:
-            if users_file.exists():
-                with open(users_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        except Exception as e:
-            st.error(f"Erreur lors du chargement des utilisateurs: {e}")
-        return []
-
-    def save_users_json(users):
-        """Sauvegarde la liste des utilisateurs dans users.json"""
-        users_file = get_users_file()
-        try:
-            with open(users_file, 'w', encoding='utf-8') as f:
-                json.dump(users, f, ensure_ascii=False, indent=2)
-            return True
-        except Exception as e:
-            st.error(f"Erreur lors de la sauvegarde: {e}")
-            return False
 
 
 def hash_password(password: str) -> str:
@@ -391,15 +392,20 @@ def initialize_default_users():
                 result = db.execute_query(query)
                 if result and result[0]['count'] == 0:
                     # Créer l'admin par défaut
-                    create_user(
+                    success, message = create_user(
                         "Admin Principal",
                         "admin",
                         "admin@douane.ci",
                         "admin123",
                         True
                     )
+                    # Ignorer l'erreur si l'utilisateur existe déjà (peut arriver en cas de race condition)
+                    if not success and "existe déjà" not in message:
+                        # Seulement logger si c'est une autre erreur
+                        pass
                 return
-        except:
+        except Exception as e:
+            # Ignorer les erreurs silencieusement pour ne pas bloquer l'application
             pass
     
     # Fallback vers JSON
