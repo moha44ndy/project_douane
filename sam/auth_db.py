@@ -10,33 +10,7 @@ from datetime import datetime
 import streamlit as st
 from typing import Optional, Dict, Any
 
-# Fonctions pour le fallback JSON (toujours disponibles)
-def get_users_file():
-    """Retourne le chemin du fichier users.json"""
-    current_dir = Path(__file__).parent
-    return current_dir / "users.json"
-
-def load_users_json():
-    """Charge la liste des utilisateurs depuis users.json"""
-    users_file = get_users_file()
-    try:
-        if users_file.exists():
-            with open(users_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        st.error(f"Erreur lors du chargement des utilisateurs: {e}")
-    return []
-
-def save_users_json(users):
-    """Sauvegarde la liste des utilisateurs dans users.json"""
-    users_file = get_users_file()
-    try:
-        with open(users_file, 'w', encoding='utf-8') as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        st.error(f"Erreur lors de la sauvegarde: {e}")
-        return False
+# Note: Les fonctions JSON ont été supprimées - utilisation exclusive de MySQL
 
 # Essayer d'importer le module database
 try:
@@ -66,69 +40,73 @@ def verify_password(password: str, hashed: str) -> bool:
 # ============================================================
 
 def load_users() -> list:
-    """Charge les utilisateurs depuis MySQL ou JSON"""
-    if USE_DATABASE:
-        try:
-            db = get_db()
-            if db.test_connection():
-                query = "SELECT * FROM users ORDER BY user_id"
-                users = db.execute_query(query)
-                # Convertir en format compatible avec l'ancien code
-                result = []
-                for user in users or []:
-                    result.append({
-                        'user_id': user['user_id'],
-                        'nom_user': user['nom_user'],
-                        'identifiant_user': user['identifiant_user'],
-                        'email': user['email'],
-                        'password_hash': user['password_hash'],
-                        'statut': user['statut'],
-                        'is_admin': bool(user['is_admin']),
-                        'date_creation': user['date_creation'].isoformat() if hasattr(user['date_creation'], 'isoformat') else str(user['date_creation']),
-                        'derniere_connexion': user['derniere_connexion'].isoformat() if user['derniere_connexion'] and hasattr(user['derniere_connexion'], 'isoformat') else (str(user['derniere_connexion']) if user['derniere_connexion'] else None)
-                    })
-                return result
-        except Exception as e:
-            st.warning(f"⚠️ Erreur de connexion MySQL, utilisation de JSON: {e}")
-    
-    # Fallback vers JSON
+    """Charge les utilisateurs depuis MySQL uniquement"""
     if not USE_DATABASE:
-        return load_users_json()
-    return []
+        st.error("❌ Base de données non disponible. Veuillez configurer MySQL.")
+        return []
+    
+    try:
+        db = get_db()
+        if db.test_connection():
+            query = "SELECT * FROM users ORDER BY user_id"
+            users = db.execute_query(query)
+            # Convertir en format compatible avec l'ancien code
+            result = []
+            for user in users or []:
+                result.append({
+                    'user_id': user['user_id'],
+                    'nom_user': user['nom_user'],
+                    'identifiant_user': user['identifiant_user'],
+                    'email': user['email'],
+                    'password_hash': user['password_hash'],
+                    'statut': user['statut'],
+                    'is_admin': bool(user['is_admin']),
+                    'date_creation': user['date_creation'].isoformat() if hasattr(user['date_creation'], 'isoformat') else str(user['date_creation']),
+                    'derniere_connexion': user['derniere_connexion'].isoformat() if user['derniere_connexion'] and hasattr(user['derniere_connexion'], 'isoformat') else (str(user['derniere_connexion']) if user['derniere_connexion'] else None)
+                })
+            return result
+        else:
+            st.error("❌ Impossible de se connecter à la base de données MySQL.")
+            return []
+    except Exception as e:
+        st.error(f"❌ Erreur lors du chargement des utilisateurs depuis MySQL: {e}")
+        return []
 
 
 def save_users(users: list) -> bool:
-    """Sauvegarde les utilisateurs dans MySQL ou JSON"""
-    if USE_DATABASE:
-        try:
-            db = get_db()
-            if db.test_connection():
-                # Mettre à jour chaque utilisateur
-                for user in users:
-                    query = """
-                        UPDATE users 
-                        SET nom_user = %s, email = %s, password_hash = %s, 
-                            statut = %s, is_admin = %s, derniere_connexion = %s
-                        WHERE user_id = %s
-                    """
-                    params = (
-                        user.get('nom_user'),
-                        user.get('email'),
-                        user.get('password_hash'),
-                        user.get('statut', 'actif'),
-                        1 if user.get('is_admin') else 0,
-                        user.get('derniere_connexion'),
-                        user.get('user_id')
-                    )
-                    db.execute_update(query, params)
-                return True
-        except Exception as e:
-            st.warning(f"⚠️ Erreur MySQL, utilisation de JSON: {e}")
-    
-    # Fallback vers JSON
+    """Sauvegarde les utilisateurs dans MySQL uniquement"""
     if not USE_DATABASE:
-        return save_users_json(users)
-    return False
+        st.error("❌ Base de données non disponible. Impossible de sauvegarder les utilisateurs.")
+        return False
+    
+    try:
+        db = get_db()
+        if db.test_connection():
+            # Mettre à jour chaque utilisateur
+            for user in users:
+                query = """
+                    UPDATE users 
+                    SET nom_user = %s, email = %s, password_hash = %s, 
+                        statut = %s, is_admin = %s, derniere_connexion = %s
+                    WHERE user_id = %s
+                """
+                params = (
+                    user.get('nom_user'),
+                    user.get('email'),
+                    user.get('password_hash'),
+                    user.get('statut', 'actif'),
+                    1 if user.get('is_admin') else 0,
+                    user.get('derniere_connexion'),
+                    user.get('user_id')
+                )
+                db.execute_update(query, params)
+            return True
+        else:
+            st.error("❌ Impossible de se connecter à la base de données MySQL.")
+            return False
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la sauvegarde des utilisateurs dans MySQL: {e}")
+        return False
 
 
 def save_session_to_cookie(user: Dict[str, Any]):
@@ -246,20 +224,14 @@ def authenticate_user(identifiant: str, password: str) -> Optional[Dict[str, Any
                             'derniere_connexion': datetime.now().isoformat()
                         }
         except Exception as e:
-            st.warning(f"⚠️ Erreur MySQL, utilisation de JSON: {e}")
+            st.error(f"❌ Erreur lors de l'authentification MySQL: {e}")
+            return None
     
-    # Fallback vers JSON
-    users = load_users_json() if not USE_DATABASE else load_users()
-    for user in users:
-        if user.get('identifiant_user') == identifiant:
-            if user.get('statut') != 'actif':
-                return None
-            
-            stored_password = user.get('password_hash') or user.get('mot_de_passe')
-            if stored_password and verify_password(password, stored_password):
-                user['derniere_connexion'] = datetime.now().isoformat()
-                save_users(users)
-                return user
+    # Si la base de données n'est pas disponible, retourner None
+    if not USE_DATABASE:
+        st.error("❌ Base de données non disponible. Impossible de s'authentifier.")
+        return None
+    
     return None
 
 
@@ -269,6 +241,7 @@ def create_user(nom_user: str, identifiant_user: str, email: str,
     Crée un nouvel utilisateur avec un mot de passe hashé.
     Retourne (success, message)
     """
+    # Toujours essayer d'utiliser la base de données en premier si disponible
     if USE_DATABASE:
         try:
             db = get_db()
@@ -284,48 +257,44 @@ def create_user(nom_user: str, identifiant_user: str, email: str,
                 if len(password) < 6:
                     return False, "Le mot de passe doit contenir au moins 6 caractères"
                 
-                # Créer le nouvel utilisateur
+                # Créer le nouvel utilisateur dans la base de données
                 insert_query = """
                     INSERT INTO users (nom_user, identifiant_user, email, password_hash, statut, is_admin)
                     VALUES (%s, %s, %s, %s, 'actif', %s)
                 """
+                
+                # Debug: Afficher les données avant insertion
+                print(f"DEBUG: Création utilisateur - nom={nom_user}, identifiant={identifiant_user}, email={email}")
+                
                 user_id = db.execute_insert(insert_query, (
                     nom_user, identifiant_user, email, hash_password(password), 1 if is_admin else 0
                 ))
                 
-                return True, f"Utilisateur créé avec succès : {nom_user}"
+                print(f"DEBUG: Utilisateur créé avec ID: {user_id}")
+                
+                # Vérifier que l'insertion a bien eu lieu
+                verify_query = "SELECT user_id, nom_user, identifiant_user, email, statut, is_admin FROM users WHERE user_id = %s"
+                verify_result = db.execute_query(verify_query, (user_id,))
+                
+                if verify_result:
+                    user_data = verify_result[0]
+                    print(f"DEBUG: Vérification réussie - Utilisateur trouvé: {user_data}")
+                    return True, f"Utilisateur créé avec succès : {nom_user} (ID: {user_id})"
+                else:
+                    return False, f"Erreur : L'utilisateur a été créé (ID: {user_id}) mais la vérification a échoué"
+            else:
+                # Si la connexion échoue, retourner une erreur au lieu de fallback JSON
+                return False, "Erreur de connexion à la base de données. Veuillez vérifier la configuration."
         except Exception as e:
-            st.warning(f"⚠️ Erreur MySQL, utilisation de JSON: {e}")
+            # Si une erreur survient, retourner l'erreur au lieu de fallback JSON
+            return False, f"Erreur lors de la création de l'utilisateur : {str(e)}"
     
-    # Fallback vers JSON
-    users = load_users_json() if not USE_DATABASE else load_users()
+    # Plus de fallback vers JSON - uniquement MySQL
+    if not USE_DATABASE:
+        return False, "Base de données non disponible. Veuillez configurer MySQL pour créer des utilisateurs."
     
-    if any(u.get('identifiant_user') == identifiant_user for u in users):
-        return False, "Cet identifiant existe déjà"
-    
-    if any(u.get('email') == email for u in users):
-        return False, "Cet email existe déjà"
-    
-    if len(password) < 6:
-        return False, "Le mot de passe doit contenir au moins 6 caractères"
-    
-    new_user = {
-        "user_id": max([u.get('user_id', 0) for u in users], default=0) + 1,
-        "nom_user": nom_user,
-        "identifiant_user": identifiant_user,
-        "email": email,
-        "password_hash": hash_password(password),
-        "statut": "actif",
-        "is_admin": is_admin,
-        "date_creation": datetime.now().isoformat(),
-        "derniere_connexion": None
-    }
-    
-    users.append(new_user)
-    if save_users(users):
-        return True, f"Utilisateur créé avec succès : {nom_user}"
-    else:
-        return False, "Erreur lors de la création de l'utilisateur"
+    # Si on arrive ici, c'est qu'il y a un problème
+    return False, "Impossible de créer l'utilisateur. Base de données non disponible."
 
 
 def get_current_user() -> Optional[Dict[str, Any]]:
@@ -405,23 +374,8 @@ def initialize_default_users():
             # Ignorer les erreurs silencieusement pour ne pas bloquer l'application
             pass
     
-    # Fallback vers JSON
-    users_file = get_users_file()
-    if not users_file.exists():
-        default_users = [
-            {
-                "user_id": 1,
-                "nom_user": "Admin Principal",
-                "identifiant_user": "admin",
-                "email": "admin@douane.ci",
-                "password_hash": hash_password("admin123"),
-                "statut": "actif",
-                "is_admin": True,
-                "date_creation": "2025-01-01T00:00:00Z",
-                "derniere_connexion": datetime.now().isoformat()
-            }
-        ]
-        save_users_json(default_users)
-        return default_users
-    return []
+    # Plus de fallback vers JSON - uniquement MySQL
+    if not USE_DATABASE:
+        st.error("❌ Base de données non disponible. Impossible d'initialiser les utilisateurs par défaut.")
+        return
 

@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 from rag import initialize_chatbot, process_user_input
 from auth_db import is_authenticated, get_current_user, logout, initialize_default_users
+from classifications_db import load_table_data, save_table_data
 
 SECTION_RANGES = [
     ("I", range(1, 6)),
@@ -32,6 +33,43 @@ SECTION_RANGES = [
     ("XX", range(94, 97)),
     ("XXI", range(97, 98)),
 ]
+
+# Noms des chapitres du Système Harmonisé
+CHAPTER_NAMES = {
+    '01': 'Animaux vivants', '02': 'Viandes et abats comestibles', '03': 'Poissons et crustacés',
+    '04': 'Lait et produits laitiers', '05': 'Autres produits d\'origine animale',
+    '06': 'Arbres et plantes vivantes', '07': 'Légumes', '08': 'Fruits', '09': 'Café, thé, épices',
+    '10': 'Céréales', '11': 'Produits de la meunerie', '12': 'Graines et fruits oléagineux',
+    '13': 'Gommes et résines', '14': 'Matières végétales', '15': 'Graisses et huiles',
+    '16': 'Préparations de viande', '17': 'Sucres', '18': 'Cacao', '19': 'Préparations à base de céréales',
+    '20': 'Préparations de légumes', '21': 'Préparations alimentaires', '22': 'Boissons',
+    '23': 'Résidus alimentaires', '24': 'Tabac',
+    '25': 'Sel, soufre, terres', '26': 'Minerais', '27': 'Combustibles',
+    '28': 'Produits chimiques inorganiques', '29': 'Produits chimiques organiques',
+    '30': 'Produits pharmaceutiques', '31': 'Engrais', '32': 'Extraits tannants',
+    '33': 'Huiles essentielles', '34': 'Savons et détergents', '35': 'Matières albuminoïdes',
+    '36': 'Explosifs', '37': 'Produits photographiques', '38': 'Produits chimiques divers',
+    '39': 'Matières plastiques', '40': 'Caoutchouc',
+    '41': 'Cuirs et peaux', '42': 'Articles de maroquinerie', '43': 'Fourrures',
+    '44': 'Bois', '45': 'Liège', '46': 'Ouvrages en sparterie',
+    '47': 'Pâtes de bois', '48': 'Papiers', '49': 'Imprimés',
+    '50': 'Soie', '51': 'Laine', '52': 'Coton', '53': 'Fibres textiles',
+    '54': 'Filaments synthétiques', '55': 'Fibres synthétiques', '56': 'Ouates',
+    '57': 'Tapis', '58': 'Tissus spéciaux', '59': 'Tissus imprégnés',
+    '60': 'Tricots', '61': 'Vêtements tricotés', '62': 'Vêtements confectionnés',
+    '63': 'Autres articles textiles',
+    '64': 'Chaussures', '65': 'Coiffures', '66': 'Parapluies', '67': 'Plumes',
+    '68': 'Ouvrages en pierre', '69': 'Céramiques', '70': 'Verre',
+    '71': 'Perles et pierres précieuses',
+    '72': 'Fonte et fer', '73': 'Ouvrages en fonte', '74': 'Cuivre',
+    '75': 'Nickel', '76': 'Aluminium', '78': 'Plomb', '79': 'Zinc',
+    '80': 'Étain', '81': 'Autres métaux', '82': 'Outils', '83': 'Ouvrages divers',
+    '84': 'Machines', '85': 'Appareils électriques',
+    '86': 'Voies ferrées', '87': 'Véhicules', '88': 'Aéronefs', '89': 'Navires',
+    '90': 'Instruments', '91': 'Horlogerie', '92': 'Instruments de musique',
+    '93': 'Armes', '94': 'Ameublement', '95': 'Jouets', '96': 'Articles divers',
+    '77': 'Réservé', '97': 'Objets d\'art'
+}
 
 # Configuration des sections et chapitres pour le tableau
 SECTION_CONFIG = {
@@ -147,6 +185,11 @@ def build_table_entries(classifications: list) -> list:
                 "code": hs_code,
                 "section": {"number": section},
                 "confidence": item.get("confidence", 0),
+                "justification": item.get("justification") or None,
+                "taux_dd": item.get("dd_rate") or None,
+                "taux_rs": item.get("rs_rate") or None,
+                "taux_tva": item.get("other_taxes") or None,
+                "unite_mesure": item.get("us_unit") or None,
             }
         }
         entries.append(entry)
@@ -215,37 +258,8 @@ def generate_json_download():
     return json.dumps(export_data, ensure_ascii=False, indent=2)
 
 
-# Fonctions pour le tableau
-def load_table_data():
-    """Charge les données du tableau depuis la session state ou le fichier"""
-    if "table_products" in st.session_state:
-        return st.session_state["table_products"]
-    
-    current_dir = Path(__file__).parent
-    table_data_path = current_dir / "table_data.json"
-    try:
-        if table_data_path.exists():
-            with open(table_data_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                data = data if isinstance(data, list) else []
-                st.session_state["table_products"] = data
-                return data
-    except Exception as e:
-        st.error(f"Erreur lors du chargement: {e}")
-    return []
-
-def save_table_data(data):
-    """Sauvegarde les données du tableau"""
-    st.session_state["table_products"] = data
-    current_dir = Path(__file__).parent
-    table_data_path = current_dir / "table_data.json"
-    try:
-        with open(table_data_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        st.error(f"Erreur lors de la sauvegarde: {e}")
-        return False
+# Fonctions pour le tableau - Utilisation de MySQL via classifications_db
+# (import déjà fait en haut du fichier, ligne 11)
 
 def get_products_by_chapter(table_data):
     """Organise les produits par chapitre"""
@@ -303,10 +317,11 @@ def render_table_grid():
             .chapter-cell {{
                 background: #E8F5E8;
                 border: 1px solid {DOUANE_VERT};
-                padding: 8px;
+                padding: 6px 4px;
                 text-align: center;
                 font-size: 10px;
-                min-width: 80px;
+                min-width: 100px;
+                vertical-align: top;
             }}
             .product-cell {{
                 background: {DOUANE_OR};
@@ -322,7 +337,15 @@ def render_table_grid():
             .chapter-number {{
                 font-weight: bold;
                 color: {DOUANE_VERT};
-                font-size: 12px;
+                font-size: 11px;
+                margin-bottom: 3px;
+            }}
+            .chapter-name {{
+                font-size: 7px;
+                color: #555;
+                margin-top: 2px;
+                line-height: 1.1;
+                font-weight: normal;
             }}
             .product-info {{
                 font-size: 8px;
@@ -354,13 +377,18 @@ def render_table_grid():
         html_table += '</td>'
     html_table += '</tr>'
     
-    # Ligne des numéros de chapitres
+    # Ligne des numéros de chapitres avec leurs noms
     html_table += '<tr>'
     for section, config in SECTION_CONFIG.items():
         for chapter in config['chapters']:
             count = len(products_by_chapter.get(chapter, []))
+            chapter_name = CHAPTER_NAMES.get(chapter, '')
             html_table += f'<td class="chapter-cell">'
             html_table += f'<div class="chapter-number">Ch. {chapter}</div>'
+            if chapter_name:
+                # Tronquer le nom si trop long
+                display_name = chapter_name[:25] + '...' if len(chapter_name) > 25 else chapter_name
+                html_table += f'<div class="chapter-name" title="{chapter_name}">{display_name}</div>'
             html_table += f'<div class="stats-badge" id="chap-stats-{chapter}">{count}</div>'
             html_table += '</td>'
     html_table += '</tr>'
@@ -466,9 +494,15 @@ def export_table_to_json():
 
 def clear_table_data():
     """Vide toutes les données du tableau"""
-    save_table_data([])
-    st.success("✅ Tableau vidé avec succès")
-    st.rerun()
+    from classifications_db import clear_classifications, get_current_user_id
+    user_id = get_current_user_id()
+    success, message = clear_classifications(user_id)
+    if success:
+        st.session_state["table_products"] = []
+        st.success("✅ Tableau vidé avec succès")
+        st.rerun()
+    else:
+        st.error(message)
 
 def view_table_statistics():
     """Affiche les statistiques détaillées"""
@@ -877,15 +911,6 @@ st.markdown(f"""
         }}
         
         /* Messages de chat style cartoon */
-        .chat-card {{
-            background: white;
-            padding: 2rem;
-            border-radius: 20px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-            margin-bottom: 2rem;
-            border: 4px solid #2d5016;
-        }}
-        
         .user-message {{
             background: {DOUANE_OR};
             color: {DOUANE_VERT};
@@ -1362,22 +1387,52 @@ def display_main_content():
             st.session_state["messages"].append(("RAG", formatted_answer))
             new_entries = build_table_entries(parsed_payload.get("classifications", []))
             if new_entries:
+                # Ajouter les nouvelles entrées à la session state
+                if "table_products" not in st.session_state:
+                    st.session_state["table_products"] = []
                 st.session_state["table_products"].extend(new_entries)
-                save_table_data(st.session_state.get("table_products", []))
+                
+                # Sauvegarder seulement les nouvelles entrées dans MySQL
+                from classifications_db import save_classifications, get_current_user_id
+                user_id = get_current_user_id()
+                
+                if user_id:
+                    # Forcer l'affichage immédiat avant rerun
+                    with st.spinner("💾 Sauvegarde en cours..."):
+                        success, message = save_classifications(new_entries, user_id)
+                    
+                    if not success:
+                        st.error(f"⚠️ Erreur lors de la sauvegarde: {message}")
+                        # Stocker l'erreur dans la session pour l'afficher après rerun
+                        st.session_state["_save_error"] = message
+                        # Ne pas faire rerun si erreur pour voir le message
+                        st.stop()
+                    else:
+                        st.success(f"✅ {message}")
+                        # Stocker le succès dans la session
+                        st.session_state["_save_success"] = message
+                else:
+                    st.warning("⚠️ Utilisateur non identifié. Les données sont enregistrées localement mais pas dans la base de données.")
+                    st.write(f"🔍 Debug: session_state['user'] = {st.session_state.get('user')}")
+                    st.write(f"🔍 Debug: query_params['user_id'] = {st.query_params.get('user_id')}")
         else:
             fallback_text = response or f"⚠️ {parse_error}"
             st.session_state["messages"].append(("RAG", fallback_text))
 
         spinner_placeholder.empty()
+        
+        # Afficher les messages de sauvegarde s'ils existent
+        if "_save_error" in st.session_state:
+            st.error(f"⚠️ Erreur lors de la sauvegarde: {st.session_state['_save_error']}")
+            del st.session_state["_save_error"]
+        if "_save_success" in st.session_state:
+            st.success(f"✅ {st.session_state['_save_success']}")
+            del st.session_state["_save_success"]
+        
         st.rerun()
     
-    # Zone de chat dans une carte blanche
+    # Zone de chat
     if st.session_state["messages"]:
-        st.markdown("""
-            <div class="chat-card">
-                <h3 class="section-title">💬 Historique de la conversation</h3>
-        """, unsafe_allow_html=True)
-        
         # Afficher les messages style cartoon
         for i in range(0, len(st.session_state["messages"]), 2):
             if i < len(st.session_state["messages"]):
@@ -1397,8 +1452,6 @@ def display_main_content():
                         <div style="line-height: 1.6; font-size: 1rem;">{rag_message}</div>
                     </div>
                 """, unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
         
         # Bouton pour effacer l'historique avec style moderne
         col1, col2, col3 = st.columns([1, 2, 1])

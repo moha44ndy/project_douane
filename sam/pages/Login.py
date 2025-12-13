@@ -18,7 +18,7 @@ DOUANE_VERT = "#1B5E20"
 DOUANE_OR = "#FFD700"
 DOUANE_BLANC = "#FFFFFF"
 
-# CSS style militaire/cartoon inspiré du design Dribbble
+# CSS style inspiré de la page principale
 st.markdown(f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Fredoka:wght@400;500;600;700&display=swap');
@@ -27,49 +27,90 @@ st.markdown(f"""
             font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         }}
         
-        /* Fond principal vert militaire avec forme ondulée */
+        /* Fond principal vert clair avec transition vers vert foncé en bas */
         .stApp {{
-            background: {DOUANE_VERT};
+            background: linear-gradient(180deg, #E8F5E9 0%, #C8E6C9 50%, {DOUANE_VERT} 100%);
             min-height: 100vh;
             position: relative;
             overflow-x: hidden;
         }}
         
-        /* Centrer le conteneur de connexion */
+        /* Centrer le contenu */
         .main .block-container {{
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            padding: 2rem;
-        }}
-        
-        /* Forme blanche ondulée en haut */
-        .stApp::before {{
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 150px;
-            background: white;
-            clip-path: polygon(0 0, 100% 0, 100% 80%, 0 100%);
-            z-index: 0;
+            max-width: 1200px;
+            padding: 1rem 2rem;
+            padding-top: 0.5rem;
         }}
         
         #MainMenu {{visibility: hidden;}}
         footer {{visibility: hidden;}}
         header {{visibility: hidden;}}
         
-        /* Conteneur de connexion style cartoon */
-        .login-container {{
+        /* Boîte de bienvenue */
+        .welcome-box {{
             background: white;
-            padding: 3rem;
+            padding: 2rem;
             border-radius: 20px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border: 3px solid {DOUANE_VERT};
+            margin-bottom: 1.5rem;
+            margin-top: 0.5rem;
+            text-align: center;
+            position: relative;
+        }}
+        
+        .welcome-box::before {{
+            content: '🐘';
+            font-size: 3rem;
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            padding: 0.5rem;
+            border-radius: 50%;
+            border: 3px solid {DOUANE_VERT};
+        }}
+        
+        .welcome-text {{
+            color: {DOUANE_VERT};
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-top: 1.5rem;
+            margin-bottom: 0.5rem;
+        }}
+        
+        /* Boîte Direction Générale */
+        .directorate-box {{
+            background: white;
+            padding: 3rem 2rem;
+            border-radius: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border: 3px solid {DOUANE_VERT};
+            margin-bottom: 2rem;
+            text-align: center;
+        }}
+        
+        .directorate-title {{
+            color: {DOUANE_VERT};
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }}
+        
+        .directorate-subtitle {{
+            color: #666;
+            font-size: 1.1rem;
+            font-weight: 400;
+        }}
+        
+        /* Conteneur de connexion */
+        .login-container {{
+            background: transparent;
+            padding: 0;
             max-width: 500px;
             width: 100%;
-            border: 4px solid #2d5016;
+            margin: 0 auto;
             position: relative;
             z-index: 1;
             animation: fadeInUp 0.5s ease;
@@ -88,30 +129,26 @@ st.markdown(f"""
         
         .login-header {{
             text-align: center;
-            margin-bottom: 2.5rem;
+            margin-bottom: 1rem;
+            background: transparent;
         }}
         
         .login-header h1 {{
             color: {DOUANE_VERT};
             font-family: 'Fredoka', sans-serif;
-            font-size: 2.5rem;
+            font-size: 2rem;
             font-weight: 700;
             margin-bottom: 0.5rem;
             margin-top: 0;
-            text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.1);
+            background: transparent;
         }}
         
         .login-header p {{
-            color: #2d5016;
-            font-size: 1.1rem;
-            font-weight: 500;
-            margin: 0.25rem 0;
-        }}
-        
-        .login-header .subtitle {{
-            font-size: 0.9rem;
             color: #666;
+            font-size: 1rem;
             font-weight: 400;
+            margin: 0.25rem 0;
+            background: transparent;
         }}
         
         /* Input style cartoon */
@@ -178,6 +215,15 @@ st.markdown(f"""
             box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
         }}
         
+        /* Formulaire dans une boîte blanche */
+        form[data-testid="stForm"] {{
+            background: white;
+            padding: 2rem;
+            border-radius: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border: 3px solid {DOUANE_VERT};
+        }}
+        
         /* Expander style cartoon */
         .streamlit-expanderHeader {{
             font-family: 'Fredoka', sans-serif;
@@ -212,14 +258,20 @@ if is_authenticated():
         st.query_params['user_id'] = current_user.get('identifiant_user', '')
     st.switch_page("app.py")
 
+# Boîte de bienvenue
+st.markdown("""
+    <div class="welcome-box">
+        <div class="welcome-text">Bienvenue dans Mosam - Classification Tarifaire CEDEAO</div>
+    </div>
+""", unsafe_allow_html=True)
+
 # Conteneur de connexion
 st.markdown('<div class="login-container">', unsafe_allow_html=True)
 
 st.markdown("""
     <div class="login-header">
         <h1>🔐 Connexion</h1>
-        <p>Classification Tarifaire CEDEAO</p>
-        <p class="subtitle">Direction Générale des Douanes</p>
+        <p>Veuillez vous connecter pour accéder au système</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -230,9 +282,9 @@ with st.form("login_form", clear_on_submit=False):
     
     col1, col2 = st.columns([1, 1])
     with col1:
-        submit_button = st.form_submit_button("🚀 Se connecter", use_container_width=True)
+        submit_button = st.form_submit_button("Se connecter", use_container_width=True)
     with col2:
-        cancel_button = st.form_submit_button("❌ Annuler", use_container_width=True)
+        cancel_button = st.form_submit_button("Annuler", use_container_width=True)
         if cancel_button:
             st.stop()
     

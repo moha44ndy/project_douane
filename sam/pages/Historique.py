@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import html
+from classifications_db import load_classifications
 
 # Configuration de la page
 st.set_page_config(
@@ -358,16 +359,19 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 def load_classification_history():
-    """Charge l'historique des classifications depuis le fichier JSON"""
+    """Charge l'historique des classifications depuis MySQL"""
     try:
-        # Charger depuis table_data.json
-        current_dir = Path(__file__).parent
-        table_data_path = current_dir.parent / "table_data.json"
-        if table_data_path.exists():
-            with open(table_data_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data if isinstance(data, list) else []
-        return []
+        # Charger depuis MySQL
+        classifications = load_classifications()  # Charge toutes les classifications
+        
+        # Convertir au format attendu avec date_classification
+        result = []
+        for cls in classifications:
+            # Le format de retour de load_classifications est déjà compatible
+            # mais on peut ajouter des métadonnées si nécessaire
+            result.append(cls)
+        
+        return result
     except Exception as e:
         st.error(f"Erreur lors du chargement de l'historique: {e}")
         return []
@@ -425,7 +429,7 @@ def main():
                     if isinstance(item.get('date_classification'), str) and 
                     datetime.fromisoformat(item.get('date_classification', '').replace('Z', '+00:00')).date() >= week_ago)
     
-    valide_count = sum(1 for item in history_data if item.get('statut_validation', '').lower() == 'valide')
+    # Statistique supprimée (statut_validation n'est plus utilisé)
     
     # Section Statistiques
     st.markdown(f"""
@@ -495,15 +499,8 @@ def main():
         selected_section = st.selectbox("📑 Section", sections, key="section_select")
     
     with col3:
-        # Extraire les statuts depuis les données
-        statuses_set = set()
-        for item in history_data:
-            if isinstance(item, dict):
-                status = item.get('statut_validation') or item.get('statut')
-                if status:
-                    statuses_set.add(str(status))
-        statuses = ['Tous'] + sorted(statuses_set)
-        selected_status = st.selectbox("✅ Statut", statuses, key="status_select")
+        # Filtre par statut supprimé (statut_validation n'est plus utilisé)
+        st.empty()
     
     with col4:
         date_from = st.date_input("📅 Date début", value=None, key="date_from")
@@ -529,12 +526,7 @@ def main():
                             str(item.get('classification', {}).get('section', '')) == selected_section
                         )]
     
-    if selected_status != 'Tous':
-        filtered_data = [item for item in filtered_data 
-                         if isinstance(item, dict) and (
-                             str(item.get('statut_validation', '')).lower() == selected_status.lower() or
-                             str(item.get('statut', '')).lower() == selected_status.lower()
-                         )]
+    # Filtre par statut supprimé (statut_validation n'est plus utilisé)
     
     if date_from:
         filtered_data = [item for item in filtered_data 
@@ -567,7 +559,7 @@ def main():
                  (item.get('classification', {}).get('section') if isinstance(item.get('classification'), dict) else None) or 'N/A'
         code = item.get('code_tarifaire') or item.get('classification', {}).get('code', 'N/A')
         confidence = item.get('classification_confidence') or item.get('classification', {}).get('confidence', 0)
-        status = item.get('statut_validation') or item.get('statut', 'N/A')
+        status = item.get('statut', 'N/A')
         date = item.get('date_classification') or item.get('date', '')
         item_id = item.get('id_produit') or item.get('id', 'N/A')
         

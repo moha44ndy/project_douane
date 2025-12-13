@@ -6,10 +6,11 @@ import html
 from datetime import datetime, timedelta
 import pandas as pd
 from pathlib import Path
-from auth import (
+from auth_db import (
     load_users, save_users, create_user, 
     require_admin, get_current_user, logout, initialize_default_users
 )
+from classifications_db import load_classifications
 
 # Configuration de la page
 st.set_page_config(
@@ -571,21 +572,13 @@ st.markdown(f"""
 </script>
 """, unsafe_allow_html=True)
 
-# Les fonctions load_users et save_users sont maintenant importées depuis auth.py
+# Les fonctions load_users et save_users sont maintenant importées depuis auth_db.py
 
 def load_table_data():
-    """Charge les données de classification"""
-    current_dir = Path(__file__).parent
-    table_data_path = current_dir.parent / "table_data.json"
-    try:
-        if table_data_path.exists():
-            with open(table_data_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        st.error(f"Erreur lors du chargement des données: {e}")
-    return []
+    """Charge les données de classification depuis MySQL"""
+    return load_classifications()  # Charge toutes les classifications (admin)
 
-# La fonction initialize_default_users est maintenant dans auth.py
+# La fonction initialize_default_users est maintenant dans auth_db.py
 
 def main():
     # Vérifier que l'utilisateur est admin
@@ -729,9 +722,13 @@ def main():
                 )
                 if success:
                     st.success(f"✅ {message}")
+                    # Attendre un peu pour que l'utilisateur voie le message
+                    import time
+                    time.sleep(0.5)
                     st.rerun()
                 else:
                     st.error(f"❌ {message}")
+                    # Ne pas faire rerun en cas d'erreur pour que l'utilisateur voie le message
     
     # Tab 2: Gestion des utilisateurs
     with tab2:
