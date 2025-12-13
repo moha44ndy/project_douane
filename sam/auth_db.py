@@ -136,12 +136,14 @@ def save_session_to_cookie(user: Dict[str, Any]):
     import streamlit as st
     identifiant = user.get('identifiant_user', '')
     if identifiant:
+        # Sauvegarder aussi dans query params pour la restauration immédiate
+        st.query_params['user_id'] = identifiant
         st.markdown(f"""
         <script>
             // Sauvegarder l'identifiant dans un cookie (expire dans 7 jours)
             const expires = new Date();
             expires.setTime(expires.getTime() + (7 * 24 * 60 * 60 * 1000));
-            document.cookie = "streamlit_user_id={identifiant}; expires=" + expires.toUTCString() + "; path=/";
+            document.cookie = "streamlit_user_id={identifiant}; expires=" + expires.toUTCString() + "; path=/; SameSite=Lax";
         </script>
         """, unsafe_allow_html=True)
 
@@ -157,35 +159,7 @@ def restore_session_from_cookie():
         if st.session_state.get('_restore_attempted', False):
             return
         
-        st.session_state['_restore_attempted'] = True
-        
-        # Utiliser JavaScript pour lire le cookie et le passer via query params
-        # Cette approche nécessite un rafraîchissement, donc on va utiliser une autre méthode
-        # On va plutôt utiliser un script qui lit le cookie et recharge la page avec l'identifiant
-        
-        # Méthode alternative : utiliser un composant pour lire le cookie
-        # Pour l'instant, on va utiliser une approche avec query params via JavaScript
-        st.markdown("""
-        <script>
-            function getCookie(name) {
-                const value = `; ${document.cookie}`;
-                const parts = value.split(`; ${name}=`);
-                if (parts.length === 2) return parts.pop().split(';').shift();
-                return null;
-            }
-            const userId = getCookie('streamlit_user_id');
-            if (userId && !window.location.search.includes('user_id=')) {
-                // Recharger la page avec l'identifiant dans l'URL pour que Python puisse le lire
-                const url = new URL(window.location);
-                url.searchParams.set('user_id', userId);
-                window.history.replaceState({}, '', url);
-                // Forcer un rerun de Streamlit
-                window.location.reload();
-            }
-        </script>
-        """, unsafe_allow_html=True)
-        
-        # Lire l'identifiant depuis les query params
+        # D'abord, vérifier les query params (si on vient d'un rafraîchissement avec cookie)
         user_id_from_url = st.query_params.get('user_id', None)
         if user_id_from_url and USE_DATABASE:
             try:
@@ -209,8 +183,31 @@ def restore_session_from_cookie():
                         }
                         # Nettoyer l'URL
                         st.query_params.clear()
+                        return
             except Exception:
                 pass
+        
+        # Si pas de query params, utiliser JavaScript pour lire le cookie et ajouter les query params
+        st.session_state['_restore_attempted'] = True
+        st.markdown("""
+        <script>
+            function getCookie(name) {
+                const value = `; ${document.cookie}`;
+                const parts = value.split(`; ${name}=`);
+                if (parts.length === 2) return parts.pop().split(';').shift();
+                return null;
+            }
+            const userId = getCookie('streamlit_user_id');
+            if (userId && !window.location.search.includes('user_id=')) {
+                // Ajouter l'identifiant dans l'URL pour que Python puisse le lire
+                const url = new URL(window.location);
+                url.searchParams.set('user_id', userId);
+                window.history.replaceState({}, '', url);
+                // Forcer un rerun de Streamlit (plus doux qu'un reload)
+                window.parent.postMessage({type: 'streamlit:rerun'}, '*');
+            }
+        </script>
+        """, unsafe_allow_html=True)
         
     except Exception:
         pass

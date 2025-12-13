@@ -2,7 +2,7 @@
 Page de connexion pour l'application de classification tarifaire
 """
 import streamlit as st
-from auth_db import authenticate_user, initialize_default_users, is_authenticated
+from auth_db import authenticate_user, initialize_default_users, is_authenticated, get_current_user
 from pathlib import Path
 
 # Configuration de la page
@@ -200,12 +200,16 @@ st.markdown(f"""
 # Initialiser les utilisateurs par défaut si nécessaire
 initialize_default_users()
 
-# Restaurer la session depuis le cookie si nécessaire
+# Restaurer la session depuis le cookie/query params si nécessaire
 from auth_db import restore_session_from_cookie
 restore_session_from_cookie()
 
 # Si l'utilisateur est déjà connecté, rediriger vers l'application principale
 if is_authenticated():
+    # S'assurer que l'identifiant est dans les query params
+    current_user = get_current_user()
+    if current_user and not st.query_params.get('user_id'):
+        st.query_params['user_id'] = current_user.get('identifiant_user', '')
     st.switch_page("app.py")
 
 # Conteneur de connexion

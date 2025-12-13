@@ -1440,7 +1440,7 @@ def main():
     # Initialiser les utilisateurs par défaut si nécessaire
     initialize_default_users()
     
-    # Restaurer la session depuis le cookie si nécessaire
+    # Restaurer la session depuis le cookie/query params si nécessaire
     from auth_db import restore_session_from_cookie
     restore_session_from_cookie()
     
@@ -1448,6 +1448,12 @@ def main():
     if not is_authenticated():
         st.switch_page("pages/Login.py")
         return
+    
+    # S'assurer que l'identifiant est dans les query params si l'utilisateur est connecté
+    # (pour la persistance après rafraîchissement)
+    current_user = get_current_user()
+    if current_user and not st.query_params.get('user_id'):
+        st.query_params['user_id'] = current_user.get('identifiant_user', '')
     
     # Afficher les informations de l'utilisateur dans la sidebar
     current_user = get_current_user()
