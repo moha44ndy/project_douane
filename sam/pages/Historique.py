@@ -429,7 +429,11 @@ def main():
                     if isinstance(item.get('date_classification'), str) and 
                     datetime.fromisoformat(item.get('date_classification', '').replace('Z', '+00:00')).date() >= week_ago)
     
-    # Statistique supprimée (statut_validation n'est plus utilisé)
+    # Calculer les classifications du mois
+    month_ago = today - timedelta(days=30)
+    month_count = sum(1 for item in history_data 
+                     if isinstance(item.get('date_classification'), str) and 
+                     datetime.fromisoformat(item.get('date_classification', '').replace('Z', '+00:00')).date() >= month_ago)
     
     # Section Statistiques
     st.markdown(f"""
@@ -451,8 +455,8 @@ def main():
                     <p>Cette Semaine</p>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-number">{valide_count}</div>
-                    <p>Validées</p>
+                    <div class="stat-number">{month_count}</div>
+                    <p>Ce Mois</p>
                 </div>
             </div>
         </div>
