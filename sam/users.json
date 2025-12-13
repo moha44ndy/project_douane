@@ -1,0 +1,22 @@
+[
+  {
+    "user_id": 1,
+    "nom_user": "Admin Principal",
+    "identifiant_user": "admin",
+    "email": "admin@douane.ci",
+    "statut": "actif",
+    "is_admin": true,
+    "date_creation": "2025-01-01T00:00:00Z",
+    "derniere_connexion": "2025-12-12T23:06:11.715940"
+  },
+  {
+    "user_id": 2,
+    "nom_user": "Agent Douanes",
+    "identifiant_user": "agent.douanes",
+    "email": "agent@douane.ci",
+    "statut": "actif",
+    "is_admin": false,
+    "date_creation": "2025-01-02T00:00:00Z",
+    "derniere_connexion": "2025-01-07T14:30:00Z"
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "product": {
+      "description": "Voiture (véhicule automobile pour le transport de personnes)",
+      "value": "Non renseigné",
+      "origin": "Non renseigné"
+    },
+    "classification": {
+      "section": {
+        "number": "XVII"
+      },
+      "code": "8703.90.00.00",
+      "confidence": 92.0
+    }
+  },
+  {
+    "product": {
+      "description": "Téléphone portable – smartphone",
+      "value": "Non renseigné",
+      "origin": "USA"
+    },
+    "classification": {
+      "code": "8517.13.00.00",
+      "section": {
+        "number": "XVI"
+      },
+      "confidence": 92
+    }
+  }
+]
