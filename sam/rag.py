@@ -2,6 +2,7 @@ import glob
 import faiss
 import numpy as np
 import pathlib
+from pathlib import Path
 import requests
 import os
 import re
@@ -17,7 +18,12 @@ import json
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openai import OpenAI
 
-load_dotenv()
+# Charger le .env depuis la racine du projet
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+else:
+    load_dotenv()  # Fallback to default .env location
 
 # Variable globale pour le client OpenAI (initialisée de manière paresseuse)
 _client = None

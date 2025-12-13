@@ -4,11 +4,20 @@ import numpy as np
 import argostranslate.package
 import argostranslate.translate
 import pathlib
+from pathlib import Path
 import requests
 import os
 import re
-from config.settings import Config
 from dotenv import load_dotenv
+
+# Charger le .env depuis la racine du projet
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
+else:
+    load_dotenv()  # Fallback to default .env location
+
+from config.settings import Config
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from langchain_community.document_loaders import PyPDFLoader
