@@ -27,9 +27,9 @@ st.markdown(f"""
             font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         }}
         
-        /* Fond principal vert clair avec transition vers vert foncé en bas */
+        /* Fond principal vert clair avec transition vers vert foncé en bas et accents jaunes */
         .stApp {{
-            background: linear-gradient(180deg, #E8F5E9 0%, #C8E6C9 50%, {DOUANE_VERT} 100%);
+            background: linear-gradient(180deg, #E8F5E9 0%, #C8E6C9 30%, {DOUANE_OR} 50%, #C8E6C9 70%, {DOUANE_VERT} 100%);
             min-height: 100vh;
             position: relative;
             overflow-x: hidden;
@@ -70,6 +70,7 @@ st.markdown(f"""
             border-radius: 20px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             border: 3px solid {DOUANE_VERT};
+            border-top: 5px solid {DOUANE_OR};
             margin-bottom: 1.5rem;
             margin-top: 0.5rem;
             text-align: center;
@@ -83,10 +84,11 @@ st.markdown(f"""
             top: -20px;
             left: 50%;
             transform: translateX(-50%);
-            background: white;
+            background: {DOUANE_OR};
             padding: 0.5rem;
             border-radius: 50%;
             border: 3px solid {DOUANE_VERT};
+            box-shadow: 0 4px 12px rgba(255, 215, 0, 0.4);
         }}
         
         .welcome-text {{
@@ -104,6 +106,8 @@ st.markdown(f"""
             border-radius: 20px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             border: 3px solid {DOUANE_VERT};
+            border-left: 5px solid {DOUANE_OR};
+            border-right: 5px solid {DOUANE_OR};
             margin-bottom: 2rem;
             text-align: center;
         }}
@@ -158,6 +162,7 @@ st.markdown(f"""
             margin-bottom: 0.5rem;
             margin-top: 0;
             background: transparent;
+            text-shadow: 2px 2px 4px rgba(255, 215, 0, 0.3);
         }}
         
         .login-header p {{
@@ -239,6 +244,7 @@ st.markdown(f"""
             border-radius: 20px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
             border: 3px solid {DOUANE_VERT};
+            border-top: 5px solid {DOUANE_OR};
         }}
         
         /* Expander style cartoon */
