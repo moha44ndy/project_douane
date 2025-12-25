@@ -96,6 +96,16 @@ st.markdown(f"""
             color: white !important;
         }}
         
+        /* Style pour le conteneur utilisateur */
+        .user-info-container {{
+            background: white !important;
+            padding: 1.5rem !important;
+            border-radius: 15px !important;
+            margin: 1rem 0 !important;
+            border: 2px solid {DOUANE_VERT} !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
+        }}
+        
         /* Header Streamlit visible */
         header[data-testid="stHeader"] {{
             display: flex !important;
@@ -442,16 +452,22 @@ def main():
         st.switch_page("pages/Login.py")
         return
     
+    # S'assurer que l'identifiant est dans les query params pour la persistance
+    if not st.query_params.get('user_id'):
+        st.query_params['user_id'] = current_user.get('identifiant_user', '')
+    
     # Afficher les informations de l'utilisateur dans la sidebar
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown(f"### 👤 {current_user.get('nom_user', 'Utilisateur')}")
-        st.markdown(f"*{current_user.get('email', '')}*")
-        if current_user.get('is_admin'):
-            st.markdown("👑 **Administrateur**")
-        if st.button("🏠 Accueil", use_container_width=True):
-            st.switch_page("app.py")
-        if st.button("🚪 Déconnexion", use_container_width=True):
+    if current_user:
+        # Conteneur avec fond blanc pour les informations utilisateur
+        st.sidebar.markdown(f"""
+            <div class="user-info-container">
+                <h3 style="color: {DOUANE_VERT}; margin-top: 0; margin-bottom: 0.5rem;">👤 {current_user.get('nom_user', 'Utilisateur')}</h3>
+                <p style="color: #666; margin: 0.25rem 0; font-size: 0.9rem;">*{current_user.get('email', '')}*</p>
+                {"<p style='color: " + DOUANE_OR + "; margin: 0.5rem 0 0 0; font-weight: 600;'>👑 Administrateur</p>" if current_user.get('is_admin') else ""}
+            </div>
+        """, unsafe_allow_html=True)
+        
+        if st.sidebar.button("🚪 Déconnexion", use_container_width=True):
             logout()
     
     # Header
@@ -475,7 +491,6 @@ def main():
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.markdown('<div class="white-card">', unsafe_allow_html=True)
         st.markdown("### 📋 Informations Personnelles")
         
         # Afficher les informations en lecture seule
@@ -506,11 +521,8 @@ def main():
                 <div class="info-value">{'Administrateur' if current_user.get('is_admin') else 'Utilisateur'}</div>
             </div>
         """, unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
-        st.markdown('<div class="white-card">', unsafe_allow_html=True)
         st.markdown("### 📊 Informations de Compte")
         
         # Date de création
@@ -540,37 +552,10 @@ def main():
                 <div class="info-value" style="color: {statut_color};">{statut.upper()}</div>
             </div>
         """, unsafe_allow_html=True)
-        
-        st.markdown('</div>', unsafe_allow_html=True)
     
     # Formulaire de modification
-    st.markdown('<div class="white-card">', unsafe_allow_html=True)
-    st.markdown("### ✏️ Modifier mon Mot de Passe")
-    st.markdown("**Note :** Le nom complet et l'email ne peuvent pas être modifiés depuis cette page. Contactez un administrateur pour toute modification de ces informations.")
-    
-    # Afficher les informations non modifiables
-    st.markdown("---")
-    st.markdown("#### 📋 Informations non modifiables")
-    col_info1, col_info2 = st.columns(2)
-    
-    with col_info1:
-        st.markdown(f"""
-            <div class="info-card" style="background: #f5f5f5; border: 2px solid #ccc;">
-                <div class="info-label" style="color: #666;">👤 Nom complet</div>
-                <div class="info-value" style="color: {DOUANE_VERT};">{current_user.get('nom_user', 'Non défini')}</div>
-            </div>
-        """, unsafe_allow_html=True)
-    
-    with col_info2:
-        st.markdown(f"""
-            <div class="info-card" style="background: #f5f5f5; border: 2px solid #ccc;">
-                <div class="info-label" style="color: #666;">📧 Email</div>
-                <div class="info-value" style="color: {DOUANE_VERT};">{current_user.get('email', 'Non défini')}</div>
-            </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
     st.markdown("#### 🔐 Changer mon mot de passe")
+    st.markdown("Contactez un administrateur pour toute autre modification.")
     
     with st.form("modify_profile_form"):
         col1, col2 = st.columns(2)
@@ -662,8 +647,6 @@ def main():
                         st.rerun()
                     else:
                         st.error(f"❌ {message}")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()

@@ -416,6 +416,9 @@ def logout():
     """Déconnecte l'utilisateur actuel"""
     if 'user' in st.session_state:
         del st.session_state['user']
+    # Supprimer les query params
+    if 'user_id' in st.query_params:
+        del st.query_params['user_id']
     # Supprimer le cookie
     st.markdown("""
     <script>
@@ -423,7 +426,8 @@ def logout():
         document.cookie = "streamlit_user_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
     </script>
     """, unsafe_allow_html=True)
-    st.rerun()
+    # Rediriger vers la page de login
+    st.switch_page("pages/Login.py")
 
 
 def initialize_default_users():
