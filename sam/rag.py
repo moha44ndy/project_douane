@@ -175,10 +175,33 @@ def initialize_chatbot():
     print("finish loading document and create chunks")
     
     print("🤖 Chargement du modèle d'embeddings...")
-    emb = HuggingFaceEmbeddings(
-        model_name=MODEL_DIR, 
-        encode_kwargs={"normalize_embeddings": True}
-    )
+    try:
+        # Optimiser le chargement du modèle pour réduire l'utilisation mémoire
+        emb = HuggingFaceEmbeddings(
+            model_name=MODEL_DIR, 
+            encode_kwargs={"normalize_embeddings": True},
+            model_kwargs={"device": "cpu", "trust_remote_code": False}  # Forcer l'utilisation du CPU
+        )
+    except OSError as e:
+        if "1455" in str(e) or "pagination" in str(e).lower() or "paging" in str(e).lower():
+            error_msg = """
+            ❌ ERREUR DE MÉMOIRE VIRTUELLE
+            
+            Le fichier de pagination Windows est insuffisant pour charger le modèle.
+            
+            Solutions :
+            1. Augmenter le fichier de pagination Windows :
+               - Panneau de configuration > Système > Paramètres système avancés
+               - Performance > Paramètres > Avancé > Mémoire virtuelle
+               - Augmenter la taille du fichier d'échange (recommandé : 2x la RAM)
+            
+            2. Fermer d'autres applications pour libérer de la mémoire
+            
+            3. Redémarrer l'ordinateur pour libérer la mémoire
+            """
+            raise RuntimeError(error_msg) from e
+        else:
+            raise
 
     if os.path.exists(index_path):
         # Charger l'index directement depuis le fichier FAISS

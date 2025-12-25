@@ -398,6 +398,21 @@ def get_status_badge(status):
     return f'<span style="background-color: {color}; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;">{status.upper()}</span>'
 
 def main():
+    # Restaurer la session depuis le cookie/query params si nécessaire (AVANT toute vérification)
+    from auth_db import restore_session_from_cookie, is_authenticated
+    restore_session_from_cookie()
+    
+    # Vérifier l'authentification
+    if not is_authenticated():
+        st.switch_page("pages/Login.py")
+        return
+    
+    # S'assurer que l'identifiant est dans les query params pour la persistance
+    from auth_db import get_current_user
+    current_user = get_current_user()
+    if current_user and not st.query_params.get('user_id'):
+        st.query_params['user_id'] = current_user.get('identifiant_user', '')
+    
     # Header
     st.markdown(f"""
         <div class="main-header">

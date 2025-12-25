@@ -581,15 +581,22 @@ def load_table_data():
 # La fonction initialize_default_users est maintenant dans auth_db.py
 
 def main():
-    # Vérifier que l'utilisateur est admin
-    require_admin()
-    
     # Initialiser les utilisateurs par défaut si nécessaire
     initialize_default_users()
+    
+    # Restaurer la session depuis le cookie/query params si nécessaire (AVANT toute vérification)
+    from auth_db import restore_session_from_cookie
+    restore_session_from_cookie()
+    
+    # Vérifier que l'utilisateur est admin
+    require_admin()
     
     # Afficher les informations de l'utilisateur connecté
     current_user = get_current_user()
     if current_user:
+        # S'assurer que l'identifiant est dans les query params pour la persistance
+        if not st.query_params.get('user_id'):
+            st.query_params['user_id'] = current_user.get('identifiant_user', '')
         st.sidebar.markdown(f"### 👤 Connecté en tant que")
         st.sidebar.markdown(f"**{current_user.get('nom_user', 'Utilisateur')}**")
         st.sidebar.markdown(f"*{current_user.get('email', '')}*")

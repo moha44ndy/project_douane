@@ -159,8 +159,8 @@ def restore_session_from_cookie():
                             'date_creation': user['date_creation'].isoformat() if hasattr(user['date_creation'], 'isoformat') else str(user['date_creation']),
                             'derniere_connexion': user['derniere_connexion'].isoformat() if user['derniere_connexion'] and hasattr(user['derniere_connexion'], 'isoformat') else (str(user['derniere_connexion']) if user['derniere_connexion'] else None)
                         }
-                        # Nettoyer l'URL
-                        st.query_params.clear()
+                        # Ne pas nettoyer l'URL - garder les query params pour la persistance lors du rechargement
+                        # Les query params seront conservés dans l'URL pour permettre la restauration rapide
                         return
             except Exception:
                 pass
@@ -180,9 +180,8 @@ def restore_session_from_cookie():
                 // Ajouter l'identifiant dans l'URL pour que Python puisse le lire
                 const url = new URL(window.location);
                 url.searchParams.set('user_id', userId);
-                window.history.replaceState({}, '', url);
-                // Forcer un rerun de Streamlit (plus doux qu'un reload)
-                window.parent.postMessage({type: 'streamlit:rerun'}, '*');
+                // Recharger la page avec les query params pour restaurer la session
+                window.location.href = url.toString();
             }
         </script>
         """, unsafe_allow_html=True)
