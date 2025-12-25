@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from pathlib import Path
 from auth_db import (
-    load_users, save_users, create_user, 
+    load_users, save_users, create_user, update_user,
     require_admin, get_current_user, logout, initialize_default_users
 )
 from classifications_db import load_classifications
@@ -605,40 +605,124 @@ def main():
         if st.sidebar.button("🚪 Déconnexion", use_container_width=True):
             logout()
     
-    # Bouton pour ouvrir la sidebar
+    # Script pour créer le bouton et définir la fonction toggleSidebar
     st.markdown(f"""
-        <button class="sidebar-toggle-btn" onclick="toggleSidebar()" title="Ouvrir/Fermer le menu">
-            ☰ Menu
-        </button>
         <script>
+            // Définir la fonction toggleSidebar
             function toggleSidebar() {{
-                // Chercher le bouton natif de Streamlit pour ouvrir/fermer la sidebar
-                const sidebarButton = document.querySelector('button[kind="header"]');
-                if (sidebarButton) {{
-                    sidebarButton.click();
-                }} else {{
-                    // Alternative: chercher par data-testid
-                    const altButton = document.querySelector('[data-testid="baseButton-header"]');
-                    if (altButton) {{
-                        altButton.click();
-                    }} else {{
-                        // Forcer l'affichage/masquage de la sidebar
-                        const sidebar = document.querySelector('[data-testid="stSidebar"]');
-                        if (sidebar) {{
-                            const isVisible = sidebar.style.display !== 'none';
-                            if (isVisible) {{
-                                sidebar.style.display = 'none';
-                                sidebar.style.transform = 'translateX(-100%)';
-                                sidebar.style.visibility = 'hidden';
-                            }} else {{
-                                sidebar.style.display = 'block';
-                                sidebar.style.transform = 'translateX(0)';
-                                sidebar.style.visibility = 'visible';
-                            }}
+                console.log('toggleSidebar appelé');
+                
+                // Méthode 1: Chercher le bouton natif de Streamlit avec plusieurs sélecteurs
+                const selectors = [
+                    'button[kind="header"]',
+                    '[data-testid="baseButton-header"]',
+                    'button[aria-label*="sidebar"]',
+                    'button[aria-label*="menu"]',
+                    '[data-testid="stSidebar"] + button',
+                    'header button:first-of-type',
+                    'button[title*="menu"]',
+                    'button[title*="Menu"]'
+                ];
+                
+                let sidebarButton = null;
+                for (const selector of selectors) {{
+                    const buttons = document.querySelectorAll(selector);
+                    for (const btn of buttons) {{
+                        // Vérifier si c'est bien le bouton de la sidebar
+                        const rect = btn.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {{
+                            sidebarButton = btn;
+                            break;
                         }}
                     }}
+                    if (sidebarButton) break;
+                }}
+                
+                if (sidebarButton) {{
+                    console.log('Bouton natif trouvé, clic...');
+                    sidebarButton.click();
+                    return;
+                }}
+                
+                // Méthode 2: Forcer l'affichage/masquage de la sidebar directement
+                const sidebar = document.querySelector('[data-testid="stSidebar"]');
+                if (sidebar) {{
+                    console.log('Sidebar trouvée, basculement manuel...');
+                    
+                    // Vérifier l'état actuel de la sidebar de manière plus fiable
+                    const rect = sidebar.getBoundingClientRect();
+                    const isVisible = rect.width > 0 && rect.left >= 0;
+                    
+                    if (isVisible) {{
+                        // Fermer la sidebar
+                        console.log('Fermeture de la sidebar');
+                        sidebar.style.setProperty('display', 'none', 'important');
+                        sidebar.style.setProperty('transform', 'translateX(-100%)', 'important');
+                        sidebar.style.setProperty('visibility', 'hidden', 'important');
+                        sidebar.style.setProperty('opacity', '0', 'important');
+                    }} else {{
+                        // Ouvrir la sidebar
+                        console.log('Ouverture de la sidebar');
+                        sidebar.style.setProperty('display', 'block', 'important');
+                        sidebar.style.setProperty('transform', 'translateX(0)', 'important');
+                        sidebar.style.setProperty('visibility', 'visible', 'important');
+                        sidebar.style.setProperty('opacity', '1', 'important');
+                    }}
+                    
+                    // Déclencher un événement pour notifier Streamlit
+                    const event = new Event('sidebar-toggle', {{ bubbles: true }});
+                    sidebar.dispatchEvent(event);
+                    
+                    // Forcer un reflow pour s'assurer que les changements sont appliqués
+                    sidebar.offsetHeight;
+                }} else {{
+                    console.log('Sidebar non trouvée');
                 }}
             }}
+            
+            // Fonction pour créer et attacher le bouton
+            function setupSidebarButton() {{
+                // Vérifier si le bouton existe déjà
+                if (document.getElementById('custom-sidebar-toggle-btn')) {{
+                    return;
+                }}
+                
+                // Créer le bouton
+                const btn = document.createElement('button');
+                btn.id = 'custom-sidebar-toggle-btn';
+                btn.className = 'sidebar-toggle-btn';
+                btn.textContent = '☰ Menu';
+                btn.title = 'Ouvrir/Fermer le menu';
+                btn.type = 'button';
+                
+                // Attacher le gestionnaire d'événements
+                btn.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleSidebar();
+                }});
+                
+                // Ajouter le bouton au body
+                document.body.appendChild(btn);
+            }}
+            
+            // Exécuter au chargement
+            if (document.readyState === 'loading') {{
+                document.addEventListener('DOMContentLoaded', setupSidebarButton);
+            }} else {{
+                setupSidebarButton();
+            }}
+            
+            // Réessayer après un court délai pour s'assurer que le DOM est prêt
+            setTimeout(setupSidebarButton, 100);
+            
+            // Observer les changements du DOM pour s'assurer que le bouton reste
+            const observer = new MutationObserver(function(mutations) {{
+                if (!document.getElementById('custom-sidebar-toggle-btn')) {{
+                    setupSidebarButton();
+                }}
+            }});
+            observer.observe(document.body, {{ childList: true, subtree: true }});
         </script>
     """, unsafe_allow_html=True)
     
@@ -739,8 +823,35 @@ def main():
     
     # Tab 2: Gestion des utilisateurs
     with tab2:
-        # Préparer les données avant le conteneur
-        search_term = st.text_input("🔍 Rechercher un utilisateur", placeholder="Nom, identifiant, email...", key="user_search_input")
+        # Utiliser le champ Streamlit natif d'abord (sera intégré dans le conteneur via CSS)
+        search_term = st.text_input(
+            "🔍 Rechercher un utilisateur", 
+            placeholder="Nom, identifiant, email...", 
+            key="user_search_input"
+        )
+        
+        # Créer le conteneur blanc avec le titre (le champ de recherche sera positionné juste en dessous)
+        st.markdown(f"""
+            <div class="white-card user-management-section">
+                <h2 class="section-title" style="margin-top: 0; margin-bottom: 1.5rem; padding-top: 0;">👥 Gestion des Utilisateurs</h2>
+        """, unsafe_allow_html=True)
+        
+        # Bouton pour activer/désactiver le mode modification (dans le conteneur blanc, avant le tableau)
+        edit_mode = st.session_state.get('edit_mode', False)
+        if st.button("✏️ Mode Modification" if not edit_mode else "❌ Désactiver Modification", 
+                    use_container_width=True, key="toggle_edit_mode"):
+            st.session_state['edit_mode'] = not edit_mode
+            if 'edit_user_id' in st.session_state:
+                del st.session_state['edit_user_id']
+            st.rerun()
+        
+        # Ajouter JavaScript pour déclencher un rerun automatique après la saisie
+        if 'last_search_term' not in st.session_state:
+            st.session_state.last_search_term = ""
+        
+        # Si le terme de recherche a changé, déclencher un rerun
+        if search_term != st.session_state.last_search_term:
+            st.session_state.last_search_term = search_term
         
         # Filtrer les utilisateurs
         filtered_users = users
@@ -749,6 +860,28 @@ def main():
                             if search_term.lower() in u.get('nom_user', '').lower() or
                                search_term.lower() in u.get('identifiant_user', '').lower() or
                                search_term.lower() in u.get('email', '').lower()]
+        
+        # JavaScript pour déclencher un rerun automatique lors de la saisie
+        st.markdown("""
+        <script>
+            (function() {
+                const searchInput = document.querySelector('input[placeholder*="Nom, identifiant, email"]');
+                if (searchInput) {
+                    let debounceTimer;
+                    searchInput.addEventListener('input', function() {
+                        clearTimeout(debounceTimer);
+                        debounceTimer = setTimeout(function() {
+                            // Déclencher un rerun en simulant un événement de changement
+                            searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+                            // Forcer un blur pour déclencher le rerun Streamlit
+                            searchInput.blur();
+                            searchInput.focus();
+                        }, 500);
+                    });
+                }
+            })();
+        </script>
+        """, unsafe_allow_html=True)
         
         # Préparer le contenu HTML pour le tableau
         table_html = ""
@@ -768,7 +901,9 @@ def main():
             
             for i, user in enumerate(filtered_users):
                 bg_color = '#f5f5f5' if i % 2 == 0 else 'white'
-                table_html += f'<tr style="background: {bg_color};"><td style="padding: 0.75rem; border: 1px solid #e0e0e0;">{user.get("user_id", "N/A")}</td>'
+                user_id = user.get("user_id", "N/A")
+                # Stocker la couleur de fond dans un attribut data pour JavaScript
+                table_html += f'<tr id="user_row_{user_id}" data-user-id="{user_id}" data-bg-color="{bg_color}" style="background: {bg_color};"><td style="padding: 0.75rem; border: 1px solid #e0e0e0;">{user_id}</td>'
                 table_html += f'<td style="padding: 0.75rem; border: 1px solid #e0e0e0;">{user.get("nom_user", "N/A")}</td>'
                 table_html += f'<td style="padding: 0.75rem; border: 1px solid #e0e0e0;">{user.get("identifiant_user", "N/A")}</td>'
                 table_html += f'<td style="padding: 0.75rem; border: 1px solid #e0e0e0;">{user.get("email", "N/A")}</td>'
@@ -779,50 +914,274 @@ def main():
             
             table_html += '</tbody></table></div>'
         
-        # Conteneur blanc avec tout le contenu intégré
+        # Fermer le conteneur blanc avec le tableau
         st.markdown(f"""
-            <div class="white-card user-management-section">
-                <h2 class="section-title" style="margin-bottom: 1.5rem;">👥 Gestion des Utilisateurs</h2>
-                <div style="margin-top: 1.5rem; margin-bottom: 1.5rem;">
-                    <label style="display: block; color: #2d5016; font-family: 'Poppins', sans-serif; font-weight: 500; margin-bottom: 0.5rem;">🔍 Rechercher un utilisateur</label>
-                    <input type="text" id="user_search_input" placeholder="Nom, identifiant, email..." value="{search_term or ''}" style="width: 100%; padding: 1rem; border: 3px solid {DOUANE_VERT}; border-radius: 15px; font-family: 'Poppins', sans-serif; font-size: 1rem; box-sizing: border-box;" oninput="updateSearch(this.value)" />
-                </div>
                 {table_html}
             </div>
+            <script>
+                // Définir la fonction selectUser globalement
+                window.selectUser = function(userId) {{
+                    console.log('Clic sur utilisateur:', userId);
+                    console.log('Mode édition actif:', {json.dumps(edit_mode)});
+                    // Utiliser query params pour passer l'ID de l'utilisateur
+                    const url = new URL(window.location);
+                    url.searchParams.set('edit_user_id', userId.toString());
+                    console.log('URL avec edit_user_id:', url.toString());
+                    // Recharger la page avec les nouveaux query params
+                    window.location.href = url.toString();
+                }};
+                
+                // Réattacher les événements après le chargement
+                function attachClickEvents() {{
+                    const rows = document.querySelectorAll('tr[id^="user_row_"]');
+                    const editModeActive = {json.dumps(edit_mode)};
+                    console.log('Lignes trouvées:', rows.length, 'Mode édition:', editModeActive);
+                    rows.forEach(row => {{
+                        const userId = row.getAttribute('data-user-id');
+                        const bgColor = row.getAttribute('data-bg-color') || '#f5f5f5';
+                        
+                        // Supprimer les anciens listeners en clonant le nœud (cela supprime tous les event listeners)
+                        const newRow = row.cloneNode(true);
+                        row.parentNode.replaceChild(newRow, row);
+                        const currentRow = newRow;
+                        
+                        if (editModeActive) {{
+                            // Ajouter les event listeners pour le mode édition
+                            currentRow.addEventListener('click', function(e) {{
+                                e.preventDefault();
+                                e.stopPropagation();
+                                console.log('Clic détecté sur ligne', userId);
+                                window.selectUser(userId);
+                            }});
+                            
+                            // Gérer le survol
+                            currentRow.addEventListener('mouseenter', function() {{
+                                this.style.background = '#e8f5e9';
+                            }});
+                            currentRow.addEventListener('mouseleave', function() {{
+                                this.style.background = bgColor;
+                            }});
+                            
+                            currentRow.style.cursor = 'pointer';
+                        }} else {{
+                            currentRow.style.cursor = 'default';
+                        }}
+                    }});
+                }}
+                
+                // Exécuter après le chargement du DOM
+                if (document.readyState === 'loading') {{
+                    document.addEventListener('DOMContentLoaded', attachClickEvents);
+                }} else {{
+                    attachClickEvents();
+                }}
+                
+                // Réexécuter après un court délai pour s'assurer que le tableau est chargé
+                setTimeout(attachClickEvents, 500);
+                setTimeout(attachClickEvents, 1000);
+            </script>
             <style>
-                /* Cacher uniquement le champ de recherche Streamlit dans la section user-management (tab2) */
-                /* Le champ est créé avant le conteneur, donc on le cache par son placeholder */
+                /* Positionner le champ de recherche juste en dessous du titre dans le conteneur blanc */
+                .user-management-section {{
+                    position: relative;
+                }}
+                /* Déplacer le champ de recherche pour qu'il soit juste après le titre avec un espace */
                 div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) {{
-                    display: none !important;
+                    position: absolute;
+                    top: 5.5rem;
+                    left: 2rem;
+                    right: 2rem;
+                    width: calc(100% - 4rem) !important;
+                    z-index: 10;
+                    background: white;
                 }}
-                /* Fallback pour les navigateurs qui ne supportent pas :has() */
-                div[data-testid="stTextInput"] input[placeholder*="Nom, identifiant, email"] {{
-                    display: none !important;
+                /* Ajuster le padding du conteneur pour faire de la place au champ */
+                .user-management-section {{
+                    padding-top: 7rem;
                 }}
-                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) > * {{
-                    display: none !important;
+                /* S'assurer que le titre est en haut avec un petit espace */
+                .user-management-section h2 {{
+                    margin-top: 0 !important;
+                    padding-top: 1rem !important;
+                    position: absolute;
+                    top: 0;
+                    left: 2rem;
+                    right: 2rem;
+                }}
+                /* S'assurer que le label est bien positionné */
+                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label {{
+                    margin-bottom: 0.5rem;
                 }}
             </style>
-            <script>
-                // Synchroniser le champ HTML avec Streamlit
-                function updateSearch(value) {{
-                    const streamlitInput = document.querySelector('div[data-testid="stTextInput"] input[placeholder*="Nom, identifiant, email"]');
-                    if (streamlitInput) {{
-                        streamlitInput.value = value;
-                        streamlitInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        streamlitInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        // Déclencher un rerun
-                        setTimeout(() => {{
-                            const form = streamlitInput.closest('form');
-                            if (form) {{
-                                const event = new Event('submit', {{ bubbles: true, cancelable: true }});
-                                form.dispatchEvent(event);
-                            }}
-                        }}, 300);
-                    }}
-                }}
-            </script>
         """, unsafe_allow_html=True)
+        
+        # Récupérer l'ID de l'utilisateur depuis les query params (AVANT de fermer le conteneur)
+        edit_user_id_from_url = st.query_params.get('edit_user_id', None)
+        if edit_user_id_from_url:
+            try:
+                st.session_state['edit_user_id'] = int(edit_user_id_from_url)
+                # Ne pas nettoyer tous les query params, seulement edit_user_id pour garder user_id
+                # Mais on le garde pour cette exécution, on le nettoiera après
+            except (ValueError, TypeError):
+                pass
+        
+        # Modal de modification d'utilisateur (doit être APRÈS la récupération des query params)
+        edit_user_id = st.session_state.get('edit_user_id', None)
+        
+        # Nettoyer les query params edit_user_id après avoir lu la valeur (pour éviter qu'il reste dans l'URL)
+        if edit_user_id_from_url and 'edit_user_id' in st.query_params:
+            del st.query_params['edit_user_id']
+        
+        if edit_user_id and edit_mode:
+            # Trouver l'utilisateur à modifier
+            user_to_edit = next((u for u in users if u.get('user_id') == int(edit_user_id)), None)
+            
+            if user_to_edit:
+                # Créer un overlay modal avec JavaScript pour le positionnement
+                st.markdown(f"""
+                <div id="editUserModalOverlay" style="
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.6);
+                    z-index: 9999;
+                    display: block;
+                " onclick="closeEditModal()"></div>
+                <script>
+                    function closeEditModal() {{
+                        // Supprimer edit_user_id des query params et recharger
+                        const url = new URL(window.location);
+                        url.searchParams.delete('edit_user_id');
+                        window.location.href = url.toString();
+                    }}
+                </script>
+                """, unsafe_allow_html=True)
+                
+                # Style pour positionner le formulaire dans le modal
+                st.markdown(f"""
+                <style>
+                    /* Overlay modal */
+                    #editUserModalOverlay {{
+                        position: fixed !important;
+                        top: 0 !important;
+                        left: 0 !important;
+                        width: 100% !important;
+                        height: 100% !important;
+                        background: rgba(0, 0, 0, 0.6) !important;
+                        z-index: 9999 !important;
+                    }}
+                    /* Positionner le conteneur du formulaire dans le modal */
+                    div:has(> form[data-testid="stForm"]:has(button[key*="edit_user_form"])) {{
+                        position: fixed !important;
+                        top: 50% !important;
+                        left: 50% !important;
+                        transform: translate(-50%, -50%) !important;
+                        background: white !important;
+                        padding: 2rem !important;
+                        border-radius: 20px !important;
+                        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
+                        border: 4px solid {DOUANE_VERT} !important;
+                        max-width: 800px !important;
+                        width: 90% !important;
+                        max-height: 90vh !important;
+                        overflow-y: auto !important;
+                        z-index: 10001 !important;
+                    }}
+                    /* Cibler aussi le formulaire directement */
+                    form[data-testid="stForm"]:has(button[key*="edit_user_form"]) {{
+                        background: white !important;
+                        padding: 1rem !important;
+                    }}
+                </style>
+                """, unsafe_allow_html=True)
+                
+                # Conteneur pour le formulaire (sera positionné dans le modal via CSS)
+                with st.container():
+                    st.markdown(f"""
+                        <h2 style="color: {DOUANE_VERT}; font-family: 'Fredoka', sans-serif; margin-top: 0; margin-bottom: 1.5rem;">✏️ Modifier l'utilisateur : {user_to_edit.get('nom_user', 'N/A')}</h2>
+                    """, unsafe_allow_html=True)
+                    
+                    with st.form("edit_user_form", clear_on_submit=False):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            new_nom = st.text_input("Nom complet *", value=user_to_edit.get('nom_user', ''), key="edit_nom")
+                            new_identifiant = st.text_input("Identifiant *", value=user_to_edit.get('identifiant_user', ''), key="edit_identifiant")
+                        
+                        with col2:
+                            new_email = st.text_input("Email *", value=user_to_edit.get('email', ''), key="edit_email")
+                            new_password = st.text_input(
+                                "Nouveau mot de passe", 
+                                type="password", 
+                                key="edit_password",
+                                help="Laisser vide pour conserver le mot de passe actuel. Minimum 6 caractères si renseigné.",
+                                placeholder="Laisser vide pour ne pas changer"
+                            )
+                        
+                        col3, col4 = st.columns(2)
+                        with col3:
+                            new_statut = st.selectbox("Statut *", ["actif", "inactif"], index=0 if user_to_edit.get('statut') == 'actif' else 1, key="edit_statut")
+                        with col4:
+                            new_is_admin = st.checkbox("👑 Accorder les privilèges d'administrateur", value=bool(user_to_edit.get('is_admin')), key="edit_is_admin")
+                        
+                        col_submit, col_cancel = st.columns([1, 1])
+                        with col_submit:
+                            submit_edit = st.form_submit_button("✅ Enregistrer les modifications", use_container_width=True, key="edit_user_form-submit")
+                        with col_cancel:
+                            cancel_edit = st.form_submit_button("❌ Annuler", use_container_width=True, key="edit_user_form-cancel")
+                        
+                        # Traiter les actions du formulaire (doit être DANS le bloc with st.form())
+                        if cancel_edit:
+                            if 'edit_user_id' in st.session_state:
+                                del st.session_state['edit_user_id']
+                            # Nettoyer aussi les query params
+                            if 'edit_user_id' in st.query_params:
+                                del st.query_params['edit_user_id']
+                            st.rerun()
+                        
+                        if submit_edit:
+                            # Valider les champs obligatoires
+                            if not new_nom or not new_identifiant or not new_email:
+                                st.error("⚠️ Veuillez remplir tous les champs obligatoires (marqués d'un *)")
+                            else:
+                                # Valider le mot de passe s'il est fourni
+                                password_to_update = None
+                                password_error = False
+                                
+                                if new_password and new_password.strip():
+                                    if len(new_password.strip()) < 6:
+                                        st.error("⚠️ Le mot de passe doit contenir au moins 6 caractères.")
+                                        password_error = True
+                                    else:
+                                        password_to_update = new_password.strip()
+                                
+                                # Mettre à jour l'utilisateur seulement si la validation du mot de passe est OK
+                                if not password_error:
+                                    success, message = update_user(
+                                        user_id=int(edit_user_id),
+                                        nom_user=new_nom.strip(),
+                                        identifiant_user=new_identifiant.strip(),
+                                        email=new_email.strip(),
+                                        password=password_to_update,
+                                        statut=new_statut,
+                                        is_admin=new_is_admin
+                                    )
+                                    
+                                    if success:
+                                        st.success(f"✅ {message}")
+                                        # Nettoyer la session state
+                                        if 'edit_user_id' in st.session_state:
+                                            del st.session_state['edit_user_id']
+                                        # Nettoyer aussi les query params
+                                        if 'edit_user_id' in st.query_params:
+                                            del st.query_params['edit_user_id']
+                                        import time
+                                        time.sleep(0.5)
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {message}")
         
         # Cacher le DataFrame Streamlit car on utilise le tableau HTML
         if len(filtered_users) > 0:

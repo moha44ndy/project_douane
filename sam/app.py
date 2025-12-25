@@ -1179,33 +1179,58 @@ def display_main_content():
                 }}
             }}
             
-            function toggleSidebar() {{
-                // Chercher le bouton natif de Streamlit pour ouvrir/fermer la sidebar
-                const sidebarButton = document.querySelector('button[kind="header"]');
+            // Définir la fonction globalement pour qu'elle soit accessible partout
+            window.toggleSidebar = function() {{
+                // Méthode 1: Chercher le bouton natif de Streamlit avec plusieurs sélecteurs
+                const selectors = [
+                    'button[kind="header"]',
+                    '[data-testid="baseButton-header"]',
+                    'button[aria-label*="sidebar"]',
+                    'button[aria-label*="menu"]',
+                    '[data-testid="stSidebar"] + button',
+                    'header button:first-of-type'
+                ];
+                
+                let sidebarButton = null;
+                for (const selector of selectors) {{
+                    sidebarButton = document.querySelector(selector);
+                    if (sidebarButton) {{
+                        break;
+                    }}
+                }}
+                
                 if (sidebarButton) {{
                     sidebarButton.click();
-                }} else {{
-                    // Alternative: chercher par data-testid
-                    const altButton = document.querySelector('[data-testid="baseButton-header"]');
-                    if (altButton) {{
-                        altButton.click();
+                    return;
+                }}
+                
+                // Méthode 2: Forcer l'affichage/masquage de la sidebar directement
+                const sidebar = document.querySelector('[data-testid="stSidebar"]');
+                if (sidebar) {{
+                    // Vérifier l'état actuel de la sidebar
+                    const computedStyle = window.getComputedStyle(sidebar);
+                    const isVisible = computedStyle.display !== 'none' && 
+                                     computedStyle.visibility !== 'hidden' &&
+                                     computedStyle.transform !== 'translateX(-100%)' &&
+                                     !sidebar.classList.contains('css-1d391kg');
+                    
+                    if (isVisible) {{
+                        // Fermer la sidebar
+                        sidebar.style.display = 'none';
+                        sidebar.style.transform = 'translateX(-100%)';
+                        sidebar.style.visibility = 'hidden';
+                        sidebar.style.opacity = '0';
                     }} else {{
-                        // Forcer l'affichage/masquage de la sidebar
-                        const sidebar = document.querySelector('[data-testid="stSidebar"]');
-                        if (sidebar) {{
-                            const isVisible = sidebar.style.display !== 'none' && 
-                                            sidebar.style.visibility !== 'hidden';
-                            if (isVisible) {{
-                                sidebar.style.display = 'none';
-                                sidebar.style.transform = 'translateX(-100%)';
-                                sidebar.style.visibility = 'hidden';
-                            }} else {{
-                                sidebar.style.display = 'block';
-                                sidebar.style.transform = 'translateX(0)';
-                                sidebar.style.visibility = 'visible';
-                            }}
-                        }}
+                        // Ouvrir la sidebar
+                        sidebar.style.display = 'block';
+                        sidebar.style.transform = 'translateX(0)';
+                        sidebar.style.visibility = 'visible';
+                        sidebar.style.opacity = '1';
                     }}
+                    
+                    // Déclencher un événement pour notifier Streamlit
+                    const event = new Event('sidebar-toggle', {{ bubbles: true }});
+                    sidebar.dispatchEvent(event);
                 }}
             }}
             
