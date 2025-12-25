@@ -189,96 +189,50 @@ def save_classification(json_item: dict, user_id: Optional[int] = None) -> tuple
         if not data.get("code_tarifaire"):
             return False, "Code tarifaire manquant"
         
-        # Vérifier si la classification existe déjà (même description et code pour le même utilisateur)
-        check_query = """
-            SELECT id FROM classifications 
-            WHERE user_id = %s 
-            AND description_produit = %s 
-            AND code_tarifaire = %s
-            LIMIT 1
+        # Toujours créer une nouvelle entrée (même si la même classification existe déjà)
+        # Cela permet de compter toutes les requêtes, même celles qui viennent du cache
+        # Insérer une nouvelle classification
+        insert_query = """
+            INSERT INTO classifications 
+            (user_id, description_produit, valeur_produit, origine_produit,
+             code_tarifaire, section, chapitre, confidence_score,
+             taux_dd, taux_rs, taux_tva, unite_mesure, justification)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
-        existing = db.execute_query(
-            check_query, 
-            (user_id, data["description_produit"], data["code_tarifaire"])
-        )
+        # Debug: Afficher les données avant insertion
+        print(f"DEBUG: Tentative d'insertion - user_id={user_id}")
+        print(f"DEBUG: description={data['description_produit']}")
+        print(f"DEBUG: code={data['code_tarifaire']}")
+        print(f"DEBUG: section={data['section']}, chapitre={data['chapitre']}")
+        print(f"DEBUG: taux_dd={data['taux_dd']}, taux_rs={data['taux_rs']}, taux_tva={data['taux_tva']}")
         
-        if existing:
-            # Mettre à jour la classification existante
-            update_query = """
-                UPDATE classifications 
-                SET valeur_produit = %s,
-                    origine_produit = %s,
-                    section = %s,
-                    chapitre = %s,
-                    confidence_score = %s,
-                    taux_dd = %s,
-                    taux_rs = %s,
-                    taux_tva = %s,
-                    unite_mesure = %s,
-                    justification = %s,
-                    date_modification = NOW()
-                WHERE id = %s
-            """
-            db.execute_update(
-                update_query,
-                (
-                    data["valeur_produit"],
-                    data["origine_produit"],
-                    data["section"],
-                    data["chapitre"],
-                    data["confidence_score"],
-                    data["taux_dd"],
-                    data["taux_rs"],
-                    data["taux_tva"],
-                    data["unite_mesure"],
-                    data["justification"],
-                    existing[0]["id"]
-                )
+        last_id = db.execute_insert(
+            insert_query,
+            (
+                user_id,
+                data["description_produit"],
+                data["valeur_produit"],
+                data["origine_produit"],
+                data["code_tarifaire"],
+                data["section"],
+                data["chapitre"],
+                data["confidence_score"],
+                data["taux_dd"],
+                data["taux_rs"],
+                data["taux_tva"],
+                data["unite_mesure"],
+                data["justification"],
             )
-            return True, "Classification mise à jour avec succès"
+        )
+        print(f"DEBUG: Insertion réussie - ID: {last_id}")
+        
+        # Vérifier que l'insertion a bien eu lieu
+        verify_query = "SELECT id FROM classifications WHERE id = %s"
+        verify_result = db.execute_query(verify_query, (last_id,))
+        if verify_result:
+            return True, f"Classification enregistrée avec succès (ID: {last_id})"
         else:
-            # Insérer une nouvelle classification
-            insert_query = """
-                INSERT INTO classifications 
-                (user_id, description_produit, valeur_produit, origine_produit,
-                 code_tarifaire, section, chapitre, confidence_score,
-                 taux_dd, taux_rs, taux_tva, unite_mesure, justification)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            # Debug: Afficher les données avant insertion
-            print(f"DEBUG: Tentative d'insertion - user_id={user_id}")
-            print(f"DEBUG: description={data['description_produit']}")
-            print(f"DEBUG: code={data['code_tarifaire']}")
-            print(f"DEBUG: section={data['section']}, chapitre={data['chapitre']}")
-            print(f"DEBUG: taux_dd={data['taux_dd']}, taux_rs={data['taux_rs']}, taux_tva={data['taux_tva']}")
-            
-            last_id = db.execute_insert(
-                insert_query,
-                (
-                    user_id,
-                    data["description_produit"],
-                    data["valeur_produit"],
-                    data["origine_produit"],
-                    data["code_tarifaire"],
-                    data["section"],
-                    data["chapitre"],
-                    data["confidence_score"],
-                    data["taux_dd"],
-                    data["taux_rs"],
-                    data["taux_tva"],
-                    data["unite_mesure"],
-                    data["justification"],
-                )
-            )
-            print(f"DEBUG: Insertion réussie - ID: {last_id}")
-            
-            # Vérifier que l'insertion a bien eu lieu
-            verify_query = "SELECT id FROM classifications WHERE id = %s"
-            verify_result = db.execute_query(verify_query, (last_id,))
-            if verify_result:
-                return True, f"Classification enregistrée avec succès (ID: {last_id})"
-            else:
-                return False, f"Insertion effectuée mais vérification échouée (ID: {last_id})"
+            return False, f"Insertion effectuée mais vérification échouée (ID: {last_id})"
     
     except Exception as e:
         import traceback
@@ -337,6 +291,48 @@ def save_classifications(classifications: List[dict], user_id: Optional[int] = N
     else:
         error_detail = "; ".join(error_messages[:3])  # Limiter à 3 erreurs pour l'affichage
         return False, f"{success_count} réussie(s), {error_count} erreur(s). Détails: {error_detail}"
+
+
+def delete_classifications_by_ids(classification_ids: List[int], user_id: Optional[int] = None) -> tuple[bool, str]:
+    """Supprime des classifications spécifiques par leurs IDs"""
+    if not USE_DATABASE:
+        return False, "Base de données non disponible."
+    
+    if not classification_ids:
+        return True, "Aucune classification à supprimer"
+    
+    try:
+        db = get_db()
+        if not db.test_connection():
+            return False, "Impossible de se connecter à la base de données."
+        
+        # Vérifier que l'utilisateur est le propriétaire des classifications
+        if not user_id:
+            user_id = get_current_user_id()
+        
+        if not user_id:
+            return False, "Utilisateur non identifié."
+        
+        # Vérifier que toutes les classifications appartiennent à l'utilisateur
+        placeholders = ','.join(['%s'] * len(classification_ids))
+        check_query = f"""
+            SELECT id FROM classifications 
+            WHERE id IN ({placeholders}) AND user_id = %s
+        """
+        results = db.execute_query(check_query, (*classification_ids, user_id))
+        found_ids = [row.get('id') for row in results if row.get('id')]
+        
+        if len(found_ids) != len(classification_ids):
+            return False, "Certaines classifications n'existent pas ou ne vous appartiennent pas."
+        
+        # Supprimer les classifications
+        delete_query = f"DELETE FROM classifications WHERE id IN ({placeholders})"
+        db.execute_update(delete_query, tuple(classification_ids))
+        
+        return True, f"{len(classification_ids)} classification(s) supprimée(s) avec succès"
+    
+    except Exception as e:
+        return False, f"Erreur lors de la suppression: {str(e)}"
 
 
 def clear_classifications(user_id: Optional[int] = None) -> tuple[bool, str]:

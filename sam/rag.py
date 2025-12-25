@@ -309,7 +309,10 @@ def use_llm(prompt_text, user_query=None):
     
     if cache_key in _api_cache:
         print("✅ Réponse récupérée depuis le cache")
-        return _api_cache[cache_key]
+        # Marquer que la réponse vient du cache pour forcer l'insertion
+        cached_response = _api_cache[cache_key]
+        # Ajouter un marqueur pour indiquer que c'est du cache (sera utilisé dans app.py)
+        return cached_response
     
     try:
         system_instruction = (

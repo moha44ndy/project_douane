@@ -281,6 +281,14 @@ def get_products_by_chapter(table_data):
             confidence = item.get('confidence', 0)
             code = item.get('code', 'N/A')
         
+        # Ignorer les produits avec chapitre 'N/A' ou code invalide
+        if chapter == 'N/A' or not code or code == 'N/A':
+            continue
+        
+        # Normaliser le chapitre en string à 2 chiffres (ex: "84" au lieu de 84)
+        if chapter and chapter != 'N/A':
+            chapter = str(chapter).zfill(2) if len(str(chapter)) == 1 else str(chapter)
+        
         if chapter not in products_by_chapter:
             products_by_chapter[chapter] = []
         products_by_chapter[chapter].append({
@@ -421,16 +429,21 @@ def render_table_grid():
     for section, config in SECTION_CONFIG.items():
         count = 0
         for chapter in config['chapters']:
-            count += len(products_by_chapter.get(chapter, []))
+            # S'assurer que le chapitre est bien formaté comme string à 2 chiffres
+            chapter_str = str(chapter).zfill(2) if chapter else None
+            if chapter_str:
+                count += len(products_by_chapter.get(chapter_str, []))
         section_stats[section] = count
     
-    # JavaScript pour mettre à jour les stats
-    stats_script = '<script>'
+    # Mettre à jour directement dans le HTML au lieu d'utiliser JavaScript
+    # Remplacer les badges de stats dans le HTML
     for section, count in section_stats.items():
-        stats_script += f'document.getElementById("stats-{section}").textContent = "{count}";'
-    stats_script += '</script>'
+        # Remplacer le badge de stats dans le HTML
+        old_badge = f'<div class="stats-badge" id="stats-{section}">0</div>'
+        new_badge = f'<div class="stats-badge" id="stats-{section}">{count}</div>'
+        html_table = html_table.replace(old_badge, new_badge)
     
-    st.markdown(html_table + stats_script, unsafe_allow_html=True)
+    st.markdown(html_table, unsafe_allow_html=True)
 
 def export_table_to_csv():
     """Exporte les données en CSV"""
@@ -499,7 +512,9 @@ def clear_table_data():
     user_id = get_current_user_id()
     success, message = clear_classifications(user_id)
     if success:
-        st.session_state["table_products"] = []
+        # Recharger depuis la base (qui sera vide maintenant)
+        from classifications_db import load_table_data
+        st.session_state["table_products"] = load_table_data()
         st.success("✅ Tableau vidé avec succès")
         st.rerun()
     else:
@@ -1469,6 +1484,8 @@ def display_main_content():
         # Réinitialiser l'historique pour n'afficher que la requête en cours
         st.session_state["messages"] = []
         st.session_state["messages"].append(("Vous", user_message))
+        # Réafficher l'historique pour la nouvelle recherche
+        st.session_state["show_history"] = True
         
         # Traiter la requête avec validation préventive
         result = process_user_input(
@@ -1502,19 +1519,23 @@ def display_main_content():
             st.session_state["messages"].append(("RAG", formatted_answer, response_id))
             new_entries = build_table_entries(parsed_payload.get("classifications", []))
             if new_entries:
-                # Ajouter les nouvelles entrées à la session state
-                if "table_products" not in st.session_state:
-                    st.session_state["table_products"] = []
-                st.session_state["table_products"].extend(new_entries)
+                # Vérifier si l'utilisateur a refusé de stocker ce produit
+                refused_key = f"_refused_{response_id}"
+                is_refused = st.session_state.get(refused_key, False)
                 
-                # Sauvegarder seulement les nouvelles entrées dans MySQL
-                from classifications_db import save_classifications, get_current_user_id
-                user_id = get_current_user_id()
-                
-                if user_id:
-                    # Forcer l'affichage immédiat avant rerun
-                    with st.spinner("💾 Sauvegarde en cours..."):
-                        success, message = save_classifications(new_entries, user_id)
+                # Vérifier si cette réponse a déjà été sauvegardée pour éviter les doublons
+                save_key = f"_saved_{response_id}"
+                if save_key not in st.session_state and not is_refused:
+                    # Sauvegarder seulement les nouvelles entrées dans MySQL
+                    from classifications_db import save_classifications, get_current_user_id
+                    user_id = get_current_user_id()
+                    
+                    if user_id:
+                        # Marquer comme en cours de sauvegarde pour éviter les doublons
+                        st.session_state[save_key] = True
+                        # Forcer l'affichage immédiat avant rerun
+                        with st.spinner("💾 Sauvegarde en cours..."):
+                            success, message = save_classifications(new_entries, user_id)
                         
                         # Récupérer les IDs des classifications créées pour les feedbacks
                         if success:
@@ -1550,10 +1571,13 @@ def display_main_content():
                             # Ne pas faire rerun si erreur pour voir le message
                             st.stop()
                         else:
-                            st.success(f"✅ {message}")
-                            # Stocker le succès dans la session
-                            st.session_state["_save_success"] = message
+                            # Sauvegarde réussie - pas besoin d'afficher de message
+                            # Recharger les données depuis la base pour synchroniser
+                            from classifications_db import load_table_data
+                            st.session_state["table_products"] = load_table_data()
                 else:
+                    # Utilisateur non identifié - ne pas sauvegarder
+                    pass
                     st.warning("⚠️ Utilisateur non identifié. Les données sont enregistrées localement mais pas dans la base de données.")
                     st.write(f"🔍 Debug: session_state['user'] = {st.session_state.get('user')}")
                     st.write(f"🔍 Debug: query_params['user_id'] = {st.query_params.get('user_id')}")
@@ -1569,12 +1593,12 @@ def display_main_content():
 
         spinner_placeholder.empty()
         
-        # Afficher les messages de sauvegarde s'ils existent
+        # Afficher les messages d'erreur s'ils existent
         if "_save_error" in st.session_state:
             st.error(f"⚠️ Erreur lors de la sauvegarde: {st.session_state['_save_error']}")
             del st.session_state["_save_error"]
+        # Ne plus afficher les messages de succès (supprimé à la demande de l'utilisateur)
         if "_save_success" in st.session_state:
-            st.success(f"✅ {st.session_state['_save_success']}")
             del st.session_state["_save_success"]
         
         st.rerun()
@@ -1583,120 +1607,183 @@ def display_main_content():
     if "response_ratings" not in st.session_state:
         st.session_state["response_ratings"] = {}
     
+    # Initialiser show_history si nécessaire (par défaut True pour afficher)
+    if "show_history" not in st.session_state:
+        st.session_state["show_history"] = True
+    
     # Zone de chat
     if st.session_state["messages"]:
-        # Afficher les messages style cartoon
-        for i in range(0, len(st.session_state["messages"]), 2):
-            if i < len(st.session_state["messages"]):
-                # Gérer les anciens messages sans ID (rétrocompatibilité)
-                if len(st.session_state["messages"][i]) == 2:
-                    user, user_message = st.session_state["messages"][i]
-                else:
-                    user, user_message, _ = st.session_state["messages"][i]
-                st.markdown(f"""
-                    <div class="user-message">
-                        <strong style="font-size: 1.1rem; font-weight: 700; display: block; margin-bottom: 0.5rem;">👤 Vous</strong>
-                        <div style="line-height: 1.6; font-size: 1rem;">{user_message}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-            
-            if i + 1 < len(st.session_state["messages"]):
-                # Gérer les anciens messages sans ID (rétrocompatibilité)
-                if len(st.session_state["messages"][i + 1]) == 2:
-                    rag, rag_message = st.session_state["messages"][i + 1]
-                    response_id = f"response_legacy_{i}"
-                else:
-                    rag, rag_message, response_id = st.session_state["messages"][i + 1]
-                
-                # Afficher le message de Mosam
-                st.markdown(f"""
-                    <div class="rag-message">
-                        <strong style="font-size: 1.1rem; font-weight: 700; display: block; margin-bottom: 0.5rem;">🤖 Mosam</strong>
-                        <div style="line-height: 1.6; font-size: 1rem;">{rag_message}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Boutons de notation
-                col1, col2, col3 = st.columns([1, 1, 10])
-                with col1:
-                    current_rating = st.session_state["response_ratings"].get(response_id, None)
-                    if current_rating == "up":
-                        button_style_up = "background: #4CAF50; color: white;"
+        # Vérifier si l'historique doit être affiché
+        show_history = st.session_state.get("show_history", True)
+        if show_history:
+            # Afficher les messages style cartoon
+            for i in range(0, len(st.session_state["messages"]), 2):
+                if i < len(st.session_state["messages"]):
+                    # Gérer les anciens messages sans ID (rétrocompatibilité)
+                    if len(st.session_state["messages"][i]) == 2:
+                        user, user_message = st.session_state["messages"][i]
                     else:
-                        button_style_up = "background: white; color: #4CAF50; border: 2px solid #4CAF50;"
+                        user, user_message, _ = st.session_state["messages"][i]
+                    st.markdown(f"""
+                        <div class="user-message">
+                            <strong style="font-size: 1.1rem; font-weight: 700; display: block; margin-bottom: 0.5rem;">👤 Vous</strong>
+                            <div style="line-height: 1.6; font-size: 1rem;">{user_message}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                if i + 1 < len(st.session_state["messages"]):
+                    # Gérer les anciens messages sans ID (rétrocompatibilité)
+                    if len(st.session_state["messages"][i + 1]) == 2:
+                        rag, rag_message = st.session_state["messages"][i + 1]
+                        response_id = f"response_legacy_{i}"
+                    else:
+                        rag, rag_message, response_id = st.session_state["messages"][i + 1]
                     
-                    if st.button("👍", key=f"up_{response_id}", use_container_width=True):
+                    # Afficher le message de Mosam
+                    st.markdown(f"""
+                        <div class="rag-message">
+                            <strong style="font-size: 1.1rem; font-weight: 700; display: block; margin-bottom: 0.5rem;">🤖 Mosam</strong>
+                            <div style="line-height: 1.6; font-size: 1rem;">{rag_message}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Boutons de notation et de refus de stockage
+                    col1, col2, col3, col4 = st.columns([1, 1, 2.5, 7.5])
+                    with col1:
+                        current_rating = st.session_state["response_ratings"].get(response_id, None)
                         if current_rating == "up":
-                            # Retirer la note si déjà noté positivement
-                            del st.session_state["response_ratings"][response_id]
-                            # Supprimer le feedback de la base de données
-                            try:
-                                from feedback_db import remove_feedback
-                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
-                                if classification_ids:
-                                    remove_feedback(classification_ids)
-                            except Exception as e:
-                                print(f"Erreur lors de la suppression du feedback: {e}")
+                            button_style_up = "background: #4CAF50; color: white;"
                         else:
-                            st.session_state["response_ratings"][response_id] = "up"
-                            # Sauvegarder le feedback positif
-                            try:
-                                from feedback_db import save_feedback
-                                user_query = st.session_state.get(f"query_{response_id}", "")
-                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
-                                if user_query and classification_ids:
-                                    success, message = save_feedback(user_query, classification_ids, "up")
-                                    if success:
-                                        st.success("✅ Note positive enregistrée")
-                            except Exception as e:
-                                print(f"Erreur lors de la sauvegarde du feedback: {e}")
-                        st.rerun()
-                
-                with col2:
-                    if current_rating == "down":
-                        button_style_down = "background: #f44336; color: white;"
-                    else:
-                        button_style_down = "background: white; color: #f44336; border: 2px solid #f44336;"
+                            button_style_up = "background: white; color: #4CAF50; border: 2px solid #4CAF50;"
+                        
+                        if st.button("👍", key=f"up_{response_id}", use_container_width=True):
+                            classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
+                            
+                            if current_rating == "up":
+                                # Retirer la note si déjà noté positivement
+                                del st.session_state["response_ratings"][response_id]
+                                # Supprimer le feedback de la base de données
+                                try:
+                                    from feedback_db import remove_feedback
+                                    if classification_ids:
+                                        remove_feedback(classification_ids)
+                                except Exception as e:
+                                    print(f"Erreur lors de la suppression du feedback: {e}")
+                            else:
+                                # Si l'utilisateur avait cliqué sur 👎, retirer d'abord le feedback négatif
+                                if current_rating == "down":
+                                    try:
+                                        from feedback_db import remove_feedback
+                                        if classification_ids:
+                                            remove_feedback(classification_ids)
+                                    except Exception as e:
+                                        print(f"Erreur lors de la suppression du feedback précédent: {e}")
+                                
+                                # Ajouter le feedback positif
+                                st.session_state["response_ratings"][response_id] = "up"
+                                try:
+                                    from feedback_db import save_feedback
+                                    user_query = st.session_state.get(f"query_{response_id}", "")
+                                    if user_query and classification_ids:
+                                        success, message = save_feedback(user_query, classification_ids, "up")
+                                        if success:
+                                            st.success("✅ Note positive enregistrée")
+                                except Exception as e:
+                                    print(f"Erreur lors de la sauvegarde du feedback: {e}")
+                            st.rerun()
                     
-                    if st.button("👎", key=f"down_{response_id}", use_container_width=True):
+                    with col2:
                         if current_rating == "down":
-                            # Retirer la note si déjà noté négativement
-                            del st.session_state["response_ratings"][response_id]
-                            # Supprimer le feedback de la base de données
-                            try:
-                                from feedback_db import remove_feedback
-                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
-                                if classification_ids:
-                                    remove_feedback(classification_ids)
-                            except Exception as e:
-                                print(f"Erreur lors de la suppression du feedback: {e}")
+                            button_style_down = "background: #f44336; color: white;"
                         else:
-                            st.session_state["response_ratings"][response_id] = "down"
-                            # Sauvegarder le feedback négatif (important pour l'amélioration de l'IA)
-                            try:
-                                from feedback_db import save_feedback
-                                user_query = st.session_state.get(f"query_{response_id}", "")
-                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
-                                if user_query and classification_ids:
-                                    success, message = save_feedback(user_query, classification_ids, "down")
+                            button_style_down = "background: white; color: #f44336; border: 2px solid #f44336;"
+                        
+                        if st.button("👎", key=f"down_{response_id}", use_container_width=True):
+                            classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
+                            
+                            if current_rating == "down":
+                                # Retirer la note si déjà noté négativement
+                                del st.session_state["response_ratings"][response_id]
+                                # Supprimer le feedback de la base de données
+                                try:
+                                    from feedback_db import remove_feedback
+                                    if classification_ids:
+                                        remove_feedback(classification_ids)
+                                except Exception as e:
+                                    print(f"Erreur lors de la suppression du feedback: {e}")
+                            else:
+                                # Si l'utilisateur avait cliqué sur 👍, retirer d'abord le feedback positif
+                                if current_rating == "up":
+                                    try:
+                                        from feedback_db import remove_feedback
+                                        if classification_ids:
+                                            remove_feedback(classification_ids)
+                                    except Exception as e:
+                                        print(f"Erreur lors de la suppression du feedback précédent: {e}")
+                                
+                                # Ajouter le feedback négatif
+                                st.session_state["response_ratings"][response_id] = "down"
+                                try:
+                                    from feedback_db import save_feedback
+                                    user_query = st.session_state.get(f"query_{response_id}", "")
+                                    if user_query and classification_ids:
+                                        success, message = save_feedback(user_query, classification_ids, "down")
+                                        if success:
+                                            st.warning("⚠️ Note négative enregistrée. Cette information aidera à améliorer le système.")
+                                except Exception as e:
+                                    print(f"Erreur lors de la sauvegarde du feedback: {e}")
+                            st.rerun()
+                    
+                    with col3:
+                        # Vérifier si le produit a été refusé
+                        refused_key = f"_refused_{response_id}"
+                        is_refused = st.session_state.get(refused_key, False)
+                        
+                        if is_refused:
+                            button_style_refuse = "background: #ff9800; color: white;"
+                        else:
+                            button_style_refuse = "background: white; color: #ff9800; border: 2px solid #ff9800;"
+                        
+                        if st.button("🚫 Ne pas stocker", key=f"refuse_{response_id}", use_container_width=True):
+                            classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
+                            if classification_ids:
+                                try:
+                                    from classifications_db import delete_classifications_by_ids, get_current_user_id
+                                    user_id = get_current_user_id()
+                                    success, message = delete_classifications_by_ids(classification_ids, user_id)
                                     if success:
-                                        st.warning("⚠️ Note négative enregistrée. Cette information aidera à améliorer le système.")
-                            except Exception as e:
-                                print(f"Erreur lors de la sauvegarde du feedback: {e}")
-                        st.rerun()
-        
-        # Bouton pour fermer l'historique avec style moderne
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("Fermer l'historique", use_container_width=True):
-                # Cacher l'historique au lieu de l'effacer
-                if "show_history" not in st.session_state:
-                    st.session_state["show_history"] = True
-                st.session_state["show_history"] = False
-                st.rerun()
+                                        # Marquer comme refusé
+                                        st.session_state[refused_key] = True
+                                        # Supprimer les IDs des classifications supprimées
+                                        del st.session_state[f"classification_ids_{response_id}"]
+                                        # Recharger les données depuis la base pour synchroniser
+                                        from classifications_db import load_table_data
+                                        st.session_state["table_products"] = load_table_data()
+                                        st.warning("⚠️ Produit retiré du stockage")
+                                    else:
+                                        st.error(f"❌ Erreur: {message}")
+                                except Exception as e:
+                                    st.error(f"❌ Erreur lors de la suppression: {e}")
+                                    print(f"Erreur lors de la suppression des classifications: {e}")
+                            else:
+                                # Si pas encore sauvegardé, marquer comme refusé pour éviter la sauvegarde
+                                st.session_state[refused_key] = True
+                                st.warning("⚠️ Ce produit ne sera pas stocké")
+                            st.rerun()
+            
+            # Bouton pour fermer l'historique avec style moderne
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                if st.button("Fermer l'historique", use_container_width=True):
+                    # Cacher l'historique
+                    st.session_state["show_history"] = False
+                    st.rerun()
     
     # Afficher le nombre de produits classés avec style moderne
-    product_count = len(st.session_state.get("table_products", []))
+    # Utiliser load_table_data() pour avoir les données à jour depuis la base
+    from classifications_db import load_table_data
+    table_data = load_table_data()
+    product_count = len(table_data)
     if product_count > 0:
         st.markdown(f"""
             <div style="
