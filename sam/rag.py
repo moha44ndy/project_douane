@@ -6,6 +6,7 @@ from pathlib import Path
 import requests
 import os
 import re
+import hashlib
 from config.settings import Config
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -17,6 +18,7 @@ import urllib3
 import json
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openai import OpenAI
+from cachetools import LRUCache
 
 # Importer l'exception Streamlit pour les secrets
 try:
@@ -34,6 +36,10 @@ else:
 
 # Variable globale pour le client OpenAI (initialisée de manière paresseuse)
 _client = None
+
+# Cache LRU pour les réponses de l'API (garde les 100 dernières réponses)
+# Clé: hash du prompt, Valeur: réponse de l'API
+_api_cache = LRUCache(maxsize=100)
 
 def get_openai_client():
     """Obtient le client OpenAI, en le créant si nécessaire."""
@@ -282,6 +288,12 @@ def search_faiss_index(query, emb, index, k=5):
 
 # Use the LLM API
 def use_llm(prompt_text):
+    # Vérifier le cache avant d'appeler l'API
+    cache_key = hashlib.sha256(prompt_text.encode('utf-8')).hexdigest()
+    if cache_key in _api_cache:
+        print("✅ Réponse récupérée depuis le cache")
+        return _api_cache[cache_key]
+    
     try:
         system_instruction = (
             "Tu es un assistant AI nommé Mosam conçu pour aider des douaniers à troiuver les prix à fixer sur les produits "
@@ -345,10 +357,29 @@ def use_llm(prompt_text):
             store=True
         )
 
-        return response.output_text
+        response_text = response.output_text
+        
+        # Mettre en cache la réponse
+        _api_cache[cache_key] = response_text
+        print("💾 Réponse mise en cache")
+        
+        return response_text
 
     except Exception as e:
         return f"Erreur lors de l'appel au modèle OpenAI : {e}"
+
+def clear_api_cache():
+    """Vide le cache des réponses API"""
+    global _api_cache
+    _api_cache.clear()
+    print("🧹 Cache vidé")
+
+def get_cache_stats():
+    """Retourne les statistiques du cache"""
+    return {
+        "size": len(_api_cache),
+        "maxsize": _api_cache.maxsize
+    }
 
 def split_user_queries(raw_text):
     """Découpe l'entrée utilisateur si plusieurs articles sont fournis d'un coup."""

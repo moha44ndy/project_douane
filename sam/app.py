@@ -2,6 +2,7 @@ import json
 import os
 import csv
 import io
+import time
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
@@ -1026,6 +1027,20 @@ st.markdown(f"""
             box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
         }}
         
+        /* Style pour les boutons de notation */
+        div[data-testid="column"] button[kind="secondary"] {{
+            font-size: 1.5rem !important;
+            padding: 0.5rem 1rem !important;
+            border-radius: 10px !important;
+            transition: all 0.3s ease !important;
+            border: 2px solid !important;
+        }}
+        
+        div[data-testid="column"] button[kind="secondary"]:hover {{
+            transform: scale(1.1) !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2) !important;
+        }}
+        
         /* Titres de section style cartoon */
         .section-title {{
             color: {DOUANE_VERT};
@@ -1464,7 +1479,9 @@ def display_main_content():
         parsed_payload, parse_error = parse_structured_response(response)
         if parsed_payload:
             formatted_answer = format_response_markdown(parsed_payload)
-            st.session_state["messages"].append(("RAG", formatted_answer))
+            # Générer un ID unique pour cette réponse
+            response_id = f"response_{int(time.time() * 1000)}"
+            st.session_state["messages"].append(("RAG", formatted_answer, response_id))
             new_entries = build_table_entries(parsed_payload.get("classifications", []))
             if new_entries:
                 # Ajouter les nouvelles entrées à la session state
@@ -1497,7 +1514,8 @@ def display_main_content():
                     st.write(f"🔍 Debug: query_params['user_id'] = {st.query_params.get('user_id')}")
         else:
             fallback_text = response or f"⚠️ {parse_error}"
-            st.session_state["messages"].append(("RAG", fallback_text))
+            response_id = f"response_{int(time.time() * 1000)}"
+            st.session_state["messages"].append(("RAG", fallback_text, response_id))
 
         spinner_placeholder.empty()
         
@@ -1511,12 +1529,20 @@ def display_main_content():
         
         st.rerun()
     
+    # Initialiser le dictionnaire des notes si nécessaire
+    if "response_ratings" not in st.session_state:
+        st.session_state["response_ratings"] = {}
+    
     # Zone de chat
     if st.session_state["messages"]:
         # Afficher les messages style cartoon
         for i in range(0, len(st.session_state["messages"]), 2):
             if i < len(st.session_state["messages"]):
-                user, user_message = st.session_state["messages"][i]
+                # Gérer les anciens messages sans ID (rétrocompatibilité)
+                if len(st.session_state["messages"][i]) == 2:
+                    user, user_message = st.session_state["messages"][i]
+                else:
+                    user, user_message, _ = st.session_state["messages"][i]
                 st.markdown(f"""
                     <div class="user-message">
                         <strong style="font-size: 1.1rem; font-weight: 700; display: block; margin-bottom: 0.5rem;">👤 Vous</strong>
@@ -1525,19 +1551,60 @@ def display_main_content():
                 """, unsafe_allow_html=True)
             
             if i + 1 < len(st.session_state["messages"]):
-                rag, rag_message = st.session_state["messages"][i + 1]
+                # Gérer les anciens messages sans ID (rétrocompatibilité)
+                if len(st.session_state["messages"][i + 1]) == 2:
+                    rag, rag_message = st.session_state["messages"][i + 1]
+                    response_id = f"response_legacy_{i}"
+                else:
+                    rag, rag_message, response_id = st.session_state["messages"][i + 1]
+                
+                # Afficher le message de Mosam
                 st.markdown(f"""
                     <div class="rag-message">
                         <strong style="font-size: 1.1rem; font-weight: 700; display: block; margin-bottom: 0.5rem;">🤖 Mosam</strong>
                         <div style="line-height: 1.6; font-size: 1rem;">{rag_message}</div>
                     </div>
                 """, unsafe_allow_html=True)
+                
+                # Boutons de notation
+                col1, col2, col3 = st.columns([1, 1, 10])
+                with col1:
+                    current_rating = st.session_state["response_ratings"].get(response_id, None)
+                    if current_rating == "up":
+                        button_style_up = "background: #4CAF50; color: white;"
+                    else:
+                        button_style_up = "background: white; color: #4CAF50; border: 2px solid #4CAF50;"
+                    
+                    if st.button("👍", key=f"up_{response_id}", use_container_width=True):
+                        if current_rating == "up":
+                            # Retirer la note si déjà noté positivement
+                            del st.session_state["response_ratings"][response_id]
+                        else:
+                            st.session_state["response_ratings"][response_id] = "up"
+                        st.rerun()
+                
+                with col2:
+                    if current_rating == "down":
+                        button_style_down = "background: #f44336; color: white;"
+                    else:
+                        button_style_down = "background: white; color: #f44336; border: 2px solid #f44336;"
+                    
+                    if st.button("👎", key=f"down_{response_id}", use_container_width=True):
+                        if current_rating == "down":
+                            # Retirer la note si déjà noté négativement
+                            del st.session_state["response_ratings"][response_id]
+                        else:
+                            st.session_state["response_ratings"][response_id] = "down"
+                        st.rerun()
         
-        # Bouton pour effacer l'historique avec style moderne
+        # Bouton pour fermer l'historique avec style moderne
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            if st.button("🗑️ Effacer l'historique", use_container_width=True):
-                st.session_state["messages"] = []
+            if st.button("Fermer l'historique", use_container_width=True):
+                # Cacher l'historique au lieu de l'effacer
+                if "show_history" not in st.session_state:
+                    st.session_state["show_history"] = True
+                st.session_state["show_history"] = False
                 st.rerun()
     
     # Afficher le nombre de produits classés avec style moderne
