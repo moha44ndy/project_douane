@@ -301,7 +301,9 @@ def get_products_by_chapter(table_data):
 
 def render_table_grid():
     """Affiche la grille du tableau avec sections et chapitres"""
-    table_data = load_table_data()
+    # Utiliser les données du tableau local (session_state) au lieu de recharger depuis la base
+    # Cela permet de respecter le vidage intentionnel du tableau
+    table_data = st.session_state.get("table_products", [])
     products_by_chapter = get_products_by_chapter(table_data)
     
     # CSS pour le tableau
@@ -507,18 +509,14 @@ def export_table_to_json():
     return json.dumps(export_data, ensure_ascii=False, indent=2)
 
 def clear_table_data():
-    """Vide toutes les données du tableau"""
-    from classifications_db import clear_classifications, get_current_user_id
-    user_id = get_current_user_id()
-    success, message = clear_classifications(user_id)
-    if success:
-        # Recharger depuis la base (qui sera vide maintenant)
-        from classifications_db import load_table_data
-        st.session_state["table_products"] = load_table_data()
-        st.success("✅ Tableau vidé avec succès")
-        st.rerun()
-    else:
-        st.error(message)
+    """Vide toutes les données du tableau local (session_state) sans supprimer les données de la base"""
+    # Ne vider que le tableau local, pas la base de données
+    # Cela permet de conserver les statistiques dans la page Historique
+    st.session_state["table_products"] = []
+    # Marquer que le tableau a été vidé intentionnellement
+    st.session_state["_table_cleared"] = True
+    st.success("✅ Tableau vidé avec succès (les données restent dans l'historique)")
+    st.rerun()
 
 def view_table_statistics():
     """Affiche les statistiques détaillées"""
@@ -601,7 +599,8 @@ def render_table_component():
             st.button("📄 Exporter JSON", disabled=True, use_container_width=True)
     
     with col4:
-        table_data = load_table_data()
+        # Afficher le total depuis le tableau local, pas depuis la base
+        table_data = st.session_state.get("table_products", [])
         total = len(table_data)
         st.metric("📈 Total Produits", total)
     
@@ -1222,8 +1221,14 @@ if "initialized" not in st.session_state:
     st.session_state["initialized"] = True
 
 # Initialize table products
+# Ne charger depuis la base que si le tableau n'a pas été vidé intentionnellement
 if "table_products" not in st.session_state:
     st.session_state["table_products"] = load_table_data()
+elif st.session_state.get("_table_cleared", False):
+    # Si le tableau a été vidé, ne pas le recharger automatiquement
+    # L'utilisateur peut toujours recharger manuellement si nécessaire
+    if not st.session_state.get("table_products"):
+        st.session_state["table_products"] = []
 
 def display_main_content():
     """Affiche le contenu principal avec le nouveau design"""
@@ -1572,6 +1577,8 @@ def display_main_content():
                             st.stop()
                         else:
                             # Sauvegarde réussie - pas besoin d'afficher de message
+                            # Réinitialiser le flag de vidage car on a de nouvelles données
+                            st.session_state["_table_cleared"] = False
                             # Recharger les données depuis la base pour synchroniser
                             from classifications_db import load_table_data
                             st.session_state["table_products"] = load_table_data()
@@ -1756,9 +1763,11 @@ def display_main_content():
                                         st.session_state[refused_key] = True
                                         # Supprimer les IDs des classifications supprimées
                                         del st.session_state[f"classification_ids_{response_id}"]
-                                        # Recharger les données depuis la base pour synchroniser
-                                        from classifications_db import load_table_data
-                                        st.session_state["table_products"] = load_table_data()
+                                        # Ne pas recharger depuis la base si le tableau a été vidé
+                                        # L'utilisateur peut recharger manuellement si nécessaire
+                                        if not st.session_state.get("_table_cleared", False):
+                                            from classifications_db import load_table_data
+                                            st.session_state["table_products"] = load_table_data()
                                         st.warning("⚠️ Produit retiré du stockage")
                                     else:
                                         st.error(f"❌ Erreur: {message}")
@@ -1780,9 +1789,8 @@ def display_main_content():
                     st.rerun()
     
     # Afficher le nombre de produits classés avec style moderne
-    # Utiliser load_table_data() pour avoir les données à jour depuis la base
-    from classifications_db import load_table_data
-    table_data = load_table_data()
+    # Utiliser les données du tableau local (session_state) pour respecter le vidage intentionnel
+    table_data = st.session_state.get("table_products", [])
     product_count = len(table_data)
     if product_count > 0:
         st.markdown(f"""
