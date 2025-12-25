@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: localhost:4240
--- Generation Time: Dec 13, 2025 at 06:13 PM
+-- Generation Time: Dec 25, 2025 at 05:23 PM
 -- Server version: 5.7.24
 -- PHP Version: 8.3.1
 
@@ -93,19 +93,25 @@ CREATE TABLE `classifications` (
   `unite_mesure` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Unité de mesure',
   `justification` text COLLATE utf8mb4_unicode_ci COMMENT 'Justification de la classification',
   `date_classification` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `date_modification` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  `date_modification` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `user_query` text COLLATE utf8mb4_unicode_ci COMMENT 'Requête originale de l''utilisateur',
+  `user_query_hash` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Hash de la requête pour recherche rapide',
+  `feedback_rating` enum('up','down') COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Note utilisateur: up (?) ou down (?)'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 --
 -- Dumping data for table `classifications`
 --
 
-INSERT INTO `classifications` (`id`, `user_id`, `description_produit`, `valeur_produit`, `origine_produit`, `code_tarifaire`, `section`, `chapitre`, `confidence_score`, `taux_dd`, `taux_rs`, `taux_tva`, `unite_mesure`, `justification`, `date_classification`, `date_modification`) VALUES
-(1, 1, 'Voiture (véhicule automobile pour le transport de personnes)', 'Non renseigné', 'Non renseigné', '8703.23.00.00', 'XVII', '87', '92.00', NULL, NULL, NULL, NULL, NULL, '2025-12-13 16:13:02', '2025-12-13 16:20:36'),
-(2, 1, 'Téléphone intelligent (smartphone)', 'Non renseigné', 'Non renseigné', '8517.13.00.00', 'XVI', '85', '90.00', NULL, NULL, NULL, NULL, NULL, '2025-12-13 16:13:02', '2025-12-13 16:20:36'),
-(3, 1, 'Cheval vivant (équidé)', 'Non renseigné', 'Non renseigné', '0101.10.00.00', 'I', '01', '75.00', NULL, NULL, NULL, NULL, NULL, '2025-12-13 16:24:36', '2025-12-13 16:24:36'),
-(12, 1, 'Produit de test', '1000', 'France', '1234.56.78.90', 'I', '12', '95.00', '5 %', '1 %', '18 %', 'PIÈCE', 'Test d\'insertion', '2025-12-13 17:12:07', '2025-12-13 17:12:07'),
-(13, 1, 'Lait non concentré (entier ou écrémé)', 'Non renseigné', 'Non renseigné', '0401.10.00.00', 'I', '04', '85.00', 'Non renseigné', 'Non renseigné', 'Non renseigné', 'LITRE', 'RGI 1 et notes du Chapitre 04: lait et produits de la laiterie; lait entier ou écrémé non concentré.', '2025-12-13 17:13:42', '2025-12-13 17:13:42');
+INSERT INTO `classifications` (`id`, `user_id`, `description_produit`, `valeur_produit`, `origine_produit`, `code_tarifaire`, `section`, `chapitre`, `confidence_score`, `taux_dd`, `taux_rs`, `taux_tva`, `unite_mesure`, `justification`, `date_classification`, `date_modification`, `user_query`, `user_query_hash`, `feedback_rating`) VALUES
+(1, 1, 'Voiture (véhicule automobile pour le transport de personnes)', 'Non renseigné', 'Non renseigné', '8703.23.00.00', 'XVII', '87', '92.00', NULL, NULL, NULL, NULL, NULL, '2025-12-13 16:13:02', '2025-12-13 16:20:36', NULL, NULL, NULL),
+(2, 1, 'Téléphone intelligent (smartphone)', 'Non renseigné', 'Non renseigné', '8517.13.00.00', 'XVI', '85', '90.00', NULL, NULL, NULL, NULL, NULL, '2025-12-13 16:13:02', '2025-12-13 16:20:36', NULL, NULL, NULL),
+(3, 1, 'Cheval vivant (équidé)', 'Non renseigné', 'Non renseigné', '0101.10.00.00', 'I', '01', '75.00', NULL, NULL, NULL, NULL, NULL, '2025-12-13 16:24:36', '2025-12-13 16:24:36', NULL, NULL, NULL),
+(12, 1, 'Produit de test', '1000', 'France', '1234.56.78.90', 'I', '12', '95.00', '5 %', '1 %', '18 %', 'PIÈCE', 'Test d\'insertion', '2025-12-13 17:12:07', '2025-12-13 17:12:07', NULL, NULL, NULL),
+(13, 1, 'Lait non concentré (entier ou écrémé)', 'Non renseigné', 'Non renseigné', '0401.10.00.00', 'I', '04', '85.00', 'Non renseigné', 'Non renseigné', 'Non renseigné', 'LITRE', 'RGI 1 et notes du Chapitre 04: lait et produits de la laiterie; lait entier ou écrémé non concentré.', '2025-12-13 17:13:42', '2025-12-13 17:13:42', NULL, NULL, NULL),
+(14, 1, 'ordinateur', 'Non renseigné', 'Non renseigné', '8471.49.00.00', 'XVI', '84', '90.00', 'Non renseigné', 'Non renseigné', 'Non renseigné', 'PIÈCE', 'RGI : Conforme à la définition du n° 8471.49 pour les systèmes de traitement de l\'information réunissant au moins une unité centrale et les éléments pertinents (voir Note 2 et Note 6 C) du Chapitre 84).', '2025-12-22 19:51:33', '2025-12-25 16:59:53', NULL, NULL, NULL),
+(15, 1, 'Ordinateur (ordinateur personnel) – système informatique', 'Non renseigné', 'Non renseigné', '8471.49.00.00', 'XVI', '84', '88.00', 'Non renseigné', 'Non renseigné', 'Non renseigné', 'PIÈCE', 'RGI: 2.- Au sens du n° 8471.49, on entend par systèmes les machines automatiques de traitement de l\'information ... (définition des systèmes informatiques) ; Note Section XVI / Chapitre 84 s’étend à ces dispositifs. Le libellé 8471.49 correspond à des systèmes informatiques et à leurs sous-ensembles.', '2025-12-25 16:50:55', '2025-12-25 16:50:55', NULL, NULL, NULL),
+(16, 1, 'ordinateur électronique', 'Non renseigné', 'Non renseigné', '8471.41.00.00', 'XVI', '84', '60.00', 'Non renseigné', 'Non renseigné', 'Non renseigné', 'PIÈCE', 'Déduction basée sur RGI: appareil électronique destiné au traitement de données; dans l’absence de libellé exact, classification la plus analogue est 8471.x (Chapter 84, Section XVI).', '2025-12-25 16:56:12', '2025-12-25 16:56:28', NULL, NULL, NULL);
 
 -- --------------------------------------------------------
 
@@ -158,7 +164,7 @@ CREATE TABLE `users` (
 --
 
 INSERT INTO `users` (`user_id`, `nom_user`, `identifiant_user`, `email`, `password_hash`, `statut`, `is_admin`, `date_creation`, `derniere_connexion`) VALUES
-(1, 'Administrateur Système', 'admin', 'admin@douane.ci', '$2y$10$vMJTyG/p853epmwAVWXtB.IuW9m1edNeb3KCG3KyAKcYUU9.8WK02', 'actif', 1, '2025-12-13 13:58:38', '2025-12-13 18:08:09'),
+(1, 'Administrateur Système', 'admin', 'admin@douane.ci', '$2y$10$vMJTyG/p853epmwAVWXtB.IuW9m1edNeb3KCG3KyAKcYUU9.8WK02', 'actif', 1, '2025-12-13 13:58:38', '2025-12-25 16:50:01'),
 (2, 'Test User', 'test.user', 'test.user@douane.ci', '$2b$12$aA0Im/GKA/.mgV/zxAS.2.ZaPCNcolGOiv59OhPuQPr75DcKMzXBO', 'actif', 0, '2025-12-13 17:16:49', NULL),
 (3, 'Test Admin', 'test.admin', 'test.admin@douane.ci', '$2b$12$h3y17UksjNqfhLXyEv93NOn5xkHc4ymqobOOyhhlXILVE1GjBbq5a', 'actif', 1, '2025-12-13 17:16:50', NULL),
 (4, 'samuel', '1234567X', 'samuel@douanier.ci', '$2b$12$ZEEO9LRynrdVx/bBXSO5E.hrEYpnHw3ns5pjA2ilMhVJPdHH9trPW', 'actif', 1, '2025-12-13 17:18:05', NULL);
@@ -193,7 +199,9 @@ ALTER TABLE `classifications`
   ADD KEY `idx_user` (`user_id`),
   ADD KEY `idx_date` (`date_classification`),
   ADD KEY `idx_code_tarifaire` (`code_tarifaire`),
-  ADD KEY `idx_section` (`section`);
+  ADD KEY `idx_section` (`section`),
+  ADD KEY `idx_query_hash` (`user_query_hash`),
+  ADD KEY `idx_feedback_rating` (`feedback_rating`);
 
 --
 -- Indexes for table `historique`
@@ -221,7 +229,7 @@ ALTER TABLE `users`
 -- AUTO_INCREMENT for table `classifications`
 --
 ALTER TABLE `classifications`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=14;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=17;
 
 --
 -- AUTO_INCREMENT for table `historique`

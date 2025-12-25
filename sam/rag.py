@@ -287,9 +287,26 @@ def search_faiss_index(query, emb, index, k=5):
     return indices, distances
 
 # Use the LLM API
-def use_llm(prompt_text):
+def use_llm(prompt_text, user_query=None):
+    """
+    Utilise le LLM pour générer une réponse
+    user_query: La requête originale de l'utilisateur (pour validation préventive)
+    """
     # Vérifier le cache avant d'appeler l'API
     cache_key = hashlib.sha256(prompt_text.encode('utf-8')).hexdigest()
+    
+    # Vérifier si le cache doit être invalidé (requêtes similaires notées négativement)
+    if user_query:
+        try:
+            from feedback_db import should_invalidate_cache
+            if should_invalidate_cache(user_query):
+                print("⚠️ Cache invalidé: requête similaire notée négativement")
+                # Invalider le cache pour cette requête
+                if cache_key in _api_cache:
+                    del _api_cache[cache_key]
+        except Exception as e:
+            print(f"Erreur lors de la vérification du cache: {e}")
+    
     if cache_key in _api_cache:
         print("✅ Réponse récupérée depuis le cache")
         return _api_cache[cache_key]
@@ -410,9 +427,35 @@ def build_context_for_query(query, chunks, emb, index):
 
 
 def process_user_input(user_input, chunks, emb, index):
+    """
+    Traite l'entrée utilisateur avec validation préventive
+    """
     queries = split_user_queries(user_input)
     if not queries:
-        return "Merci de préciser au moins une marchandise à classifier."
+        return "Merci de préciser au moins une marchandise à classifier.", None
+
+    # VALIDATION PRÉVENTIVE: Vérifier les feedbacks négatifs similaires
+    warning_message = None
+    try:
+        from feedback_db import check_similar_negative_feedbacks
+        similar_feedbacks = check_similar_negative_feedbacks(user_input, similarity_threshold=0.6)
+        
+        if similar_feedbacks:
+            # Construire un message d'avertissement
+            feedback_count = sum(f['count'] for f in similar_feedbacks)
+            warning_message = (
+                f"⚠️ ATTENTION: {feedback_count} requête(s) similaire(s) ont reçu des notes négatives récemment. "
+                f"Veuillez vérifier attentivement la réponse."
+            )
+            print(f"⚠️ Validation préventive: {len(similar_feedbacks)} feedback(s) négatif(s) similaire(s) détecté(s)")
+            
+            # Ajouter un contexte d'avertissement dans le prompt
+            warning_context = "\n\n⚠️ ATTENTION IMPORTANTE: Des requêtes similaires ont reçu des feedbacks négatifs. "
+            warning_context += "Sois particulièrement attentif à la précision et à la justesse de ta réponse. "
+            warning_context += "Vérifie bien les codes tarifaires, les taux et les justifications.\n"
+    except Exception as e:
+        print(f"Erreur lors de la validation préventive: {e}")
+        warning_message = None
 
     prompt_sections = []
     for i, query in enumerate(queries, start=1):
@@ -422,13 +465,23 @@ def process_user_input(user_input, chunks, emb, index):
         )
 
     combined_context = "\n\n".join(prompt_sections)
+    
+    # Ajouter l'avertissement au prompt si nécessaire
+    warning_prefix = warning_context if warning_message else ""
+    
     enriched_prompt = (
+        warning_prefix +
         "Le douanier peut avoir fourni plusieurs marchandises. "
         "Analyse chaque bloc ci-dessous et produis une réponse structurée avec, pour chaque marchandise, "
         "la position tarifaire, le taux d'imposition et les détails pertinents.\n\n"
         f"{combined_context}\n\nDemande initiale du douanier:\n{user_input}"
     )
+    
     print("start the send of the question")
-    response = use_llm(enriched_prompt)
+    # Passer user_input pour la validation du cache
+    response = use_llm(enriched_prompt, user_query=user_input)
     print("finish the send of the question")
-    return response
+    
+    # Retourner la réponse avec le message d'avertissement si nécessaire
+    # Le message d'avertissement sera géré dans app.py
+    return response, warning_message

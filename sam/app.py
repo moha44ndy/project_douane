@@ -1469,18 +1469,36 @@ def display_main_content():
         # Réinitialiser l'historique pour n'afficher que la requête en cours
         st.session_state["messages"] = []
         st.session_state["messages"].append(("Vous", user_message))
-        response = process_user_input(
+        
+        # Traiter la requête avec validation préventive
+        result = process_user_input(
             user_message, 
             st.session_state["chunks"], 
             st.session_state["emb"], 
             st.session_state["index"], 
         )
+        
+        # Gérer le retour (peut être un tuple ou une string pour compatibilité)
+        if isinstance(result, tuple):
+            response, warning_message = result
+            if warning_message:
+                st.warning(warning_message)
+                # Stocker le message d'avertissement pour l'afficher avec la réponse
+                st.session_state["_warning_message"] = warning_message
+        else:
+            response = result
+            warning_message = None
 
         parsed_payload, parse_error = parse_structured_response(response)
         if parsed_payload:
             formatted_answer = format_response_markdown(parsed_payload)
             # Générer un ID unique pour cette réponse
             response_id = f"response_{int(time.time() * 1000)}"
+            
+            # Stocker la requête et la réponse pour les feedbacks
+            st.session_state[f"query_{response_id}"] = user_message
+            st.session_state[f"response_text_{response_id}"] = response
+            
             st.session_state["messages"].append(("RAG", formatted_answer, response_id))
             new_entries = build_table_entries(parsed_payload.get("classifications", []))
             if new_entries:
@@ -1497,17 +1515,44 @@ def display_main_content():
                     # Forcer l'affichage immédiat avant rerun
                     with st.spinner("💾 Sauvegarde en cours..."):
                         success, message = save_classifications(new_entries, user_id)
-                    
-                    if not success:
-                        st.error(f"⚠️ Erreur lors de la sauvegarde: {message}")
-                        # Stocker l'erreur dans la session pour l'afficher après rerun
-                        st.session_state["_save_error"] = message
-                        # Ne pas faire rerun si erreur pour voir le message
-                        st.stop()
-                    else:
-                        st.success(f"✅ {message}")
-                        # Stocker le succès dans la session
-                        st.session_state["_save_success"] = message
+                        
+                        # Récupérer les IDs des classifications créées pour les feedbacks
+                        if success:
+                            try:
+                                from database import get_db
+                                db = get_db()
+                                if db.test_connection():
+                                    # Rechercher les classifications récemment créées par cet utilisateur
+                                    # avec les descriptions correspondantes
+                                    descriptions = [e.get('product', {}).get('description', '') for e in new_entries]
+                                    if descriptions:
+                                        placeholders = ','.join(['%s'] * len(descriptions))
+                                        query = f"""
+                                        SELECT id FROM classifications 
+                                        WHERE user_id = %s 
+                                        AND description_produit IN ({placeholders})
+                                        AND date_classification >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+                                        ORDER BY id DESC
+                                        LIMIT %s
+                                        """
+                                        results = db.execute_query(query, (user_id, *descriptions, len(descriptions)))
+                                        if results:
+                                            classification_ids = [row.get('id') for row in results if row.get('id')]
+                                            if classification_ids:
+                                                st.session_state[f"classification_ids_{response_id}"] = classification_ids
+                            except Exception as e:
+                                print(f"Erreur lors de la récupération des IDs: {e}")
+                        
+                        if not success:
+                            st.error(f"⚠️ Erreur lors de la sauvegarde: {message}")
+                            # Stocker l'erreur dans la session pour l'afficher après rerun
+                            st.session_state["_save_error"] = message
+                            # Ne pas faire rerun si erreur pour voir le message
+                            st.stop()
+                        else:
+                            st.success(f"✅ {message}")
+                            # Stocker le succès dans la session
+                            st.session_state["_save_success"] = message
                 else:
                     st.warning("⚠️ Utilisateur non identifié. Les données sont enregistrées localement mais pas dans la base de données.")
                     st.write(f"🔍 Debug: session_state['user'] = {st.session_state.get('user')}")
@@ -1515,6 +1560,11 @@ def display_main_content():
         else:
             fallback_text = response or f"⚠️ {parse_error}"
             response_id = f"response_{int(time.time() * 1000)}"
+            
+            # Stocker la requête et la réponse pour les feedbacks même en cas d'erreur
+            st.session_state[f"query_{response_id}"] = user_message
+            st.session_state[f"response_text_{response_id}"] = fallback_text
+            
             st.session_state["messages"].append(("RAG", fallback_text, response_id))
 
         spinner_placeholder.empty()
@@ -1579,8 +1629,27 @@ def display_main_content():
                         if current_rating == "up":
                             # Retirer la note si déjà noté positivement
                             del st.session_state["response_ratings"][response_id]
+                            # Supprimer le feedback de la base de données
+                            try:
+                                from feedback_db import remove_feedback
+                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
+                                if classification_ids:
+                                    remove_feedback(classification_ids)
+                            except Exception as e:
+                                print(f"Erreur lors de la suppression du feedback: {e}")
                         else:
                             st.session_state["response_ratings"][response_id] = "up"
+                            # Sauvegarder le feedback positif
+                            try:
+                                from feedback_db import save_feedback
+                                user_query = st.session_state.get(f"query_{response_id}", "")
+                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
+                                if user_query and classification_ids:
+                                    success, message = save_feedback(user_query, classification_ids, "up")
+                                    if success:
+                                        st.success("✅ Note positive enregistrée")
+                            except Exception as e:
+                                print(f"Erreur lors de la sauvegarde du feedback: {e}")
                         st.rerun()
                 
                 with col2:
@@ -1593,8 +1662,27 @@ def display_main_content():
                         if current_rating == "down":
                             # Retirer la note si déjà noté négativement
                             del st.session_state["response_ratings"][response_id]
+                            # Supprimer le feedback de la base de données
+                            try:
+                                from feedback_db import remove_feedback
+                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
+                                if classification_ids:
+                                    remove_feedback(classification_ids)
+                            except Exception as e:
+                                print(f"Erreur lors de la suppression du feedback: {e}")
                         else:
                             st.session_state["response_ratings"][response_id] = "down"
+                            # Sauvegarder le feedback négatif (important pour l'amélioration de l'IA)
+                            try:
+                                from feedback_db import save_feedback
+                                user_query = st.session_state.get(f"query_{response_id}", "")
+                                classification_ids = st.session_state.get(f"classification_ids_{response_id}", [])
+                                if user_query and classification_ids:
+                                    success, message = save_feedback(user_query, classification_ids, "down")
+                                    if success:
+                                        st.warning("⚠️ Note négative enregistrée. Cette information aidera à améliorer le système.")
+                            except Exception as e:
+                                print(f"Erreur lors de la sauvegarde du feedback: {e}")
                         st.rerun()
         
         # Bouton pour fermer l'historique avec style moderne
