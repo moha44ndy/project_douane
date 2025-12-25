@@ -296,6 +296,86 @@ def create_user(nom_user: str, identifiant_user: str, email: str,
     return False, "Impossible de créer l'utilisateur. Base de données non disponible."
 
 
+def update_user(user_id: int, nom_user: str = None, identifiant_user: str = None, 
+                email: str = None, password: str = None, statut: str = None, 
+                is_admin: bool = None) -> tuple[bool, str]:
+    """
+    Met à jour les informations d'un utilisateur existant.
+    Retourne (success, message)
+    """
+    if not USE_DATABASE:
+        return False, "Base de données non disponible. Veuillez configurer MySQL."
+    
+    try:
+        db = get_db()
+        if not db.test_connection():
+            return False, "Erreur de connexion à la base de données."
+        
+        # Vérifier que l'utilisateur existe
+        check_query = "SELECT * FROM users WHERE user_id = %s"
+        existing_user = db.execute_query(check_query, (user_id,))
+        if not existing_user:
+            return False, "Utilisateur introuvable."
+        
+        existing_user = existing_user[0]
+        
+        # Construire la requête de mise à jour dynamiquement
+        update_fields = []
+        params = []
+        
+        if nom_user is not None:
+            update_fields.append("nom_user = %s")
+            params.append(nom_user)
+        
+        if identifiant_user is not None:
+            # Vérifier que l'identifiant n'est pas déjà utilisé par un autre utilisateur
+            check_identifiant = "SELECT user_id FROM users WHERE identifiant_user = %s AND user_id != %s"
+            existing_identifiant = db.execute_query(check_identifiant, (identifiant_user, user_id))
+            if existing_identifiant:
+                return False, "Cet identifiant est déjà utilisé par un autre utilisateur."
+            update_fields.append("identifiant_user = %s")
+            params.append(identifiant_user)
+        
+        if email is not None:
+            # Vérifier que l'email n'est pas déjà utilisé par un autre utilisateur
+            check_email = "SELECT user_id FROM users WHERE email = %s AND user_id != %s"
+            existing_email = db.execute_query(check_email, (email, user_id))
+            if existing_email:
+                return False, "Cet email est déjà utilisé par un autre utilisateur."
+            update_fields.append("email = %s")
+            params.append(email)
+        
+        if password is not None and password.strip():
+            # Vérifier la longueur du mot de passe
+            if len(password) < 6:
+                return False, "Le mot de passe doit contenir au moins 6 caractères."
+            update_fields.append("password_hash = %s")
+            params.append(hash_password(password))
+        
+        if statut is not None:
+            update_fields.append("statut = %s")
+            params.append(statut)
+        
+        if is_admin is not None:
+            update_fields.append("is_admin = %s")
+            params.append(1 if is_admin else 0)
+        
+        if not update_fields:
+            return False, "Aucune modification à apporter."
+        
+        # Ajouter user_id aux paramètres pour la clause WHERE
+        params.append(user_id)
+        
+        # Construire et exécuter la requête
+        update_query = f"UPDATE users SET {', '.join(update_fields)} WHERE user_id = %s"
+        db.execute_update(update_query, tuple(params))
+        
+        return True, f"Utilisateur mis à jour avec succès (ID: {user_id})"
+        
+    except Exception as e:
+        return False, f"Erreur lors de la mise à jour de l'utilisateur : {str(e)}"
+
+
 def get_current_user() -> Optional[Dict[str, Any]]:
     """Retourne l'utilisateur actuellement connecté depuis la session"""
     # Essayer de restaurer la session depuis les cookies si elle n'existe pas

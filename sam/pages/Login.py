@@ -46,6 +46,23 @@ st.markdown(f"""
         footer {{visibility: hidden;}}
         header {{visibility: hidden;}}
         
+        /* Cacher complètement la sidebar sur la page Login */
+        [data-testid="stSidebar"] {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
+        /* Cacher le bouton pour ouvrir la sidebar */
+        button[kind="header"] {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
+        [data-testid="baseButton-header"] {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
         /* Boîte de bienvenue */
         .welcome-box {{
             background: white;

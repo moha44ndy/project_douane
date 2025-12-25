@@ -53,6 +53,61 @@ st.markdown(f"""
         /* Cacher les éléments Streamlit par défaut */
         #MainMenu {{visibility: hidden;}}
         footer {{visibility: hidden;}}
+        
+        /* Cacher spécifiquement les liens Login et Profil dans la sidebar */
+        [data-testid="stSidebarNav"] a[href*="Login"],
+        [data-testid="stSidebarNav"] a[href*="login"],
+        [data-testid="stSidebarNav"] a[href*="/Login"],
+        [data-testid="stSidebarNav"] a[href*="/login"],
+        [data-testid="stSidebarNav"] a[href*="Profil"],
+        [data-testid="stSidebarNav"] a[href*="profil"],
+        [data-testid="stSidebarNav"] a[href*="/Profil"],
+        [data-testid="stSidebarNav"] a[href*="/profil"],
+        [data-testid="stSidebarNav"] li:has(a[href*="Login"]),
+        [data-testid="stSidebarNav"] li:has(a[href*="login"]),
+        [data-testid="stSidebarNav"] li:has(a[href*="Profil"]),
+        [data-testid="stSidebarNav"] li:has(a[href*="profil"]) {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
+        /* Mettre chaque bouton de navigation dans un fond or */
+        [data-testid="stSidebarNav"] li {{
+            background: {DOUANE_OR} !important;
+            margin: 0.5rem 0 !important;
+            border-radius: 10px !important;
+            padding: 0.5rem !important;
+            border: 2px solid #2d5016 !important;
+        }}
+        
+        [data-testid="stSidebarNav"] a {{
+            color: {DOUANE_VERT} !important;
+            font-weight: 600 !important;
+            display: block !important;
+            padding: 0.5rem !important;
+            border-radius: 8px !important;
+        }}
+        
+        [data-testid="stSidebarNav"] a:hover {{
+            background-color: #FFA500 !important;
+            color: {DOUANE_VERT} !important;
+        }}
+        
+        [data-testid="stSidebarNav"] a[aria-current="page"] {{
+            background-color: {DOUANE_VERT} !important;
+            color: white !important;
+        }}
+        
+        /* Style pour le conteneur utilisateur */
+        .user-info-container {{
+            background: white !important;
+            padding: 1.5rem !important;
+            border-radius: 15px !important;
+            margin: 1rem 0 !important;
+            border: 2px solid {DOUANE_VERT} !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
+        }}
+        
         /* Header Streamlit visible */
         header[data-testid="stHeader"] {{
             display: flex !important;
@@ -408,10 +463,26 @@ def main():
         return
     
     # S'assurer que l'identifiant est dans les query params pour la persistance
-    from auth_db import get_current_user
+    from auth_db import get_current_user, logout
     current_user = get_current_user()
     if current_user and not st.query_params.get('user_id'):
         st.query_params['user_id'] = current_user.get('identifiant_user', '')
+    
+    # Afficher les informations de l'utilisateur dans la sidebar
+    if current_user:
+        # Conteneur avec fond blanc pour les informations utilisateur
+        st.sidebar.markdown(f"""
+            <div class="user-info-container">
+                <h3 style="color: {DOUANE_VERT}; margin-top: 0; margin-bottom: 0.5rem;">👤 {current_user.get('nom_user', 'Utilisateur')}</h3>
+                <p style="color: #666; margin: 0.25rem 0; font-size: 0.9rem;">*{current_user.get('email', '')}*</p>
+                {"<p style='color: " + DOUANE_OR + "; margin: 0.5rem 0 0 0; font-weight: 600;'>👑 Administrateur</p>" if current_user.get('is_admin') else ""}
+            </div>
+        """, unsafe_allow_html=True)
+        
+        if st.sidebar.button("👤 Mon Profil", use_container_width=True):
+            st.switch_page("pages/Profil.py")
+        if st.sidebar.button("🚪 Déconnexion", use_container_width=True):
+            logout()
     
     # Header
     st.markdown(f"""

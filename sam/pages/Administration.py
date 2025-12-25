@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from pathlib import Path
 from auth_db import (
-    load_users, save_users, create_user, update_user,
+    load_users, save_users, create_user,
     require_admin, get_current_user, logout, initialize_default_users
 )
 from classifications_db import load_classifications
@@ -58,6 +58,51 @@ st.markdown(f"""
         /* Cacher les éléments Streamlit par défaut */
         #MainMenu {{visibility: hidden;}}
         footer {{visibility: hidden;}}
+        
+        /* Cacher spécifiquement les liens Login et Profil dans la sidebar */
+        [data-testid="stSidebarNav"] a[href*="Login"],
+        [data-testid="stSidebarNav"] a[href*="login"],
+        [data-testid="stSidebarNav"] a[href*="/Login"],
+        [data-testid="stSidebarNav"] a[href*="/login"],
+        [data-testid="stSidebarNav"] a[href*="Profil"],
+        [data-testid="stSidebarNav"] a[href*="profil"],
+        [data-testid="stSidebarNav"] a[href*="/Profil"],
+        [data-testid="stSidebarNav"] a[href*="/profil"],
+        [data-testid="stSidebarNav"] li:has(a[href*="Login"]),
+        [data-testid="stSidebarNav"] li:has(a[href*="login"]),
+        [data-testid="stSidebarNav"] li:has(a[href*="Profil"]),
+        [data-testid="stSidebarNav"] li:has(a[href*="profil"]) {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
+        /* Mettre chaque bouton de navigation dans un fond or */
+        [data-testid="stSidebarNav"] li {{
+            background: {DOUANE_OR} !important;
+            margin: 0.5rem 0 !important;
+            border-radius: 10px !important;
+            padding: 0.5rem !important;
+            border: 2px solid #2d5016 !important;
+        }}
+        
+        [data-testid="stSidebarNav"] a {{
+            color: {DOUANE_VERT} !important;
+            font-weight: 600 !important;
+            display: block !important;
+            padding: 0.5rem !important;
+            border-radius: 8px !important;
+        }}
+        
+        [data-testid="stSidebarNav"] a:hover {{
+            background-color: #FFA500 !important;
+            color: {DOUANE_VERT} !important;
+        }}
+        
+        [data-testid="stSidebarNav"] a[aria-current="page"] {{
+            background-color: {DOUANE_VERT} !important;
+            color: white !important;
+        }}
+        
         /* Header Streamlit visible */
         header[data-testid="stHeader"] {{
             display: flex !important;
@@ -268,6 +313,26 @@ st.markdown(f"""
             background: linear-gradient(180deg, {DOUANE_VERT} 0%, #1a472a 50%, #2d5016 100%) !important;
             backdrop-filter: blur(20px) saturate(180%);
             -webkit-backdrop-filter: blur(20px) saturate(180%);
+        }}
+        
+        /* Fond blanc pour la section utilisateur dans la sidebar */
+        [data-testid="stSidebar"] > div:has(h3:has-text("👤")),
+        [data-testid="stSidebar"] > div:has-text("👤") {{
+            background: white !important;
+            padding: 1rem !important;
+            border-radius: 15px !important;
+            margin: 1rem 0 !important;
+            border: 2px solid {DOUANE_VERT} !important;
+        }}
+        
+        /* Style pour le conteneur utilisateur */
+        .user-info-container {{
+            background: white !important;
+            padding: 1.5rem !important;
+            border-radius: 15px !important;
+            margin: 1rem 0 !important;
+            border: 2px solid {DOUANE_VERT} !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
         }}
         
         /* Bouton pour ouvrir la sidebar */
@@ -597,11 +662,18 @@ def main():
         # S'assurer que l'identifiant est dans les query params pour la persistance
         if not st.query_params.get('user_id'):
             st.query_params['user_id'] = current_user.get('identifiant_user', '')
-        st.sidebar.markdown(f"### 👤 Connecté en tant que")
-        st.sidebar.markdown(f"**{current_user.get('nom_user', 'Utilisateur')}**")
-        st.sidebar.markdown(f"*{current_user.get('email', '')}*")
-        if current_user.get('is_admin'):
-            st.sidebar.markdown("👑 **Administrateur**")
+        
+        # Conteneur avec fond blanc pour les informations utilisateur
+        st.sidebar.markdown(f"""
+            <div class="user-info-container">
+                <h3 style="color: {DOUANE_VERT}; margin-top: 0; margin-bottom: 0.5rem;">👤 {current_user.get('nom_user', 'Utilisateur')}</h3>
+                <p style="color: #666; margin: 0.25rem 0; font-size: 0.9rem;">*{current_user.get('email', '')}*</p>
+                {"<p style='color: " + DOUANE_OR + "; margin: 0.5rem 0 0 0; font-weight: 600;'>👑 Administrateur</p>" if current_user.get('is_admin') else ""}
+            </div>
+        """, unsafe_allow_html=True)
+        
+        if st.sidebar.button("👤 Mon Profil", use_container_width=True):
+            st.switch_page("pages/Profil.py")
         if st.sidebar.button("🚪 Déconnexion", use_container_width=True):
             logout()
     
@@ -836,15 +908,6 @@ def main():
                 <h2 class="section-title" style="margin-top: 0; margin-bottom: 1.5rem; padding-top: 0;">👥 Gestion des Utilisateurs</h2>
         """, unsafe_allow_html=True)
         
-        # Bouton pour activer/désactiver le mode modification (dans le conteneur blanc, avant le tableau)
-        edit_mode = st.session_state.get('edit_mode', False)
-        if st.button("✏️ Mode Modification" if not edit_mode else "❌ Désactiver Modification", 
-                    use_container_width=True, key="toggle_edit_mode"):
-            st.session_state['edit_mode'] = not edit_mode
-            if 'edit_user_id' in st.session_state:
-                del st.session_state['edit_user_id']
-            st.rerun()
-        
         # Ajouter JavaScript pour déclencher un rerun automatique après la saisie
         if 'last_search_term' not in st.session_state:
             st.session_state.last_search_term = ""
@@ -919,66 +982,7 @@ def main():
                 {table_html}
             </div>
             <script>
-                // Définir la fonction selectUser globalement
-                window.selectUser = function(userId) {{
-                    console.log('Clic sur utilisateur:', userId);
-                    console.log('Mode édition actif:', {json.dumps(edit_mode)});
-                    // Utiliser query params pour passer l'ID de l'utilisateur
-                    const url = new URL(window.location);
-                    url.searchParams.set('edit_user_id', userId.toString());
-                    console.log('URL avec edit_user_id:', url.toString());
-                    // Recharger la page avec les nouveaux query params
-                    window.location.href = url.toString();
-                }};
-                
-                // Réattacher les événements après le chargement
-                function attachClickEvents() {{
-                    const rows = document.querySelectorAll('tr[id^="user_row_"]');
-                    const editModeActive = {json.dumps(edit_mode)};
-                    console.log('Lignes trouvées:', rows.length, 'Mode édition:', editModeActive);
-                    rows.forEach(row => {{
-                        const userId = row.getAttribute('data-user-id');
-                        const bgColor = row.getAttribute('data-bg-color') || '#f5f5f5';
-                        
-                        // Supprimer les anciens listeners en clonant le nœud (cela supprime tous les event listeners)
-                        const newRow = row.cloneNode(true);
-                        row.parentNode.replaceChild(newRow, row);
-                        const currentRow = newRow;
-                        
-                        if (editModeActive) {{
-                            // Ajouter les event listeners pour le mode édition
-                            currentRow.addEventListener('click', function(e) {{
-                                e.preventDefault();
-                                e.stopPropagation();
-                                console.log('Clic détecté sur ligne', userId);
-                                window.selectUser(userId);
-                            }});
-                            
-                            // Gérer le survol
-                            currentRow.addEventListener('mouseenter', function() {{
-                                this.style.background = '#e8f5e9';
-                            }});
-                            currentRow.addEventListener('mouseleave', function() {{
-                                this.style.background = bgColor;
-                            }});
-                            
-                            currentRow.style.cursor = 'pointer';
-                        }} else {{
-                            currentRow.style.cursor = 'default';
-                        }}
-                    }});
-                }}
-                
-                // Exécuter après le chargement du DOM
-                if (document.readyState === 'loading') {{
-                    document.addEventListener('DOMContentLoaded', attachClickEvents);
-                }} else {{
-                    attachClickEvents();
-                }}
-                
-                // Réexécuter après un court délai pour s'assurer que le tableau est chargé
-                setTimeout(attachClickEvents, 500);
-                setTimeout(attachClickEvents, 1000);
+                // Fonctionnalité de modification supprimée - le tableau est en lecture seule
             </script>
             <style>
                 /* Positionner le champ de recherche juste en dessous du titre dans le conteneur blanc */
@@ -1015,173 +1019,7 @@ def main():
             </style>
         """, unsafe_allow_html=True)
         
-        # Récupérer l'ID de l'utilisateur depuis les query params (AVANT de fermer le conteneur)
-        edit_user_id_from_url = st.query_params.get('edit_user_id', None)
-        if edit_user_id_from_url:
-            try:
-                st.session_state['edit_user_id'] = int(edit_user_id_from_url)
-                # Ne pas nettoyer tous les query params, seulement edit_user_id pour garder user_id
-                # Mais on le garde pour cette exécution, on le nettoiera après
-            except (ValueError, TypeError):
-                pass
-        
-        # Modal de modification d'utilisateur (doit être APRÈS la récupération des query params)
-        edit_user_id = st.session_state.get('edit_user_id', None)
-        
-        # Nettoyer les query params edit_user_id après avoir lu la valeur (pour éviter qu'il reste dans l'URL)
-        if edit_user_id_from_url and 'edit_user_id' in st.query_params:
-            del st.query_params['edit_user_id']
-        
-        if edit_user_id and edit_mode:
-            # Trouver l'utilisateur à modifier
-            user_to_edit = next((u for u in users if u.get('user_id') == int(edit_user_id)), None)
-            
-            if user_to_edit:
-                # Créer un overlay modal avec JavaScript pour le positionnement
-                st.markdown(f"""
-                <div id="editUserModalOverlay" style="
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background: rgba(0, 0, 0, 0.6);
-                    z-index: 9999;
-                    display: block;
-                " onclick="closeEditModal()"></div>
-                <script>
-                    function closeEditModal() {{
-                        // Supprimer edit_user_id des query params et recharger
-                        const url = new URL(window.location);
-                        url.searchParams.delete('edit_user_id');
-                        window.location.href = url.toString();
-                    }}
-                </script>
-                """, unsafe_allow_html=True)
-                
-                # Style pour positionner le formulaire dans le modal
-                st.markdown(f"""
-                <style>
-                    /* Overlay modal */
-                    #editUserModalOverlay {{
-                        position: fixed !important;
-                        top: 0 !important;
-                        left: 0 !important;
-                        width: 100% !important;
-                        height: 100% !important;
-                        background: rgba(0, 0, 0, 0.6) !important;
-                        z-index: 9999 !important;
-                    }}
-                    /* Positionner le conteneur du formulaire dans le modal */
-                    div:has(> form[data-testid="stForm"]:has(button[key*="edit_user_form"])) {{
-                        position: fixed !important;
-                        top: 50% !important;
-                        left: 50% !important;
-                        transform: translate(-50%, -50%) !important;
-                        background: white !important;
-                        padding: 2rem !important;
-                        border-radius: 20px !important;
-                        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
-                        border: 4px solid {DOUANE_VERT} !important;
-                        max-width: 800px !important;
-                        width: 90% !important;
-                        max-height: 90vh !important;
-                        overflow-y: auto !important;
-                        z-index: 10001 !important;
-                    }}
-                    /* Cibler aussi le formulaire directement */
-                    form[data-testid="stForm"]:has(button[key*="edit_user_form"]) {{
-                        background: white !important;
-                        padding: 1rem !important;
-                    }}
-                </style>
-                """, unsafe_allow_html=True)
-                
-                # Conteneur pour le formulaire (sera positionné dans le modal via CSS)
-                with st.container():
-                    st.markdown(f"""
-                        <h2 style="color: {DOUANE_VERT}; font-family: 'Fredoka', sans-serif; margin-top: 0; margin-bottom: 1.5rem;">✏️ Modifier l'utilisateur : {user_to_edit.get('nom_user', 'N/A')}</h2>
-                    """, unsafe_allow_html=True)
-                    
-                    with st.form("edit_user_form", clear_on_submit=False):
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            new_nom = st.text_input("Nom complet *", value=user_to_edit.get('nom_user', ''), key="edit_nom")
-                            new_identifiant = st.text_input("Identifiant *", value=user_to_edit.get('identifiant_user', ''), key="edit_identifiant")
-                        
-                        with col2:
-                            new_email = st.text_input("Email *", value=user_to_edit.get('email', ''), key="edit_email")
-                            new_password = st.text_input(
-                                "Nouveau mot de passe", 
-                                type="password", 
-                                key="edit_password",
-                                help="Laisser vide pour conserver le mot de passe actuel. Minimum 6 caractères si renseigné.",
-                                placeholder="Laisser vide pour ne pas changer"
-                            )
-                        
-                        col3, col4 = st.columns(2)
-                        with col3:
-                            new_statut = st.selectbox("Statut *", ["actif", "inactif"], index=0 if user_to_edit.get('statut') == 'actif' else 1, key="edit_statut")
-                        with col4:
-                            new_is_admin = st.checkbox("👑 Accorder les privilèges d'administrateur", value=bool(user_to_edit.get('is_admin')), key="edit_is_admin")
-                        
-                        col_submit, col_cancel = st.columns([1, 1])
-                        with col_submit:
-                            submit_edit = st.form_submit_button("✅ Enregistrer les modifications", use_container_width=True, key="edit_user_form-submit")
-                        with col_cancel:
-                            cancel_edit = st.form_submit_button("❌ Annuler", use_container_width=True, key="edit_user_form-cancel")
-                        
-                        # Traiter les actions du formulaire (doit être DANS le bloc with st.form())
-                        if cancel_edit:
-                            if 'edit_user_id' in st.session_state:
-                                del st.session_state['edit_user_id']
-                            # Nettoyer aussi les query params
-                            if 'edit_user_id' in st.query_params:
-                                del st.query_params['edit_user_id']
-                            st.rerun()
-                        
-                        if submit_edit:
-                            # Valider les champs obligatoires
-                            if not new_nom or not new_identifiant or not new_email:
-                                st.error("⚠️ Veuillez remplir tous les champs obligatoires (marqués d'un *)")
-                            else:
-                                # Valider le mot de passe s'il est fourni
-                                password_to_update = None
-                                password_error = False
-                                
-                                if new_password and new_password.strip():
-                                    if len(new_password.strip()) < 6:
-                                        st.error("⚠️ Le mot de passe doit contenir au moins 6 caractères.")
-                                        password_error = True
-                                    else:
-                                        password_to_update = new_password.strip()
-                                
-                                # Mettre à jour l'utilisateur seulement si la validation du mot de passe est OK
-                                if not password_error:
-                                    success, message = update_user(
-                                        user_id=int(edit_user_id),
-                                        nom_user=new_nom.strip(),
-                                        identifiant_user=new_identifiant.strip(),
-                                        email=new_email.strip(),
-                                        password=password_to_update,
-                                        statut=new_statut,
-                                        is_admin=new_is_admin
-                                    )
-                                    
-                                    if success:
-                                        st.success(f"✅ {message}")
-                                        # Nettoyer la session state
-                                        if 'edit_user_id' in st.session_state:
-                                            del st.session_state['edit_user_id']
-                                        # Nettoyer aussi les query params
-                                        if 'edit_user_id' in st.query_params:
-                                            del st.query_params['edit_user_id']
-                                        import time
-                                        time.sleep(0.5)
-                                        st.rerun()
-                                    else:
-                                        st.error(f"❌ {message}")
+        # Fonctionnalité de modification supprimée
         
         # Cacher le DataFrame Streamlit car on utilise le tableau HTML
         if len(filtered_users) > 0:
