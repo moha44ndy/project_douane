@@ -180,62 +180,13 @@ class Database:
                 host = config['host']
                 original_hostname = host  # Sauvegarder le hostname original
                 
-                # Pour le pooling Supabase, ajuster le user si nécessaire (AVANT la résolution IPv4)
+                # Pour le pooling Supabase, NE PAS ajuster automatiquement le user
+                # Le user doit être configuré exactement comme dans Supabase
                 if 'pooler.supabase.com' in host:
                     current_user = config.get('user', 'postgres')
-                    print(f"🔍 Pooling détecté - Host: {host}, User actuel: {current_user}")
-                    
-                    # Pour le pooling, essayer d'abord avec juste 'postgres' si le user contient le projet ID
-                    # Certains poolers Supabase utilisent juste 'postgres' et le projet ID est dans le hostname
-                    if '.' in current_user and current_user.startswith('postgres.'):
-                        # Essayer avec juste 'postgres' pour le pooling
-                        print(f"🔄 Tentative avec user simplifié pour pooling: postgres")
-                        config['user'] = 'postgres'
-                        current_user = 'postgres'
-                    
-                    # Si le user est juste 'postgres', on peut essayer d'ajouter le projet ID
-                    if current_user == 'postgres' or '.' not in current_user:
-                        project_id = None
-                        
-                        # Méthode 1: Extraire depuis le hostname original dans les secrets
-                        try:
-                            if hasattr(st, 'secrets') and 'database' in st.secrets:
-                                db_secrets = st.secrets['database']
-                                original_host = db_secrets.get('host', '')
-                                if 'db.' in original_host and '.supabase.co' in original_host:
-                                    project_id = original_host.split('db.')[1].split('.supabase.co')[0]
-                                    print(f"📋 Projet ID extrait depuis hostname: {project_id}")
-                        except Exception as e:
-                            print(f"⚠️ Erreur extraction projet ID depuis hostname: {e}")
-                        
-                        # Méthode 2: Extraire depuis connection_string si disponible
-                        if not project_id:
-                            try:
-                                if hasattr(st, 'secrets') and 'database' in st.secrets:
-                                    db_secrets = st.secrets['database']
-                                    if 'connection_string' in db_secrets:
-                                        conn_str = db_secrets['connection_string']
-                                        if 'db.' in conn_str:
-                                            parts = conn_str.split('db.')
-                                            if len(parts) > 1:
-                                                project_id = parts[1].split('.supabase.co')[0]
-                                                print(f"📋 Projet ID extrait depuis connection_string: {project_id}")
-                            except Exception as e:
-                                print(f"⚠️ Erreur extraction projet ID depuis connection_string: {e}")
-                        
-                        # Méthode 3: Utiliser le projet ID connu (yrdhzpckptziyiefshga)
-                        if not project_id:
-                            # Projet ID connu depuis les logs précédents
-                            project_id = 'yrdhzpckptziyiefshga'
-                            print(f"📋 Utilisation du projet ID par défaut: {project_id}")
-                        
-                        if project_id:
-                            config['user'] = f"postgres.{project_id}"
-                            print(f"✅ User ajusté pour pooling: {config['user']}")
-                        else:
-                            print(f"⚠️ Impossible de déterminer le projet ID, user reste: {current_user}")
-                    else:
-                        print(f"✅ User déjà au bon format: {current_user}")
+                    print(f"🔍 Pooling détecté - Host: {host}, User: {current_user}")
+                    print(f"ℹ️  Utilisation du user tel quel (pas d'ajustement automatique)")
+                    # Ne pas modifier le user - utiliser celui fourni dans les secrets
                 
                 # Maintenant résoudre le hostname en IPv4
                 config['host'] = self._resolve_ipv4(host)
