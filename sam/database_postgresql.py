@@ -6,6 +6,7 @@ import psycopg2
 from psycopg2 import pool, sql
 from psycopg2.extras import RealDictCursor
 import os
+import socket
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, List
@@ -104,21 +105,16 @@ class Database:
         if self._connection_pool is None:
             try:
                 params = self._get_connection_params()
-                if 'connection_string' in params:
-                    # Utiliser la connection string directement
-                    self._connection_pool = pool.SimpleConnectionPool(
-                        1, 5, params['connection_string']
-                    )
-                else:
-                    # Utiliser les paramètres individuels
-                    self._connection_pool = pool.SimpleConnectionPool(
-                        1, 5,
-                        host=params['host'],
-                        port=params['port'],
-                        user=params['user'],
-                        password=params['password'],
-                        database=params['database']
-                    )
+                # Toujours utiliser les paramètres individuels pour forcer IPv4
+                # Supprimer connect_timeout du dict car SimpleConnectionPool ne l'accepte pas directement
+                pool_params = {
+                    'host': params['host'],
+                    'port': params['port'],
+                    'user': params['user'],
+                    'password': params['password'],
+                    'database': params['database']
+                }
+                self._connection_pool = pool.SimpleConnectionPool(1, 5, **pool_params)
             except Exception as e:
                 print(f"Erreur lors de la création du pool de connexions: {e}")
                 raise
@@ -135,13 +131,22 @@ class Database:
             yield connection
         except Exception as e:
             print(f"Erreur de connexion à la base de données: {e}")
-            # En cas d'erreur, essayer une connexion directe
+            # En cas d'erreur, essayer une connexion directe avec IPv4 forcé
             try:
+                import socket
                 params = self._get_connection_params()
-                if 'connection_string' in params:
-                    connection = psycopg2.connect(params['connection_string'])
-                else:
-                    connection = psycopg2.connect(**params)
+                # Forcer IPv4 en résolvant le hostname en IPv4
+                host = params['host']
+                try:
+                    # Résoudre en IPv4 seulement
+                    ipv4 = socket.getaddrinfo(host, params['port'], socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+                    params['host'] = ipv4
+                except (socket.gaierror, IndexError):
+                    pass  # Utiliser le hostname original si la résolution échoue
+                
+                # Supprimer connect_timeout du dict pour psycopg2.connect
+                connect_params = {k: v for k, v in params.items() if k != 'connect_timeout'}
+                connection = psycopg2.connect(**connect_params)
                 yield connection
             except Exception as e2:
                 print(f"Erreur de connexion directe: {e2}")
