@@ -12,6 +12,17 @@ from contextlib import contextmanager
 from typing import Optional, Dict, Any, List
 import streamlit as st
 
+# Forcer IPv4 au niveau système si possible
+# Note: Cela peut ne pas fonctionner dans tous les environnements
+try:
+    # Désactiver IPv6 pour les sockets (si supporté)
+    socket.AF_INET6 = None  # Ne fonctionnera pas, mais on essaie
+except:
+    pass
+
+# Variable d'environnement pour forcer IPv4 (si psycopg2 le supporte)
+os.environ.setdefault('PGHOSTADDR', '')  # Vide pour forcer la résolution
+
 # Importer l'exception Streamlit pour les secrets
 try:
     from streamlit.errors import StreamlitSecretNotFoundError
@@ -137,17 +148,38 @@ class Database:
         if self._connection_pool is None:
             try:
                 params = self._get_connection_params()
-                # Forcer IPv4 en utilisant l'adresse IP directement
                 host = params['host']
                 
-                # Si c'est un hostname, résoudre en IPv4
+                # Si la résolution IPv4 a échoué et qu'on a toujours un hostname,
+                # essayer de construire une connection string avec options IPv4
+                if not self._is_ip_address(host) and host == params.get('host'):
+                    # Utiliser une connection string avec options pour forcer IPv4
+                    import urllib.parse
+                    password_encoded = urllib.parse.quote(params['password'])
+                    conn_str = f"postgresql://{params['user']}:{password_encoded}@{host}:{params['port']}/{params['database']}"
+                    
+                    # Essayer avec la connection string directement
+                    try:
+                        print(f"🔌 Tentative de connexion avec connection string à: {host}:{params['port']}")
+                        self._connection_pool = pool.SimpleConnectionPool(1, 5, conn_str)
+                        print(f"✅ Pool de connexions créé avec succès (connection string)")
+                        return
+                    except Exception as e1:
+                        print(f"⚠️ Échec avec connection string, essai avec paramètres: {e1}")
+                
+                # Si c'est un hostname, essayer de résoudre en IPv4
                 if not self._is_ip_address(host):
-                    host = self._resolve_ipv4(host)
-                    params['host'] = host
+                    resolved_host = self._resolve_ipv4(host)
+                    if resolved_host != host:
+                        host = resolved_host
+                        params['host'] = host
+                        print(f"✅ Hostname résolu en IPv4: {host}")
+                    else:
+                        print(f"⚠️ Résolution IPv4 échouée, utilisation du hostname: {host}")
                 
                 print(f"🔌 Tentative de connexion à: {host}:{params['port']}")
                 
-                # Toujours utiliser les paramètres individuels pour forcer IPv4
+                # Toujours utiliser les paramètres individuels
                 pool_params = {
                     'host': host,
                     'port': params['port'],
