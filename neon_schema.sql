@@ -185,7 +185,7 @@ VALUES (
     'Administrateur Système',
     'admin',
     'admin@douane.ci',
-    '$2y$10$vMJTyG/p853epmwAVWXtB.IuW9m1edNeb3KCG3KyAKcYUU9.8WK02',
+    '$2b$12$0Ods7Z63K0n1TtOPzUxbgesOZqf5F8rXPIwiyVIRvLY8UJEXu09V2',
     'actif',
     TRUE
 ) ON CONFLICT (identifiant_user) DO NOTHING;
