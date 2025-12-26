@@ -163,10 +163,15 @@ class Database:
     
     def _resolve_ipv4(self, hostname: str) -> str:
         """Résout un hostname en adresse IPv4 pour éviter les problèmes IPv6"""
+        # Pour Neon, utiliser le hostname directement (pas de problèmes IPv4/IPv6)
+        if 'neon.tech' in hostname or 'neon' in hostname.lower():
+            print(f"✅ Neon détecté - utilisation du hostname directement: {hostname}")
+            return hostname  # Neon gère automatiquement IPv4/IPv6
+        
         # Pour le pooling Supabase, TOUJOURS utiliser le hostname directement
         # Le pooler gère mieux les connexions avec le hostname qu'avec une IP
         if 'pooler.supabase.com' in hostname:
-            print(f"✅ Pooling détecté - utilisation du hostname directement: {hostname}")
+            print(f"✅ Pooling Supabase détecté - utilisation du hostname directement: {hostname}")
             return hostname  # Ne pas résoudre en IP pour le pooling
         
         # Pour les autres hostnames (port direct 5432), essayer la résolution IPv4
@@ -230,11 +235,16 @@ class Database:
                 host = config['host']
                 original_hostname = host  # Sauvegarder le hostname original
                 
+                # Pour Neon, utiliser le hostname directement (pas de problèmes IPv4/IPv6)
+                if 'neon.tech' in host or 'neon' in host.lower():
+                    print(f"✅ Neon détecté - Host: {host}, User: {config.get('user', 'postgres')}")
+                    print(f"ℹ️  Neon gère automatiquement IPv4/IPv6, utilisation du hostname directement")
+                    # Ne pas résoudre en IPv4 pour Neon - utiliser le hostname directement
+                    # config['host'] reste le hostname original
                 # Pour le pooling Supabase, utiliser le hostname directement (sans résolution IPv4)
-                # Le pooler gère mieux les connexions avec le hostname
-                if 'pooler.supabase.com' in host:
+                elif 'pooler.supabase.com' in host:
                     current_user = config.get('user', 'postgres')
-                    print(f"🔍 Pooling détecté - Host: {host}, User: {current_user}")
+                    print(f"🔍 Pooling Supabase détecté - Host: {host}, User: {current_user}")
                     
                     # Pour le pooling Supabase, le user doit être postgres.PROJECT_ID
                     # Si le user est juste 'postgres', ajouter le projet ID
@@ -242,7 +252,7 @@ class Database:
                         project_id = self._get_project_id()
                         if project_id:
                             config['user'] = f"postgres.{project_id}"
-                            print(f"✅ User ajusté pour pooling: {config['user']}")
+                            print(f"✅ User ajusté pour pooling Supabase: {config['user']}")
                         else:
                             print(f"⚠️ Impossible de déterminer le projet ID, user reste: {current_user}")
                     else:
