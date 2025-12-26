@@ -91,14 +91,42 @@ class Database:
             'database': os.getenv('DB_NAME', 'postgres')
         }
     
+    def _resolve_ipv4(self, hostname: str) -> str:
+        """Résout un hostname en adresse IPv4 pour éviter les problèmes IPv6"""
+        try:
+            # Forcer la résolution en IPv4 seulement
+            addrinfo = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+            if addrinfo:
+                return addrinfo[0][4][0]  # Retourner l'adresse IPv4
+        except (socket.gaierror, IndexError, OSError):
+            pass
+        return hostname  # Retourner le hostname original si la résolution échoue
+    
     def _get_connection_params(self) -> Dict[str, Any]:
         """Retourne les paramètres de connexion au format psycopg2"""
         config = self._config.copy()
         if 'connection_string' in config:
-            # Extraire les paramètres de la connection string si nécessaire
-            # ou utiliser directement psycopg2.connect avec la string
+            # Extraire les paramètres de la connection string
+            import urllib.parse
+            conn_str = config['connection_string']
+            parsed = urllib.parse.urlparse(conn_str)
+            
+            host = parsed.hostname
+            # Résoudre en IPv4 pour éviter les problèmes IPv6
+            host_ipv4 = self._resolve_ipv4(host) if host else host
+            
+            return {
+                'host': host_ipv4,
+                'port': parsed.port or 5432,
+                'user': parsed.username,
+                'password': urllib.parse.unquote(parsed.password) if parsed.password else '',
+                'database': parsed.path.lstrip('/')
+            }
+        else:
+            # Résoudre le hostname en IPv4 si présent
+            if 'host' in config:
+                config['host'] = self._resolve_ipv4(config['host'])
             return config
-        return config
     
     def create_connection_pool(self):
         """Crée un pool de connexions"""
