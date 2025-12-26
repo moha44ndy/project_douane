@@ -185,7 +185,15 @@ class Database:
                     current_user = config.get('user', 'postgres')
                     print(f"🔍 Pooling détecté - Host: {host}, User actuel: {current_user}")
                     
-                    # Si le user est juste 'postgres', on doit ajouter le projet ID
+                    # Pour le pooling, essayer d'abord avec juste 'postgres' si le user contient le projet ID
+                    # Certains poolers Supabase utilisent juste 'postgres' et le projet ID est dans le hostname
+                    if '.' in current_user and current_user.startswith('postgres.'):
+                        # Essayer avec juste 'postgres' pour le pooling
+                        print(f"🔄 Tentative avec user simplifié pour pooling: postgres")
+                        config['user'] = 'postgres'
+                        current_user = 'postgres'
+                    
+                    # Si le user est juste 'postgres', on peut essayer d'ajouter le projet ID
                     if current_user == 'postgres' or '.' not in current_user:
                         project_id = None
                         
