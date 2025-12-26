@@ -130,17 +130,54 @@ class Database:
             # Résoudre en IPv4 pour éviter les problèmes IPv6
             host_ipv4 = self._resolve_ipv4(host) if host else host
             
+            # Pour le pooling Supabase, extraire le projet ID du hostname si nécessaire
+            user = parsed.username
+            if host and 'pooler.supabase.com' in host and user == 'postgres':
+                # Extraire le projet ID du hostname (ex: aws-0-eu-central-1.pooler.supabase.com)
+                # Le user doit être postgres.PROJECT_ID pour le pooling
+                # On va essayer de l'extraire depuis le hostname ou utiliser la config
+                # Si le user est juste 'postgres', on doit ajouter le projet ID
+                # Le projet ID est dans le hostname original : db.yrdhzpckptziyiefshga.supabase.co
+                # On peut aussi le trouver dans les secrets
+                try:
+                    if hasattr(st, 'secrets') and 'database' in st.secrets:
+                        db_secrets = st.secrets['database']
+                        # Chercher le projet ID dans le hostname original
+                        original_host = db_secrets.get('host', '')
+                        if 'db.' in original_host and '.supabase.co' in original_host:
+                            project_id = original_host.split('db.')[1].split('.supabase.co')[0]
+                            user = f"postgres.{project_id}"
+                            print(f"✅ User ajusté pour pooling: {user}")
+                except:
+                    pass
+            
             return {
                 'host': host_ipv4,
                 'port': parsed.port or 5432,
-                'user': parsed.username,
+                'user': user,
                 'password': urllib.parse.unquote(parsed.password) if parsed.password else '',
                 'database': parsed.path.lstrip('/')
             }
         else:
             # Résoudre le hostname en IPv4 si présent
             if 'host' in config:
-                config['host'] = self._resolve_ipv4(config['host'])
+                host = config['host']
+                # Pour le pooling Supabase, ajuster le user si nécessaire
+                if 'pooler.supabase.com' in host and config.get('user') == 'postgres':
+                    # Extraire le projet ID depuis un autre hostname ou utiliser celui fourni
+                    # Si on a accès aux secrets, on peut le trouver
+                    try:
+                        if hasattr(st, 'secrets') and 'database' in st.secrets:
+                            db_secrets = st.secrets['database']
+                            original_host = db_secrets.get('host', '')
+                            if 'db.' in original_host and '.supabase.co' in original_host:
+                                project_id = original_host.split('db.')[1].split('.supabase.co')[0]
+                                config['user'] = f"postgres.{project_id}"
+                                print(f"✅ User ajusté pour pooling: {config['user']}")
+                    except:
+                        pass
+                
+                config['host'] = self._resolve_ipv4(host)
             return config
     
     def create_connection_pool(self):
