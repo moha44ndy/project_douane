@@ -97,9 +97,13 @@ class Database:
             # Forcer la résolution en IPv4 seulement
             addrinfo = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
             if addrinfo:
-                return addrinfo[0][4][0]  # Retourner l'adresse IPv4
-        except (socket.gaierror, IndexError, OSError):
-            pass
+                ipv4 = addrinfo[0][4][0]
+                print(f"✅ Hostname '{hostname}' résolu en IPv4: {ipv4}")
+                return ipv4  # Retourner l'adresse IPv4
+            else:
+                print(f"⚠️ Aucune adresse IPv4 trouvée pour '{hostname}'")
+        except (socket.gaierror, IndexError, OSError) as e:
+            print(f"⚠️ Erreur lors de la résolution IPv4 de '{hostname}': {e}")
         return hostname  # Retourner le hostname original si la résolution échoue
     
     def _get_connection_params(self) -> Dict[str, Any]:
@@ -133,19 +137,37 @@ class Database:
         if self._connection_pool is None:
             try:
                 params = self._get_connection_params()
+                # Forcer IPv4 en utilisant l'adresse IP directement
+                host = params['host']
+                
+                # Si c'est un hostname, résoudre en IPv4
+                if not self._is_ip_address(host):
+                    host = self._resolve_ipv4(host)
+                    params['host'] = host
+                
+                print(f"🔌 Tentative de connexion à: {host}:{params['port']}")
+                
                 # Toujours utiliser les paramètres individuels pour forcer IPv4
-                # Supprimer connect_timeout du dict car SimpleConnectionPool ne l'accepte pas directement
                 pool_params = {
-                    'host': params['host'],
+                    'host': host,
                     'port': params['port'],
                     'user': params['user'],
                     'password': params['password'],
                     'database': params['database']
                 }
                 self._connection_pool = pool.SimpleConnectionPool(1, 5, **pool_params)
+                print(f"✅ Pool de connexions créé avec succès")
             except Exception as e:
                 print(f"Erreur lors de la création du pool de connexions: {e}")
                 raise
+    
+    def _is_ip_address(self, host: str) -> bool:
+        """Vérifie si host est une adresse IP (IPv4)"""
+        try:
+            socket.inet_aton(host)
+            return True
+        except socket.error:
+            return False
     
     @contextmanager
     def get_connection(self):
