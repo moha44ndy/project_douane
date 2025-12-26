@@ -54,13 +54,20 @@ class Database:
                     # Tenter d'accéder aux secrets (peut lever StreamlitSecretNotFoundError)
                     secrets = st.secrets
                     if 'database' in secrets:
-                        return {
-                            'host': secrets['database']['host'],
-                            'port': secrets['database'].get('port', 3306),
-                            'user': secrets['database']['user'],
-                            'password': secrets['database']['password'],
-                            'database': secrets['database']['database']
-                        }
+                        # Si connection_string est fournie, on ne peut pas l'utiliser avec MySQL
+                        # MySQL nécessite les paramètres individuels
+                        if 'connection_string' in secrets['database']:
+                            # Pour MySQL, on ne peut pas utiliser connection_string directement
+                            # Il faut utiliser les paramètres individuels
+                            pass
+                        else:
+                            return {
+                                'host': secrets['database']['host'],
+                                'port': secrets['database'].get('port', 3306),
+                                'user': secrets['database']['user'],
+                                'password': secrets['database']['password'],
+                                'database': secrets['database']['database']
+                            }
                 except StreamlitSecretNotFoundError:
                     # Fichier secrets.toml non trouvé, utiliser .env
                     pass
