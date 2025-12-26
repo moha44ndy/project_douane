@@ -191,8 +191,12 @@ class Database:
                     except Exception as e1:
                         print(f"⚠️ Échec avec connection string, essai avec paramètres: {e1}")
                 
-                # Si c'est un hostname, essayer de résoudre en IPv4
-                if not self._is_ip_address(host):
+                # Pour Neon, NE JAMAIS résoudre en IPv4 - utiliser le hostname directement
+                if 'neon.tech' in host or 'neon' in host.lower():
+                    print(f"✅ Neon détecté - utilisation du hostname directement (pas de résolution IPv4)")
+                    # Ne pas résoudre en IPv4 pour Neon
+                # Pour les autres hostnames, essayer de résoudre en IPv4
+                elif not self._is_ip_address(host):
                     resolved_host = self._resolve_ipv4(host)
                     if resolved_host != host:
                         host = resolved_host
@@ -211,6 +215,11 @@ class Database:
                     'password': params['password'],
                     'database': params['database']
                 }
+                
+                # Pour Neon, forcer SSL
+                if 'neon.tech' in host or 'neon' in host.lower():
+                    pool_params['sslmode'] = 'require'
+                    print(f"✅ SSL forcé pour Neon (sslmode=require)")
                 self._connection_pool = pool.SimpleConnectionPool(1, 5, **pool_params)
                 print(f"✅ Pool de connexions créé avec succès")
             except Exception as e:
