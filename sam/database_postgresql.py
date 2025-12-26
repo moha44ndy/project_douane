@@ -104,17 +104,33 @@ class Database:
     
     def _resolve_ipv4(self, hostname: str) -> str:
         """Résout un hostname en adresse IPv4 pour éviter les problèmes IPv6"""
+        # Pour le pooling Supabase, utiliser le hostname directement si la résolution échoue
+        # Le pooler peut mieux gérer les connexions avec le hostname
+        if 'pooler.supabase.com' in hostname:
+            # Essayer de résoudre, mais si ça échoue, utiliser le hostname directement
+            try:
+                addrinfo = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+                if addrinfo:
+                    ipv4 = addrinfo[0][4][0]
+                    print(f"✅ Hostname '{hostname}' résolu en IPv4: {ipv4}")
+                    return ipv4
+            except (socket.gaierror, IndexError, OSError) as e:
+                print(f"⚠️ Erreur résolution IPv4 pour pooling, utilisation du hostname: {e}")
+                # Pour le pooling, utiliser le hostname directement peut fonctionner
+                return hostname
+        
+        # Pour les autres hostnames, essayer la résolution normale
         try:
-            # Forcer la résolution en IPv4 seulement
             addrinfo = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
             if addrinfo:
                 ipv4 = addrinfo[0][4][0]
                 print(f"✅ Hostname '{hostname}' résolu en IPv4: {ipv4}")
-                return ipv4  # Retourner l'adresse IPv4
+                return ipv4
             else:
                 print(f"⚠️ Aucune adresse IPv4 trouvée pour '{hostname}'")
         except (socket.gaierror, IndexError, OSError) as e:
             print(f"⚠️ Erreur lors de la résolution IPv4 de '{hostname}': {e}")
+        print(f"⚠️ Résolution IPv4 échouée, utilisation du hostname: {hostname}")
         return hostname  # Retourner le hostname original si la résolution échoue
     
     def _get_connection_params(self) -> Dict[str, Any]:
