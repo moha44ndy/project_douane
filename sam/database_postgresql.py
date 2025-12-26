@@ -226,7 +226,22 @@ class Database:
                 user = params.get('user', 'postgres')
                 
                 # Log pour diagnostic
-                print(f"🔍 Paramètres de connexion - Host: {host}, User: {user}, Port: {params.get('port')}")
+                print(f"🔍 Paramètres de connexion - Host: {host}, User: {user}, Port: {params.get('port')}, Database: {params.get('database')}")
+                
+                # Si erreur "Tenant or user not found" avec pooling, essayer avec le hostname au lieu de l'IP
+                # Certains poolers Supabase nécessitent le hostname exact
+                if 'pooler.supabase.com' in str(params.get('host', '')) or self._is_ip_address(str(host)):
+                    # Si on a résolu en IP mais que c'est du pooling, essayer avec le hostname original
+                    try:
+                        if hasattr(st, 'secrets') and 'database' in st.secrets:
+                            db_secrets = st.secrets['database']
+                            original_host = db_secrets.get('host', '')
+                            if 'pooler.supabase.com' in original_host:
+                                print(f"🔄 Tentative avec hostname original au lieu de l'IP: {original_host}")
+                                params['host'] = original_host
+                                host = original_host
+                    except:
+                        pass
                 
                 # Si la résolution IPv4 a échoué et qu'on a toujours un hostname,
                 # essayer de construire une connection string avec options IPv4
