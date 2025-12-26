@@ -1,5 +1,5 @@
 """
-Module de gestion des feedbacks utilisateurs avec support MySQL et PostgreSQL
+Module de gestion des feedbacks utilisateurs (Version PostgreSQL/Supabase)
 Système de Classification Douanière CEDEAO
 """
 import streamlit as st
@@ -9,12 +9,10 @@ import hashlib
 
 # Essayer d'importer le module database
 try:
-    from database import get_db, _DB_TYPE
+    from database import get_db
     USE_DATABASE = True
-    IS_POSTGRESQL = (_DB_TYPE == 'postgresql')
 except ImportError:
     USE_DATABASE = False
-    IS_POSTGRESQL = False
 
 
 def create_feedback_columns():
@@ -27,60 +25,51 @@ def create_feedback_columns():
         if not db.test_connection():
             return False
         
-        # Vérifier si les colonnes existent déjà (syntaxe adaptée selon le type de DB)
-        if IS_POSTGRESQL:
-            check_query = """
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_schema = 'public' 
-            AND table_name = 'classifications' 
-            AND column_name IN ('user_query', 'user_query_hash', 'feedback_rating')
-            """
-        else:
-            check_query = """
-            SELECT COLUMN_NAME 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = DATABASE() 
-            AND TABLE_NAME = 'classifications' 
-            AND COLUMN_NAME IN ('user_query', 'user_query_hash', 'feedback_rating')
-            """
-        
+        # Vérifier si les colonnes existent déjà (syntaxe PostgreSQL)
+        check_query = """
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+        AND table_name = 'classifications' 
+        AND column_name IN ('user_query', 'user_query_hash', 'feedback_rating')
+        """
         existing_columns = db.execute_query(check_query, ())
-        existing_names = []
-        if existing_columns:
-            if IS_POSTGRESQL:
-                existing_names = [row.get('column_name', '') for row in existing_columns]
-            else:
-                existing_names = [row.get('COLUMN_NAME', '') for row in existing_columns]
+        existing_names = [row.get('column_name', '') for row in existing_columns] if existing_columns else []
         
         # Ajouter les colonnes manquantes
         if 'user_query' not in existing_names:
-            db.execute_update("ALTER TABLE classifications ADD COLUMN user_query TEXT NULL", ())
+            db.execute_update("""
+                ALTER TABLE classifications 
+                ADD COLUMN user_query TEXT NULL
+            """, ())
         
         if 'user_query_hash' not in existing_names:
-            db.execute_update("ALTER TABLE classifications ADD COLUMN user_query_hash VARCHAR(64) NULL", ())
-            # Ajouter l'index séparément
+            db.execute_update("""
+                ALTER TABLE classifications 
+                ADD COLUMN user_query_hash VARCHAR(64) NULL
+            """, ())
+            # Ajouter l'index séparément (syntaxe PostgreSQL)
             try:
-                if IS_POSTGRESQL:
-                    db.execute_update("CREATE INDEX idx_query_hash ON classifications(user_query_hash)", ())
-                else:
-                    db.execute_update("ALTER TABLE classifications ADD INDEX idx_query_hash (user_query_hash)", ())
+                db.execute_update("""
+                    CREATE INDEX idx_query_hash ON classifications(user_query_hash)
+                """, ())
             except Exception:
+                # L'index existe peut-être déjà, ignorer l'erreur
                 pass
         
         if 'feedback_rating' not in existing_names:
-            if IS_POSTGRESQL:
-                # Pour PostgreSQL, utiliser le type ENUM créé dans le schéma
-                db.execute_update("ALTER TABLE classifications ADD COLUMN feedback_rating feedback_rating_type NULL", ())
-            else:
-                db.execute_update("ALTER TABLE classifications ADD COLUMN feedback_rating ENUM('up', 'down') NULL", ())
+            # Pour PostgreSQL, utiliser le type ENUM créé dans le schéma
+            db.execute_update("""
+                ALTER TABLE classifications 
+                ADD COLUMN feedback_rating feedback_rating_type NULL
+            """, ())
             # Ajouter l'index séparément
             try:
-                if IS_POSTGRESQL:
-                    db.execute_update("CREATE INDEX idx_feedback_rating ON classifications(feedback_rating)", ())
-                else:
-                    db.execute_update("ALTER TABLE classifications ADD INDEX idx_feedback_rating (feedback_rating)", ())
+                db.execute_update("""
+                    CREATE INDEX idx_feedback_rating ON classifications(feedback_rating)
+                """, ())
             except Exception:
+                # L'index existe peut-être déjà, ignorer l'erreur
                 pass
         
         return True
@@ -91,6 +80,7 @@ def create_feedback_columns():
 
 def get_query_hash(query: str) -> str:
     """Génère un hash pour une requête (normalisé)"""
+    # Normaliser la requête : minuscules, supprimer espaces multiples
     normalized = " ".join(query.lower().strip().split())
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
@@ -122,6 +112,7 @@ def save_feedback(
             if not user_id:
                 return False, "Utilisateur non identifié"
         
+        # Créer les colonnes si elles n'existent pas
         create_feedback_columns()
         
         db = get_db()
@@ -130,26 +121,17 @@ def save_feedback(
         
         query_hash = get_query_hash(user_query)
         
-        # Mettre à jour toutes les classifications concernées (syntaxe adaptée)
-        if IS_POSTGRESQL:
-            update_query = """
-            UPDATE classifications 
-            SET user_query = %s,
-                user_query_hash = %s,
-                feedback_rating = %s::feedback_rating_type
-            WHERE id = ANY(%s) AND user_id = %s
-            """
-            db.execute_update(update_query, (user_query, query_hash, rating, classification_ids, user_id))
-        else:
-            placeholders = ','.join(['%s'] * len(classification_ids))
-            update_query = f"""
-            UPDATE classifications 
-            SET user_query = %s,
-                user_query_hash = %s,
-                feedback_rating = %s
-            WHERE id IN ({placeholders}) AND user_id = %s
-            """
-            db.execute_update(update_query, (user_query, query_hash, rating) + tuple(classification_ids) + (user_id,))
+        # Mettre à jour toutes les classifications concernées (syntaxe PostgreSQL)
+        # Utiliser ANY(array) pour PostgreSQL au lieu de IN avec placeholders multiples
+        update_query = """
+        UPDATE classifications 
+        SET user_query = %s,
+            user_query_hash = %s,
+            feedback_rating = %s::feedback_rating_type
+        WHERE id = ANY(%s) AND user_id = %s
+        """
+        
+        db.execute_update(update_query, (user_query, query_hash, rating, classification_ids, user_id))
         
         return True, f"Feedback enregistré sur {len(classification_ids)} classification(s)"
     
@@ -183,22 +165,14 @@ def remove_feedback(
         if not db.test_connection():
             return False, "Impossible de se connecter à la base de données"
         
-        # Mettre à jour toutes les classifications concernées (syntaxe adaptée)
-        if IS_POSTGRESQL:
-            update_query = """
-            UPDATE classifications 
-            SET feedback_rating = NULL
-            WHERE id = ANY(%s) AND user_id = %s
-            """
-            db.execute_update(update_query, (classification_ids, user_id))
-        else:
-            placeholders = ','.join(['%s'] * len(classification_ids))
-            update_query = f"""
-            UPDATE classifications 
-            SET feedback_rating = NULL
-            WHERE id IN ({placeholders}) AND user_id = %s
-            """
-            db.execute_update(update_query, tuple(classification_ids) + (user_id,))
+        # Mettre à jour toutes les classifications concernées (syntaxe PostgreSQL)
+        update_query = """
+        UPDATE classifications 
+        SET feedback_rating = NULL
+        WHERE id = ANY(%s) AND user_id = %s
+        """
+        
+        db.execute_update(update_query, (classification_ids, user_id))
         
         return True, f"Feedback retiré sur {len(classification_ids)} classification(s)"
     
@@ -219,29 +193,17 @@ def check_similar_negative_feedbacks(query: str, similarity_threshold: float = 0
         if not db.test_connection():
             return []
         
-        # Récupérer tous les feedbacks négatifs récents (syntaxe adaptée)
-        if IS_POSTGRESQL:
-            query_feedback = """
-            SELECT user_query, date_classification as created_at, COUNT(*) as count
-            FROM classifications
-            WHERE feedback_rating = 'down'
-            AND user_query IS NOT NULL
-            AND date_classification >= NOW() - INTERVAL '30 days'
-            GROUP BY user_query_hash, user_query, date_classification
-            ORDER BY date_classification DESC
-            LIMIT 50
-            """
-        else:
-            query_feedback = """
-            SELECT user_query, date_classification as created_at, COUNT(*) as count
-            FROM classifications
-            WHERE feedback_rating = 'down'
-            AND user_query IS NOT NULL
-            AND date_classification >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-            GROUP BY user_query_hash
-            ORDER BY date_classification DESC
-            LIMIT 50
-            """
+        # Récupérer tous les feedbacks négatifs récents (syntaxe PostgreSQL)
+        query_feedback = """
+        SELECT user_query, date_classification as created_at, COUNT(*) as count
+        FROM classifications
+        WHERE feedback_rating = 'down'
+        AND user_query IS NOT NULL
+        AND date_classification >= NOW() - INTERVAL '30 days'
+        GROUP BY user_query_hash, user_query, date_classification
+        ORDER BY date_classification DESC
+        LIMIT 50
+        """
         
         results = db.execute_query(query_feedback, ())
         
@@ -276,7 +238,7 @@ def check_similar_negative_feedbacks(query: str, similarity_threshold: float = 0
         # Trier par similarité décroissante
         similar_feedbacks.sort(key=lambda x: x['similarity'], reverse=True)
         
-        return similar_feedbacks[:5]
+        return similar_feedbacks[:5]  # Retourner les 5 plus similaires
     
     except Exception as e:
         print(f"Erreur lors de la vérification des feedbacks similaires: {e}")
@@ -293,22 +255,13 @@ def get_negative_feedback_hashes() -> List[str]:
         if not db.test_connection():
             return []
         
-        if IS_POSTGRESQL:
-            query = """
-            SELECT DISTINCT user_query_hash
-            FROM classifications
-            WHERE feedback_rating = 'down'
-            AND user_query_hash IS NOT NULL
-            AND date_classification >= NOW() - INTERVAL '30 days'
-            """
-        else:
-            query = """
-            SELECT DISTINCT user_query_hash
-            FROM classifications
-            WHERE feedback_rating = 'down'
-            AND user_query_hash IS NOT NULL
-            AND date_classification >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-            """
+        query = """
+        SELECT DISTINCT user_query_hash
+        FROM classifications
+        WHERE feedback_rating = 'down'
+        AND user_query_hash IS NOT NULL
+        AND date_classification >= NOW() - INTERVAL '30 days'
+        """
         
         results = db.execute_query(query, ())
         
@@ -331,9 +284,11 @@ def should_invalidate_cache(query: str) -> bool:
         query_hash = get_query_hash(query)
         negative_hashes = get_negative_feedback_hashes()
         
+        # Vérifier si le hash exact existe
         if query_hash in negative_hashes:
             return True
         
+        # Vérifier les requêtes similaires
         similar_feedbacks = check_similar_negative_feedbacks(query, similarity_threshold=0.6)
         return len(similar_feedbacks) > 0
     
@@ -391,3 +346,4 @@ def get_feedback_stats(user_id: Optional[int] = None) -> Dict[str, Any]:
     except Exception as e:
         print(f"Erreur lors de la récupération des statistiques: {e}")
         return {'total': 0, 'positive': 0, 'negative': 0, 'satisfaction_rate': 0}
+

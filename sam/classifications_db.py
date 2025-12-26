@@ -191,14 +191,30 @@ def save_classification(json_item: dict, user_id: Optional[int] = None) -> tuple
         
         # Toujours créer une nouvelle entrée (même si la même classification existe déjà)
         # Cela permet de compter toutes les requêtes, même celles qui viennent du cache
-        # Insérer une nouvelle classification
-        insert_query = """
-            INSERT INTO classifications 
-            (user_id, description_produit, valeur_produit, origine_produit,
-             code_tarifaire, section, chapitre, confidence_score,
-             taux_dd, taux_rs, taux_tva, unite_mesure, justification)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
+        # Insérer une nouvelle classification (avec RETURNING id pour PostgreSQL)
+        try:
+            from database import _DB_TYPE
+            is_postgresql = (_DB_TYPE == 'postgresql')
+        except:
+            is_postgresql = False
+        
+        if is_postgresql:
+            insert_query = """
+                INSERT INTO classifications 
+                (user_id, description_produit, valeur_produit, origine_produit,
+                 code_tarifaire, section, chapitre, confidence_score,
+                 taux_dd, taux_rs, taux_tva, unite_mesure, justification)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """
+        else:
+            insert_query = """
+                INSERT INTO classifications 
+                (user_id, description_produit, valeur_produit, origine_produit,
+                 code_tarifaire, section, chapitre, confidence_score,
+                 taux_dd, taux_rs, taux_tva, unite_mesure, justification)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
         # Debug: Afficher les données avant insertion
         print(f"DEBUG: Tentative d'insertion - user_id={user_id}")
         print(f"DEBUG: description={data['description_produit']}")
@@ -313,21 +329,35 @@ def delete_classifications_by_ids(classification_ids: List[int], user_id: Option
         if not user_id:
             return False, "Utilisateur non identifié."
         
-        # Vérifier que toutes les classifications appartiennent à l'utilisateur
-        placeholders = ','.join(['%s'] * len(classification_ids))
-        check_query = f"""
-            SELECT id FROM classifications 
-            WHERE id IN ({placeholders}) AND user_id = %s
-        """
-        results = db.execute_query(check_query, (*classification_ids, user_id))
+        # Vérifier que toutes les classifications appartiennent à l'utilisateur (syntaxe adaptée)
+        try:
+            from database import _DB_TYPE
+            is_postgresql = (_DB_TYPE == 'postgresql')
+        except:
+            is_postgresql = False
+        
+        if is_postgresql:
+            check_query = """
+                SELECT id FROM classifications 
+                WHERE id = ANY(%s) AND user_id = %s
+            """
+            results = db.execute_query(check_query, (classification_ids, user_id))
+            delete_query = "DELETE FROM classifications WHERE id = ANY(%s)"
+            db.execute_update(delete_query, (classification_ids,))
+        else:
+            placeholders = ','.join(['%s'] * len(classification_ids))
+            check_query = f"""
+                SELECT id FROM classifications 
+                WHERE id IN ({placeholders}) AND user_id = %s
+            """
+            results = db.execute_query(check_query, (*classification_ids, user_id))
+            delete_query = f"DELETE FROM classifications WHERE id IN ({placeholders})"
+            db.execute_update(delete_query, tuple(classification_ids))
+        
         found_ids = [row.get('id') for row in results if row.get('id')]
         
         if len(found_ids) != len(classification_ids):
             return False, "Certaines classifications n'existent pas ou ne vous appartiennent pas."
-        
-        # Supprimer les classifications
-        delete_query = f"DELETE FROM classifications WHERE id IN ({placeholders})"
-        db.execute_update(delete_query, tuple(classification_ids))
         
         return True, f"{len(classification_ids)} classification(s) supprimée(s) avec succès"
     

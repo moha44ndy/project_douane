@@ -1552,16 +1552,34 @@ def display_main_content():
                                     # avec les descriptions correspondantes
                                     descriptions = [e.get('product', {}).get('description', '') for e in new_entries]
                                     if descriptions:
-                                        placeholders = ','.join(['%s'] * len(descriptions))
-                                        query = f"""
-                                        SELECT id FROM classifications 
-                                        WHERE user_id = %s 
-                                        AND description_produit IN ({placeholders})
-                                        AND date_classification >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)
-                                        ORDER BY id DESC
-                                        LIMIT %s
-                                        """
-                                        results = db.execute_query(query, (user_id, *descriptions, len(descriptions)))
+                                        # Utiliser la syntaxe adaptée selon le type de DB
+                                        try:
+                                            from database import _DB_TYPE
+                                            is_postgresql = (_DB_TYPE == 'postgresql')
+                                        except:
+                                            is_postgresql = False
+                                        
+                                        if is_postgresql:
+                                            query = """
+                                            SELECT id FROM classifications 
+                                            WHERE user_id = %s 
+                                            AND description_produit = ANY(%s)
+                                            AND date_classification >= NOW() - INTERVAL '1 minute'
+                                            ORDER BY id DESC
+                                            LIMIT %s
+                                            """
+                                            results = db.execute_query(query, (user_id, descriptions, len(descriptions)))
+                                        else:
+                                            placeholders = ','.join(['%s'] * len(descriptions))
+                                            query = f"""
+                                            SELECT id FROM classifications 
+                                            WHERE user_id = %s 
+                                            AND description_produit IN ({placeholders})
+                                            AND date_classification >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+                                            ORDER BY id DESC
+                                            LIMIT %s
+                                            """
+                                            results = db.execute_query(query, (user_id, *descriptions, len(descriptions)))
                                         if results:
                                             classification_ids = [row.get('id') for row in results if row.get('id')]
                                             if classification_ids:

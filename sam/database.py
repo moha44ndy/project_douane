@@ -1,197 +1,108 @@
 """
-Module de connexion à la base de données MySQL
+Module de connexion à la base de données avec détection automatique MySQL/PostgreSQL
 Système de Classification Douanière CEDEAO
 """
-import mysql.connector
-from mysql.connector import Error, pooling
 import os
 from pathlib import Path
-from contextlib import contextmanager
 from typing import Optional, Dict, Any, List
 import streamlit as st
+
+# Charger les variables d'environnement depuis .env
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+    else:
+        load_dotenv()
+except ImportError:
+    pass
 
 # Importer l'exception Streamlit pour les secrets
 try:
     from streamlit.errors import StreamlitSecretNotFoundError
 except ImportError:
-    # Pour les versions plus anciennes de Streamlit
     StreamlitSecretNotFoundError = Exception
 
-# Charger les variables d'environnement depuis .env
-try:
-    from dotenv import load_dotenv
-    # Charger depuis la racine du projet
-    env_path = Path(__file__).parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-    else:
-        load_dotenv()  # Essayer le .env par défaut
-except ImportError:
-    pass  # python-dotenv non installé, utiliser les variables d'environnement système
-
-class Database:
-    """Classe singleton pour gérer la connexion à la base de données"""
+def _detect_database_type() -> str:
+    """
+    Détecte automatiquement le type de base de données à utiliser
+    Retourne 'mysql' ou 'postgresql'
+    """
+    # Vérifier d'abord la variable d'environnement explicite
+    db_type = os.getenv('DB_TYPE', '').lower()
+    if db_type in ['mysql', 'postgresql', 'postgres']:
+        return 'postgresql' if db_type in ['postgresql', 'postgres'] else 'mysql'
     
-    _instance = None
-    _connection_pool = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(Database, cls).__new__(cls)
-        return cls._instance
-    
-    def __init__(self):
-        if not hasattr(self, 'initialized'):
-            self.initialized = True
-            self._config = self._get_config()
-    
-    def _get_config(self) -> Dict[str, Any]:
-        """Récupère la configuration depuis les variables d'environnement ou Streamlit secrets"""
-        # Essayer d'abord Streamlit secrets (pour production)
-        try:
-            if hasattr(st, 'secrets'):
-                try:
-                    # Tenter d'accéder aux secrets (peut lever StreamlitSecretNotFoundError)
-                    secrets = st.secrets
-                    if 'database' in secrets:
-                        return {
-                            'host': secrets['database']['host'],
-                            'port': secrets['database'].get('port', 3306),
-                            'user': secrets['database']['user'],
-                            'password': secrets['database']['password'],
-                            'database': secrets['database']['database']
-                        }
-                except StreamlitSecretNotFoundError:
-                    # Fichier secrets.toml non trouvé, utiliser .env
-                    pass
-                except (KeyError, AttributeError, TypeError):
-                    # Erreur lors de l'accès aux secrets, utiliser .env
-                    pass
-        except (AttributeError, TypeError):
-            # Streamlit n'est pas disponible ou erreur d'accès, utiliser .env
-            pass
-        
-        # Sinon, utiliser les variables d'environnement
-        return {
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'port': int(os.getenv('DB_PORT', 3306)),
-            'user': os.getenv('DB_USER', 'root'),
-            'password': os.getenv('DB_PASSWORD', ''),
-            'database': os.getenv('DB_NAME', 'douane_simple')
-        }
-    
-    def create_connection_pool(self):
-        """Crée un pool de connexions"""
-        if self._connection_pool is None:
+    # Vérifier les secrets Streamlit
+    try:
+        if hasattr(st, 'secrets'):
             try:
-                pool_config = {
-                    'pool_name': 'douane_pool',
-                    'pool_size': 5,
-                    'pool_reset_session': True,
-                    **self._config
-                }
-                self._connection_pool = pooling.MySQLConnectionPool(**pool_config)
-            except Error as e:
-                print(f"Erreur lors de la création du pool de connexions: {e}")
-                raise
+                secrets = st.secrets
+                if 'database' in secrets:
+                    # Si connection_string contient postgresql, c'est PostgreSQL
+                    if 'connection_string' in secrets['database']:
+                        conn_str = secrets['database']['connection_string']
+                        if 'postgresql' in conn_str.lower() or 'postgres' in conn_str.lower():
+                            return 'postgresql'
+                    
+                    # Vérifier le port
+                    port = secrets['database'].get('port', 3306)
+                    if port == 5432:
+                        return 'postgresql'
+                    elif port == 3306:
+                        return 'mysql'
+            except (StreamlitSecretNotFoundError, KeyError, AttributeError, TypeError):
+                pass
+    except (AttributeError, TypeError):
+        pass
     
-    @contextmanager
-    def get_connection(self):
-        """Context manager pour obtenir une connexion depuis le pool"""
-        connection = None
-        try:
-            if self._connection_pool is None:
-                self.create_connection_pool()
-            
-            connection = self._connection_pool.get_connection()
-            yield connection
-        except Error as e:
-            print(f"Erreur de connexion à la base de données: {e}")
-            # En cas d'erreur, essayer une connexion directe
-            try:
-                connection = mysql.connector.connect(**self._config)
-                yield connection
-            except Error as e2:
-                print(f"Erreur de connexion directe: {e2}")
-                raise
-        finally:
-            if connection and connection.is_connected():
-                connection.close()
+    # Vérifier DATABASE_URL
+    database_url = os.getenv('DATABASE_URL', '')
+    if database_url:
+        if 'postgresql' in database_url.lower() or 'postgres' in database_url.lower():
+            return 'postgresql'
+        elif 'mysql' in database_url.lower():
+            return 'mysql'
     
-    def test_connection(self) -> bool:
-        """Teste la connexion à la base de données"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
-                cursor.close()
-                return True
-        except Error as e:
-            print(f"Erreur de test de connexion: {e}")
-            return False
+    # Vérifier le port par défaut
+    port = int(os.getenv('DB_PORT', 3306))
+    if port == 5432:
+        return 'postgresql'
+    elif port == 3306:
+        return 'mysql'
     
-    def execute_query(self, query: str, params: Optional[tuple] = None, fetch: bool = True) -> Optional[List[Dict[str, Any]]]:
-        """Exécute une requête SELECT et retourne les résultats"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute(query, params or ())
-                
-                if fetch:
-                    results = cursor.fetchall()
-                    cursor.close()
-                    return results
-                else:
-                    conn.commit()
-                    cursor.close()
-                    return None
-        except Error as e:
-            print(f"Erreur lors de l'exécution de la requête: {e}")
-            raise
-    
-    def execute_update(self, query: str, params: Optional[tuple] = None) -> int:
-        """Exécute une requête INSERT/UPDATE/DELETE et retourne le nombre de lignes affectées"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    cursor.execute(query, params or ())
-                    conn.commit()
-                    affected_rows = cursor.rowcount
-                    return affected_rows
-                except Error as e:
-                    conn.rollback()
-                    raise
-                finally:
-                    cursor.close()
-        except Error as e:
-            print(f"Erreur lors de l'exécution de la mise à jour: {e}")
-            raise
-    
-    def execute_insert(self, query: str, params: Optional[tuple] = None) -> int:
-        """Exécute une requête INSERT et retourne l'ID de la dernière ligne insérée"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    cursor.execute(query, params or ())
-                    conn.commit()
-                    last_id = cursor.lastrowid
-                    return last_id
-                except Error as e:
-                    conn.rollback()
-                    raise
-                finally:
-                    cursor.close()
-        except Error as e:
-            print(f"Erreur lors de l'insertion: {e}")
-            raise
+    # Par défaut, MySQL pour la compatibilité locale
+    return 'mysql'
 
-# Instance globale
-db = Database()
+# Détecter le type de base de données
+_DB_TYPE = _detect_database_type()
 
-def get_db() -> Database:
-    """Retourne l'instance de la base de données"""
-    return db
+# Importer le module approprié
+if _DB_TYPE == 'postgresql':
+    try:
+        from database_postgresql import Database, get_db
+        _DB_MODULE = 'postgresql'
+    except ImportError:
+        # Fallback vers MySQL si PostgreSQL n'est pas disponible
+        try:
+            from database_mysql import Database, get_db
+            _DB_MODULE = 'mysql'
+            print("⚠️ PostgreSQL non disponible, utilisation de MySQL")
+        except ImportError:
+            raise ImportError("Aucun module de base de données disponible (MySQL ou PostgreSQL)")
+else:
+    try:
+        from database_mysql import Database, get_db
+        _DB_MODULE = 'mysql'
+    except ImportError:
+        # Fallback vers PostgreSQL si MySQL n'est pas disponible
+        try:
+            from database_postgresql import Database, get_db
+            _DB_MODULE = 'postgresql'
+            print("⚠️ MySQL non disponible, utilisation de PostgreSQL")
+        except ImportError:
+            raise ImportError("Aucun module de base de données disponible (MySQL ou PostgreSQL)")
 
+# Exporter les fonctions et classes
+__all__ = ['Database', 'get_db', '_DB_TYPE', '_DB_MODULE']
