@@ -252,11 +252,14 @@ class Database:
     def get_connection(self):
         """Context manager pour obtenir une connexion depuis le pool"""
         connection = None
+        from_pool = False  # Indicateur pour savoir si la connexion vient du pool
+        
         try:
             if self._connection_pool is None:
                 self.create_connection_pool()
             
             connection = self._connection_pool.getconn()
+            from_pool = True  # La connexion vient du pool
             yield connection
         except Exception as e:
             print(f"Erreur de connexion à la base de données: {e}")
@@ -288,15 +291,18 @@ class Database:
                     connect_params['sslmode'] = 'require'
                 
                 connection = psycopg2.connect(**connect_params)
+                from_pool = False  # La connexion est directe, pas du pool
                 yield connection
             except Exception as e2:
                 print(f"Erreur de connexion directe: {e2}")
                 raise
         finally:
             if connection:
-                if self._connection_pool:
+                if from_pool and self._connection_pool:
+                    # Remettre la connexion dans le pool seulement si elle vient du pool
                     self._connection_pool.putconn(connection)
                 else:
+                    # Fermer la connexion directe
                     connection.close()
     
     def test_connection(self) -> bool:
