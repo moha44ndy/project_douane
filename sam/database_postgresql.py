@@ -260,21 +260,33 @@ class Database:
             yield connection
         except Exception as e:
             print(f"Erreur de connexion à la base de données: {e}")
-            # En cas d'erreur, essayer une connexion directe avec IPv4 forcé
+            # En cas d'erreur, essayer une connexion directe
+            # Pour Neon, NE JAMAIS résoudre en IPv4
             try:
-                import socket
                 params = self._get_connection_params()
-                # Forcer IPv4 en résolvant le hostname en IPv4
                 host = params['host']
-                try:
-                    # Résoudre en IPv4 seulement
-                    ipv4 = socket.getaddrinfo(host, params['port'], socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
-                    params['host'] = ipv4
-                except (socket.gaierror, IndexError):
-                    pass  # Utiliser le hostname original si la résolution échoue
+                
+                # Pour Neon, utiliser le hostname directement (pas de résolution IPv4)
+                if 'neon.tech' in host or 'neon' in host.lower():
+                    print(f"🔄 Tentative de connexion directe Neon avec hostname: {host}")
+                    # Ne pas résoudre en IPv4 pour Neon
+                else:
+                    # Pour les autres services, essayer de résoudre en IPv4
+                    try:
+                        import socket
+                        ipv4 = socket.getaddrinfo(host, params['port'], socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+                        params['host'] = ipv4
+                        print(f"🔄 Tentative de connexion directe avec IPv4: {ipv4}")
+                    except (socket.gaierror, IndexError):
+                        pass  # Utiliser le hostname original si la résolution échoue
                 
                 # Supprimer connect_timeout du dict pour psycopg2.connect
                 connect_params = {k: v for k, v in params.items() if k != 'connect_timeout'}
+                
+                # Pour Neon, forcer SSL
+                if 'neon.tech' in host or 'neon' in host.lower():
+                    connect_params['sslmode'] = 'require'
+                
                 connection = psycopg2.connect(**connect_params)
                 yield connection
             except Exception as e2:
