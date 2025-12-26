@@ -1,5 +1,5 @@
 """
-Module de connexion à la base de données PostgreSQL (Supabase)
+Module de connexion à la base de données PostgreSQL (Neon)
 Système de Classification Douanière CEDEAO
 """
 import psycopg2
@@ -67,7 +67,7 @@ class Database:
                     # Tenter d'accéder aux secrets (peut lever StreamlitSecretNotFoundError)
                     secrets = st.secrets
                     if 'database' in secrets:
-                        # Pour Supabase, utiliser la connection string ou les paramètres individuels
+                        # Utiliser la connection string ou les paramètres individuels
                         if 'connection_string' in secrets['database']:
                             return {'connection_string': secrets['database']['connection_string']}
                         else:
@@ -89,7 +89,7 @@ class Database:
             pass
         
         # Sinon, utiliser les variables d'environnement
-        # Supabase fournit souvent une DATABASE_URL
+        # Neon et autres services fournissent souvent une DATABASE_URL
         database_url = os.getenv('DATABASE_URL')
         if database_url:
             return {'connection_string': database_url}
@@ -102,65 +102,6 @@ class Database:
             'database': os.getenv('DB_NAME', 'postgres')
         }
     
-    def _get_project_id(self) -> Optional[str]:
-        """Extrait le projet ID Supabase depuis les secrets ou variables d'environnement"""
-        project_id = None
-        
-        # Méthode 1: Chercher dans les secrets Streamlit
-        try:
-            if hasattr(st, 'secrets') and 'database' in st.secrets:
-                db_secrets = st.secrets['database']
-                
-                # Chercher dans le hostname direct (db.PROJECT_ID.supabase.co)
-                host = db_secrets.get('host', '')
-                if 'db.' in host and '.supabase.co' in host:
-                    project_id = host.split('db.')[1].split('.supabase.co')[0]
-                    print(f"📋 Projet ID extrait depuis hostname direct: {project_id}")
-                    return project_id
-                
-                # Chercher dans connection_string
-                if 'connection_string' in db_secrets:
-                    conn_str = db_secrets['connection_string']
-                    if 'db.' in conn_str:
-                        parts = conn_str.split('db.')
-                        if len(parts) > 1:
-                            project_id = parts[1].split('.supabase.co')[0]
-                            print(f"📋 Projet ID extrait depuis connection_string: {project_id}")
-                            return project_id
-                    # Ou dans le user (postgres.PROJECT_ID)
-                    if 'postgres.' in conn_str:
-                        parts = conn_str.split('postgres.')
-                        if len(parts) > 1:
-                            project_id = parts[1].split('@')[0].split(':')[0]
-                            print(f"📋 Projet ID extrait depuis user dans connection_string: {project_id}")
-                            return project_id
-                
-                # Chercher dans le user directement
-                user = db_secrets.get('user', '')
-                if '.' in user and user.startswith('postgres.'):
-                    project_id = user.split('postgres.')[1]
-                    print(f"📋 Projet ID extrait depuis user: {project_id}")
-                    return project_id
-        except Exception as e:
-            print(f"⚠️ Erreur extraction projet ID depuis secrets: {e}")
-        
-        # Méthode 2: Chercher dans DATABASE_URL
-        database_url = os.getenv('DATABASE_URL', '')
-        if database_url:
-            if 'db.' in database_url:
-                parts = database_url.split('db.')
-                if len(parts) > 1:
-                    project_id = parts[1].split('.supabase.co')[0]
-                    print(f"📋 Projet ID extrait depuis DATABASE_URL: {project_id}")
-                    return project_id
-        
-        # Méthode 3: Utiliser le projet ID connu (fallback)
-        if not project_id:
-            project_id = 'yrdhzpckptziyiefshga'  # Projet ID connu depuis les logs
-            print(f"📋 Utilisation du projet ID par défaut: {project_id}")
-        
-        return project_id
-    
     def _resolve_ipv4(self, hostname: str) -> str:
         """Résout un hostname en adresse IPv4 pour éviter les problèmes IPv6"""
         # Pour Neon, utiliser le hostname directement (pas de problèmes IPv4/IPv6)
@@ -168,13 +109,7 @@ class Database:
             print(f"✅ Neon détecté - utilisation du hostname directement: {hostname}")
             return hostname  # Neon gère automatiquement IPv4/IPv6
         
-        # Pour le pooling Supabase, TOUJOURS utiliser le hostname directement
-        # Le pooler gère mieux les connexions avec le hostname qu'avec une IP
-        if 'pooler.supabase.com' in hostname:
-            print(f"✅ Pooling Supabase détecté - utilisation du hostname directement: {hostname}")
-            return hostname  # Ne pas résoudre en IP pour le pooling
-        
-        # Pour les autres hostnames (port direct 5432), essayer la résolution IPv4
+        # Pour les autres hostnames, essayer la résolution IPv4
         try:
             addrinfo = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
             if addrinfo:
@@ -198,29 +133,9 @@ class Database:
             parsed = urllib.parse.urlparse(conn_str)
             
             host = parsed.hostname
-            # Résoudre en IPv4 pour éviter les problèmes IPv6
+            # Résoudre en IPv4 pour éviter les problèmes IPv6 (sauf pour Neon)
             host_ipv4 = self._resolve_ipv4(host) if host else host
-            
-            # Pour le pooling Supabase, extraire le projet ID du hostname si nécessaire
             user = parsed.username
-            if host and 'pooler.supabase.com' in host and user == 'postgres':
-                # Extraire le projet ID du hostname (ex: aws-0-eu-central-1.pooler.supabase.com)
-                # Le user doit être postgres.PROJECT_ID pour le pooling
-                # On va essayer de l'extraire depuis le hostname ou utiliser la config
-                # Si le user est juste 'postgres', on doit ajouter le projet ID
-                # Le projet ID est dans le hostname original : db.yrdhzpckptziyiefshga.supabase.co
-                # On peut aussi le trouver dans les secrets
-                try:
-                    if hasattr(st, 'secrets') and 'database' in st.secrets:
-                        db_secrets = st.secrets['database']
-                        # Chercher le projet ID dans le hostname original
-                        original_host = db_secrets.get('host', '')
-                        if 'db.' in original_host and '.supabase.co' in original_host:
-                            project_id = original_host.split('db.')[1].split('.supabase.co')[0]
-                            user = f"postgres.{project_id}"
-                            print(f"✅ User ajusté pour pooling: {user}")
-                except:
-                    pass
             
             return {
                 'host': host_ipv4,
@@ -240,26 +155,6 @@ class Database:
                     print(f"✅ Neon détecté - Host: {host}, User: {config.get('user', 'postgres')}")
                     print(f"ℹ️  Neon gère automatiquement IPv4/IPv6, utilisation du hostname directement")
                     # Ne pas résoudre en IPv4 pour Neon - utiliser le hostname directement
-                    # config['host'] reste le hostname original
-                # Pour le pooling Supabase, utiliser le hostname directement (sans résolution IPv4)
-                elif 'pooler.supabase.com' in host:
-                    current_user = config.get('user', 'postgres')
-                    print(f"🔍 Pooling Supabase détecté - Host: {host}, User: {current_user}")
-                    
-                    # Pour le pooling Supabase, le user doit être postgres.PROJECT_ID
-                    # Si le user est juste 'postgres', ajouter le projet ID
-                    if current_user == 'postgres' or '.' not in current_user:
-                        project_id = self._get_project_id()
-                        if project_id:
-                            config['user'] = f"postgres.{project_id}"
-                            print(f"✅ User ajusté pour pooling Supabase: {config['user']}")
-                        else:
-                            print(f"⚠️ Impossible de déterminer le projet ID, user reste: {current_user}")
-                    else:
-                        print(f"✅ User déjà au bon format: {current_user}")
-                    
-                    print(f"ℹ️  Utilisation du hostname directement (pas de résolution IPv4)")
-                    # Ne pas résoudre en IPv4 pour le pooling - utiliser le hostname directement
                     # config['host'] reste le hostname original
                 else:
                     # Pour les autres hostnames, résoudre en IPv4

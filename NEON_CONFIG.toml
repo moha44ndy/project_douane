@@ -1,0 +1,23 @@
+# Configuration Neon pour Streamlit Cloud → Settings → Secrets
+# Neon est plus simple que Supabase : pas de problèmes IPv4/IPv6, pas de pooling spécial
+
+# OPTION 1 : Connection String (RECOMMANDÉ)
+[database]
+connection_string = "postgresql://user:password@ep-xxx-xxx.region.aws.neon.tech/dbname?sslmode=require"
+
+# OPTION 2 : Paramètres individuels
+[database]
+host = "ep-xxx-xxx.region.aws.neon.tech"
+port = 5432
+user = "user"
+password = "password"
+database = "dbname"
+sslmode = "require"
+
+# IMPORTANT :
+# - Remplacez les valeurs par celles de votre projet Neon
+# - SSL est requis (sslmode=require)
+# - Le port standard est 5432 (pas besoin de 6543)
+# - Le user est simple (pas besoin de postgres.PROJECT_ID)
+# - Neon gère automatiquement IPv4/IPv6, pas de problèmes de connexion
+
