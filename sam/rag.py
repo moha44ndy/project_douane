@@ -39,7 +39,15 @@ _client = None
 
 # Cache LRU pour les réponses de l'API (garde les 100 dernières réponses)
 # Clé: hash du prompt, Valeur: réponse de l'API
-_api_cache = LRUCache(maxsize=100)
+# Utiliser session_state pour persister entre les pages
+_api_cache = None
+
+def get_api_cache():
+    """Obtient le cache API depuis session_state ou en crée un nouveau"""
+    import streamlit as st
+    if "_api_cache" not in st.session_state:
+        st.session_state["_api_cache"] = LRUCache(maxsize=100)
+    return st.session_state["_api_cache"]
 
 def get_openai_client():
     """Obtient le client OpenAI, en le créant si nécessaire."""
@@ -292,8 +300,18 @@ def use_llm(prompt_text, user_query=None):
     Utilise le LLM pour générer une réponse
     user_query: La requête originale de l'utilisateur (pour validation préventive)
     """
-    # Vérifier le cache avant d'appeler l'API
-    cache_key = hashlib.sha256(prompt_text.encode('utf-8')).hexdigest()
+    # Obtenir le cache depuis session_state (persiste entre les pages)
+    api_cache = get_api_cache()
+    
+    # Utiliser la requête utilisateur normalisée comme clé de cache pour garantir la persistance
+    # même si le contexte change légèrement
+    if user_query:
+        # Normaliser la requête utilisateur (minuscules, suppression espaces multiples)
+        normalized_query = ' '.join(user_query.lower().strip().split())
+        cache_key = hashlib.sha256(normalized_query.encode('utf-8')).hexdigest()
+    else:
+        # Fallback: utiliser le prompt complet si pas de user_query
+        cache_key = hashlib.sha256(prompt_text.encode('utf-8')).hexdigest()
     
     # Vérifier si le cache doit être invalidé (requêtes similaires notées négativement)
     if user_query:
@@ -302,15 +320,15 @@ def use_llm(prompt_text, user_query=None):
             if should_invalidate_cache(user_query):
                 print("⚠️ Cache invalidé: requête similaire notée négativement")
                 # Invalider le cache pour cette requête
-                if cache_key in _api_cache:
-                    del _api_cache[cache_key]
+                if cache_key in api_cache:
+                    del api_cache[cache_key]
         except Exception as e:
             print(f"Erreur lors de la vérification du cache: {e}")
     
-    if cache_key in _api_cache:
+    if cache_key in api_cache:
         print("✅ Réponse récupérée depuis le cache")
         # Marquer que la réponse vient du cache pour forcer l'insertion
-        cached_response = _api_cache[cache_key]
+        cached_response = api_cache[cache_key]
         # Ajouter un marqueur pour indiquer que c'est du cache (sera utilisé dans app.py)
         return cached_response
     
@@ -379,8 +397,9 @@ def use_llm(prompt_text, user_query=None):
 
         response_text = response.output_text
         
-        # Mettre en cache la réponse
-        _api_cache[cache_key] = response_text
+        # Mettre en cache la réponse (dans session_state pour persister entre les pages)
+        api_cache = get_api_cache()
+        api_cache[cache_key] = response_text
         print("💾 Réponse mise en cache")
         
         return response_text
@@ -390,15 +409,17 @@ def use_llm(prompt_text, user_query=None):
 
 def clear_api_cache():
     """Vide le cache des réponses API"""
-    global _api_cache
-    _api_cache.clear()
+    import streamlit as st
+    if "_api_cache" in st.session_state:
+        st.session_state["_api_cache"].clear()
     print("🧹 Cache vidé")
 
 def get_cache_stats():
     """Retourne les statistiques du cache"""
+    api_cache = get_api_cache()
     return {
-        "size": len(_api_cache),
-        "maxsize": _api_cache.maxsize
+        "size": len(api_cache),
+        "maxsize": api_cache.maxsize
     }
 
 def split_user_queries(raw_text):
