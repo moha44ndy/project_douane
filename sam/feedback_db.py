@@ -9,12 +9,11 @@ import hashlib
 
 # Essayer d'importer le module database
 try:
-    from database import get_db, _DB_TYPE
+    from database import get_db, _get_db_type
     USE_DATABASE = True
-    IS_POSTGRESQL = (_DB_TYPE == 'postgresql')
 except ImportError:
     USE_DATABASE = False
-    IS_POSTGRESQL = False
+    _get_db_type = None
 
 
 def create_feedback_columns():
@@ -28,7 +27,8 @@ def create_feedback_columns():
             return False
         
         # Vérifier si les colonnes existent déjà (syntaxe adaptée selon le type de DB)
-        if IS_POSTGRESQL:
+        is_postgresql = _get_db_type() == 'postgresql' if _get_db_type else False
+        if is_postgresql:
             check_query = """
             SELECT column_name 
             FROM information_schema.columns 
@@ -48,7 +48,7 @@ def create_feedback_columns():
         existing_columns = db.execute_query(check_query, ())
         existing_names = []
         if existing_columns:
-            if IS_POSTGRESQL:
+            if is_postgresql:
                 existing_names = [row.get('column_name', '') for row in existing_columns]
             else:
                 existing_names = [row.get('COLUMN_NAME', '') for row in existing_columns]
@@ -61,7 +61,7 @@ def create_feedback_columns():
             db.execute_update("ALTER TABLE classifications ADD COLUMN user_query_hash VARCHAR(64) NULL", ())
             # Ajouter l'index séparément
             try:
-                if IS_POSTGRESQL:
+                if is_postgresql:
                     db.execute_update("CREATE INDEX idx_query_hash ON classifications(user_query_hash)", ())
                 else:
                     db.execute_update("ALTER TABLE classifications ADD INDEX idx_query_hash (user_query_hash)", ())
@@ -69,14 +69,14 @@ def create_feedback_columns():
                 pass
         
         if 'feedback_rating' not in existing_names:
-            if IS_POSTGRESQL:
+            if is_postgresql:
                 # Pour PostgreSQL, utiliser le type ENUM créé dans le schéma
                 db.execute_update("ALTER TABLE classifications ADD COLUMN feedback_rating feedback_rating_type NULL", ())
             else:
                 db.execute_update("ALTER TABLE classifications ADD COLUMN feedback_rating ENUM('up', 'down') NULL", ())
             # Ajouter l'index séparément
             try:
-                if IS_POSTGRESQL:
+                if is_postgresql:
                     db.execute_update("CREATE INDEX idx_feedback_rating ON classifications(feedback_rating)", ())
                 else:
                     db.execute_update("ALTER TABLE classifications ADD INDEX idx_feedback_rating (feedback_rating)", ())
@@ -131,7 +131,8 @@ def save_feedback(
         query_hash = get_query_hash(user_query)
         
         # Mettre à jour toutes les classifications concernées (syntaxe adaptée)
-        if IS_POSTGRESQL:
+        is_postgresql = _get_db_type() == 'postgresql' if _get_db_type else False
+        if is_postgresql:
             update_query = """
             UPDATE classifications 
             SET user_query = %s,
@@ -184,7 +185,8 @@ def remove_feedback(
             return False, "Impossible de se connecter à la base de données"
         
         # Mettre à jour toutes les classifications concernées (syntaxe adaptée)
-        if IS_POSTGRESQL:
+        is_postgresql = _get_db_type() == 'postgresql' if _get_db_type else False
+        if is_postgresql:
             update_query = """
             UPDATE classifications 
             SET feedback_rating = NULL
@@ -220,7 +222,8 @@ def check_similar_negative_feedbacks(query: str, similarity_threshold: float = 0
             return []
         
         # Récupérer tous les feedbacks négatifs récents (syntaxe adaptée)
-        if IS_POSTGRESQL:
+        is_postgresql = _get_db_type() == 'postgresql' if _get_db_type else False
+        if is_postgresql:
             query_feedback = """
             SELECT user_query, date_classification as created_at, COUNT(*) as count
             FROM classifications
@@ -293,7 +296,8 @@ def get_negative_feedback_hashes() -> List[str]:
         if not db.test_connection():
             return []
         
-        if IS_POSTGRESQL:
+        is_postgresql = _get_db_type() == 'postgresql' if _get_db_type else False
+        if is_postgresql:
             query = """
             SELECT DISTINCT user_query_hash
             FROM classifications

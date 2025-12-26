@@ -1554,8 +1554,8 @@ def display_main_content():
                                     if descriptions:
                                         # Utiliser la syntaxe adaptée selon le type de DB
                                         try:
-                                            from database import _DB_TYPE
-                                            is_postgresql = (_DB_TYPE == 'postgresql')
+                                            from database import _get_db_type
+                                            is_postgresql = (_get_db_type() == 'postgresql')
                                         except:
                                             is_postgresql = False
                                         

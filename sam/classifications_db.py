@@ -193,8 +193,8 @@ def save_classification(json_item: dict, user_id: Optional[int] = None) -> tuple
         # Cela permet de compter toutes les requêtes, même celles qui viennent du cache
         # Insérer une nouvelle classification (avec RETURNING id pour PostgreSQL)
         try:
-            from database import _DB_TYPE
-            is_postgresql = (_DB_TYPE == 'postgresql')
+            from database import _get_db_type
+            is_postgresql = (_get_db_type() == 'postgresql')
         except:
             is_postgresql = False
         
@@ -331,8 +331,8 @@ def delete_classifications_by_ids(classification_ids: List[int], user_id: Option
         
         # Vérifier que toutes les classifications appartiennent à l'utilisateur (syntaxe adaptée)
         try:
-            from database import _DB_TYPE
-            is_postgresql = (_DB_TYPE == 'postgresql')
+            from database import _get_db_type
+            is_postgresql = (_get_db_type() == 'postgresql')
         except:
             is_postgresql = False
         
