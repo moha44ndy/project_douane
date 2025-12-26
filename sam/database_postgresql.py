@@ -104,22 +104,13 @@ class Database:
     
     def _resolve_ipv4(self, hostname: str) -> str:
         """Résout un hostname en adresse IPv4 pour éviter les problèmes IPv6"""
-        # Pour le pooling Supabase, utiliser le hostname directement si la résolution échoue
-        # Le pooler peut mieux gérer les connexions avec le hostname
+        # Pour le pooling Supabase, TOUJOURS utiliser le hostname directement
+        # Le pooler gère mieux les connexions avec le hostname qu'avec une IP
         if 'pooler.supabase.com' in hostname:
-            # Essayer de résoudre, mais si ça échoue, utiliser le hostname directement
-            try:
-                addrinfo = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
-                if addrinfo:
-                    ipv4 = addrinfo[0][4][0]
-                    print(f"✅ Hostname '{hostname}' résolu en IPv4: {ipv4}")
-                    return ipv4
-            except (socket.gaierror, IndexError, OSError) as e:
-                print(f"⚠️ Erreur résolution IPv4 pour pooling, utilisation du hostname: {e}")
-                # Pour le pooling, utiliser le hostname directement peut fonctionner
-                return hostname
+            print(f"✅ Pooling détecté - utilisation du hostname directement: {hostname}")
+            return hostname  # Ne pas résoudre en IP pour le pooling
         
-        # Pour les autres hostnames, essayer la résolution normale
+        # Pour les autres hostnames (port direct 5432), essayer la résolution IPv4
         try:
             addrinfo = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
             if addrinfo:
@@ -180,16 +171,17 @@ class Database:
                 host = config['host']
                 original_hostname = host  # Sauvegarder le hostname original
                 
-                # Pour le pooling Supabase, NE PAS ajuster automatiquement le user
-                # Le user doit être configuré exactement comme dans Supabase
+                # Pour le pooling Supabase, utiliser le hostname directement (sans résolution IPv4)
+                # Le pooler gère mieux les connexions avec le hostname
                 if 'pooler.supabase.com' in host:
                     current_user = config.get('user', 'postgres')
                     print(f"🔍 Pooling détecté - Host: {host}, User: {current_user}")
-                    print(f"ℹ️  Utilisation du user tel quel (pas d'ajustement automatique)")
-                    # Ne pas modifier le user - utiliser celui fourni dans les secrets
-                
-                # Maintenant résoudre le hostname en IPv4
-                config['host'] = self._resolve_ipv4(host)
+                    print(f"ℹ️  Utilisation du hostname directement (pas de résolution IPv4)")
+                    # Ne pas résoudre en IPv4 pour le pooling - utiliser le hostname directement
+                    # config['host'] reste le hostname original
+                else:
+                    # Pour les autres hostnames, résoudre en IPv4
+                    config['host'] = self._resolve_ipv4(host)
             return config
     
     def create_connection_pool(self):
@@ -203,20 +195,20 @@ class Database:
                 # Log pour diagnostic
                 print(f"🔍 Paramètres de connexion - Host: {host}, User: {user}, Port: {params.get('port')}, Database: {params.get('database')}")
                 
-                # Si erreur "Tenant or user not found" avec pooling, essayer avec le hostname au lieu de l'IP
-                # Certains poolers Supabase nécessitent le hostname exact
-                if 'pooler.supabase.com' in str(params.get('host', '')) or self._is_ip_address(str(host)):
-                    # Si on a résolu en IP mais que c'est du pooling, essayer avec le hostname original
-                    try:
-                        if hasattr(st, 'secrets') and 'database' in st.secrets:
-                            db_secrets = st.secrets['database']
-                            original_host = db_secrets.get('host', '')
-                            if 'pooler.supabase.com' in original_host:
-                                print(f"🔄 Tentative avec hostname original au lieu de l'IP: {original_host}")
-                                params['host'] = original_host
-                                host = original_host
-                    except:
-                        pass
+                # Pour le pooling, s'assurer qu'on utilise le hostname (pas l'IP)
+                if 'pooler.supabase.com' in str(params.get('host', '')):
+                    # Si on a résolu en IP par erreur, récupérer le hostname original
+                    if self._is_ip_address(str(host)):
+                        try:
+                            if hasattr(st, 'secrets') and 'database' in st.secrets:
+                                db_secrets = st.secrets['database']
+                                original_host = db_secrets.get('host', '')
+                                if 'pooler.supabase.com' in original_host:
+                                    print(f"🔄 Utilisation du hostname original pour pooling: {original_host}")
+                                    params['host'] = original_host
+                                    host = original_host
+                        except:
+                            pass
                 
                 # Si la résolution IPv4 a échoué et qu'on a toujours un hostname,
                 # essayer de construire une connection string avec options IPv4
