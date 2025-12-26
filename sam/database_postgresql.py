@@ -133,17 +133,31 @@ class Database:
             parsed = urllib.parse.urlparse(conn_str)
             
             host = parsed.hostname
-            # Résoudre en IPv4 pour éviter les problèmes IPv6 (sauf pour Neon)
-            host_ipv4 = self._resolve_ipv4(host) if host else host
+            # Pour Neon, utiliser le hostname directement (pas de résolution IPv4)
+            # Neon nécessite le hostname complet pour SNI (Server Name Indication)
+            if host and ('neon.tech' in host or 'neon' in host.lower()):
+                host_ipv4 = host  # Ne pas résoudre en IPv4 pour Neon
+            else:
+                # Résoudre en IPv4 pour éviter les problèmes IPv6 (pour autres services)
+                host_ipv4 = self._resolve_ipv4(host) if host else host
             user = parsed.username
             
-            return {
+            params = {
                 'host': host_ipv4,
                 'port': parsed.port or 5432,
                 'user': user,
                 'password': urllib.parse.unquote(parsed.password) if parsed.password else '',
                 'database': parsed.path.lstrip('/')
             }
+            
+            # Pour Neon, forcer SSL si pas déjà dans la connection string
+            if host and ('neon.tech' in host or 'neon' in host.lower()):
+                # Vérifier si sslmode est déjà dans les query params
+                query_params = urllib.parse.parse_qs(parsed.query)
+                if 'sslmode' not in query_params:
+                    params['sslmode'] = 'require'
+            
+            return params
         else:
             # Résoudre le hostname en IPv4 si présent
             if 'host' in config:
