@@ -36,7 +36,7 @@ Vous êtes sur la page "Branch overview". Voici comment obtenir la connection st
 
 1. **Exécutez le schéma SQL** :
    - Cliquez sur **"SQL Editor"** dans le sidebar
-   - Ouvrez `supabase_schema.sql` dans votre éditeur
+   - Ouvrez `neon_schema.sql` dans votre éditeur
    - Copiez tout le contenu et collez-le dans l'éditeur SQL de Neon
    - Cliquez sur **"Run"**
 

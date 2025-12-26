@@ -172,29 +172,7 @@ class Database:
                 # Log pour diagnostic
                 print(f"🔍 Paramètres de connexion - Host: {host}, User: {user}, Port: {params.get('port')}, Database: {params.get('database')}")
                 
-                # Si erreur "Tenant or user not found" avec pooling, essayer aussi avec juste 'postgres'
-                # Certains poolers Supabase peuvent nécessiter un format différent
-                if 'pooler.supabase.com' in str(host) and '.' in user and user.startswith('postgres.'):
-                    # Essayer d'abord avec le user complet, puis avec juste 'postgres' si ça échoue
-                    print(f"ℹ️  Si erreur 'Tenant or user not found', vérifiez:")
-                    print(f"   1. Le hostname de pooling est correct dans Supabase")
-                    print(f"   2. Le projet ID dans le user est correct")
-                    print(f"   3. Le mot de passe est exactement celui de Supabase")
                 
-                # Pour le pooling, s'assurer qu'on utilise le hostname (pas l'IP)
-                if 'pooler.supabase.com' in str(params.get('host', '')):
-                    # Si on a résolu en IP par erreur, récupérer le hostname original
-                    if self._is_ip_address(str(host)):
-                        try:
-                            if hasattr(st, 'secrets') and 'database' in st.secrets:
-                                db_secrets = st.secrets['database']
-                                original_host = db_secrets.get('host', '')
-                                if 'pooler.supabase.com' in original_host:
-                                    print(f"🔄 Utilisation du hostname original pour pooling: {original_host}")
-                                    params['host'] = original_host
-                                    host = original_host
-                        except:
-                            pass
                 
                 # Si la résolution IPv4 a échoué et qu'on a toujours un hostname,
                 # essayer de construire une connection string avec options IPv4

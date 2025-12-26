@@ -22,7 +22,7 @@ Votre projet Neon "douane" est créé ! Voici les prochaines étapes :
 ## 📋 Étape 2 : Exécuter le Schéma SQL
 
 1. Dans le sidebar gauche, cliquez sur **"SQL Editor"** (sous production)
-2. Ouvrez le fichier `supabase_schema.sql` dans votre éditeur local
+2. Ouvrez le fichier `neon_schema.sql` dans votre éditeur local
 3. Copiez tout le contenu du fichier
 4. Collez-le dans l'éditeur SQL de Neon
 5. Cliquez sur **"Run"** ou appuyez sur `Ctrl+Enter`

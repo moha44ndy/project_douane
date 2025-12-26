@@ -5,7 +5,7 @@ Vous avez votre connection string Neon ! Voici les dernières étapes :
 ## 📋 Étape 1 : Exécuter le Schéma SQL
 
 1. Dans Neon, cliquez sur **"SQL Editor"** dans le sidebar gauche
-2. Ouvrez le fichier `supabase_schema.sql` dans votre éditeur
+2. Ouvrez le fichier `neon_schema.sql` dans votre éditeur
 3. **Copiez tout le contenu** du fichier
 4. **Collez-le** dans l'éditeur SQL de Neon
 5. Cliquez sur **"Run"** ou appuyez sur `Ctrl+Enter`

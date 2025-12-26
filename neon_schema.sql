@@ -1,4 +1,4 @@
--- Script SQL pour créer la base de données dans Supabase (PostgreSQL)
+-- Script SQL pour créer la base de données dans Neon (PostgreSQL)
 -- Migration depuis MySQL vers PostgreSQL
 
 -- Créer les types ENUM

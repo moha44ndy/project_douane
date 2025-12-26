@@ -23,7 +23,7 @@ Neon est une excellente alternative à Supabase pour PostgreSQL serverless. Il o
 
 ### 3. Exécuter le Schéma SQL
 
-1. Copiez le contenu de `supabase_schema.sql`
+1. Copiez le contenu de `neon_schema.sql`
 2. Dans Neon → SQL Editor, exécutez le script
 3. Vérifiez que toutes les tables sont créées
 

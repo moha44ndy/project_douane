@@ -1,5 +1,5 @@
 """
-Module de gestion des feedbacks utilisateurs (Version PostgreSQL/Supabase)
+Module de gestion des feedbacks utilisateurs (Version PostgreSQL/Neon)
 Système de Classification Douanière CEDEAO
 """
 import streamlit as st
