@@ -615,7 +615,7 @@ def render_table_component():
 st.set_page_config(
     page_title="Mosam - Classification Tarifaire CEDEAO",
     page_icon="🏛️",
-    layout="wide",
+    layout="wide",  # "wide" pour desktop, mais optimisé pour mobile via CSS
     initial_sidebar_state="expanded"
 )
 
@@ -627,6 +627,10 @@ DOUANE_BLANC = "#FFFFFF"
 # Plus besoin d'URLs externes - Streamlit gère automatiquement les routes
 
 # CSS style militaire/cartoon inspiré du design Dribbble
+st.markdown("""
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+""", unsafe_allow_html=True)
+
 st.markdown(f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Fredoka:wght@400;500;600;700&display=swap');
@@ -1208,6 +1212,142 @@ st.markdown(f"""
         
         .stat-card:hover .stat-number {{
             animation: pulse 1s ease-in-out infinite;
+        }}
+        
+        /* ============================================
+           OPTIMISATIONS MOBILE
+           ============================================ */
+        
+        @media screen and (max-width: 768px) {{
+            /* Conteneur principal - padding réduit sur mobile */
+            .main .block-container {{
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                padding-top: 0.5rem !important;
+            }}
+            
+            /* Cartes blanches - padding réduit */
+            .white-card {{
+                padding: 1rem !important;
+                margin-bottom: 1rem !important;
+                border-radius: 15px !important;
+            }}
+            
+            /* Header - taille réduite */
+            .main-header {{
+                padding: 1rem !important;
+                margin-bottom: 1rem !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1.5rem !important;
+            }}
+            
+            /* Tableau - défilement horizontal optimisé */
+            .table-container {{
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+            }}
+            
+            .table-container table {{
+                min-width: 4500px !important;
+                font-size: 0.7rem !important;
+            }}
+            
+            /* Boutons - taille adaptée */
+            button {{
+                font-size: 0.85rem !important;
+                padding: 0.4rem 0.8rem !important;
+            }}
+            
+            /* Formulaire - largeur complète */
+            .stTextInput > div > div > input {{
+                font-size: 0.9rem !important;
+            }}
+            
+            /* Messages de chat - padding réduit */
+            .chat-message {{
+                padding: 0.8rem !important;
+                margin-bottom: 0.8rem !important;
+            }}
+            
+            /* Sidebar - optimisée pour mobile */
+            [data-testid="stSidebar"] {{
+                min-width: 200px !important;
+            }}
+            
+            /* Boutons de feedback - colonnes empilées sur mobile */
+            /* Cibler les colonnes Streamlit pour les empiler sur mobile */
+            [data-testid="column"] {{
+                min-width: auto !important;
+                width: 100% !important;
+                margin-bottom: 0.5rem !important;
+            }}
+            
+            /* Forcer les colonnes à être empilées verticalement */
+            [data-testid="stHorizontalBlock"] {{
+                flex-direction: column !important;
+            }}
+            
+            /* Statistiques - colonnes empilées */
+            .stat-card {{
+                margin-bottom: 1rem !important;
+            }}
+            
+            /* Header Streamlit - hauteur réduite */
+            header[data-testid="stHeader"] {{
+                padding: 0.3rem 0.5rem !important;
+            }}
+            
+            .header-sidebar-btn {{
+                font-size: 0.75rem !important;
+                padding: 0.3rem 0.6rem !important;
+                margin-left: 0.5rem !important;
+            }}
+        }}
+        
+        @media screen and (max-width: 480px) {{
+            /* Très petits écrans - optimisations supplémentaires */
+            .main .block-container {{
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+            }}
+            
+            .white-card {{
+                padding: 0.8rem !important;
+                border-radius: 12px !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1.2rem !important;
+            }}
+            
+            .table-container table {{
+                font-size: 0.6rem !important;
+            }}
+            
+            button {{
+                font-size: 0.75rem !important;
+                padding: 0.3rem 0.6rem !important;
+            }}
+            
+            /* Colonnes Streamlit - empilées sur très petit écran */
+            .element-container {{
+                width: 100% !important;
+            }}
+        }}
+        
+        /* Amélioration du touch sur mobile */
+        @media (hover: none) and (pointer: coarse) {{
+            button, a, [role="button"] {{
+                min-height: 44px !important;
+                min-width: 44px !important;
+            }}
+            
+            /* Désactiver les effets hover sur mobile */
+            .white-card:hover {{
+                transform: none !important;
+            }}
         }}
     </style>
 """, unsafe_allow_html=True)

@@ -263,6 +263,59 @@ st.markdown(f"""
             border-radius: 15px;
             border: 3px solid #2d5016;
         }}
+        
+        /* ============================================
+           OPTIMISATIONS MOBILE - PAGE LOGIN
+           ============================================ */
+        
+        @media screen and (max-width: 768px) {{
+            .main .block-container {{
+                padding: 0.5rem 1rem !important;
+            }}
+            
+            .welcome-box {{
+                padding: 1rem !important;
+                margin-bottom: 1rem !important;
+            }}
+            
+            .welcome-text {{
+                font-size: 1.2rem !important;
+            }}
+            
+            form[data-testid="stForm"] {{
+                padding: 1.5rem !important;
+            }}
+            
+            .login-header h1 {{
+                font-size: 1.5rem !important;
+            }}
+            
+            .login-header p {{
+                font-size: 0.9rem !important;
+            }}
+        }}
+        
+        @media screen and (max-width: 480px) {{
+            .main .block-container {{
+                padding: 0.5rem !important;
+            }}
+            
+            .welcome-box {{
+                padding: 0.8rem !important;
+            }}
+            
+            .welcome-text {{
+                font-size: 1rem !important;
+            }}
+            
+            form[data-testid="stForm"] {{
+                padding: 1rem !important;
+            }}
+            
+            .login-header h1 {{
+                font-size: 1.2rem !important;
+            }}
+        }}
     </style>
 """, unsafe_allow_html=True)
 
