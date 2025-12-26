@@ -48,7 +48,8 @@ def _detect_database_type() -> str:
                     
                     # Vérifier le port
                     port = secrets['database'].get('port', 3306)
-                    if port == 5432:
+                    # Ports PostgreSQL : 5432 (direct) et 6543 (pooling Supabase)
+                    if port == 5432 or port == 6543:
                         return 'postgresql'
                     elif port == 3306:
                         return 'mysql'
@@ -67,7 +68,8 @@ def _detect_database_type() -> str:
     
     # Vérifier le port par défaut
     port = int(os.getenv('DB_PORT', 3306))
-    if port == 5432:
+    # Ports PostgreSQL : 5432 (direct) et 6543 (pooling Supabase)
+    if port == 5432 or port == 6543:
         return 'postgresql'
     elif port == 3306:
         return 'mysql'
