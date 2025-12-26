@@ -162,13 +162,15 @@ class Database:
             # Résoudre le hostname en IPv4 si présent
             if 'host' in config:
                 host = config['host']
-                # Pour le pooling Supabase, ajuster le user si nécessaire
+                original_hostname = host  # Sauvegarder le hostname original
+                
+                # Pour le pooling Supabase, ajuster le user si nécessaire (AVANT la résolution IPv4)
                 if 'pooler.supabase.com' in host:
                     current_user = config.get('user', 'postgres')
-                    print(f"🔍 User actuel: {current_user}")
+                    print(f"🔍 Pooling détecté - Host: {host}, User actuel: {current_user}")
                     
                     # Si le user est juste 'postgres', on doit ajouter le projet ID
-                    if current_user == 'postgres' or not '.' in current_user:
+                    if current_user == 'postgres' or '.' not in current_user:
                         project_id = None
                         
                         # Méthode 1: Extraire depuis le hostname original dans les secrets
@@ -211,6 +213,7 @@ class Database:
                     else:
                         print(f"✅ User déjà au bon format: {current_user}")
                 
+                # Maintenant résoudre le hostname en IPv4
                 config['host'] = self._resolve_ipv4(host)
             return config
     
@@ -220,6 +223,10 @@ class Database:
             try:
                 params = self._get_connection_params()
                 host = params['host']
+                user = params.get('user', 'postgres')
+                
+                # Log pour diagnostic
+                print(f"🔍 Paramètres de connexion - Host: {host}, User: {user}, Port: {params.get('port')}")
                 
                 # Si la résolution IPv4 a échoué et qu'on a toujours un hostname,
                 # essayer de construire une connection string avec options IPv4
