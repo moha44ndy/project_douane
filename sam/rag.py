@@ -370,19 +370,23 @@ def use_llm(prompt_text, user_query=None):
             "\"U.S.\" = unité de mesure et \"N.T.S.\" = numéro tarifaire supplémentaire. "
             "Quand tu cites ces abréviations, ajoute toujours la définition entre parenthèses, "
             "par exemple \"D.D. (droits de douane)\". "
-            "Retourne exclusivement un objet JSON unique (aucun texte en dehors du JSON) respectant le schéma "
-            "suivant: {\"narrative\":\"texte synthétique pour le douanier\",\"classifications\":[{"
-            "\"description\":\"Résumé de la marchandise\",\"hs_code\":\"8517.13.00.00\","
-            "\"section\":\"XVI\",\"chapter\":\"85\",\"dd_rate\":\"5 %\",\"rs_rate\":\"1 %\","
-            "\"us_unit\":\"PIÈCE\",\"other_taxes\":\"TVA 18 %\","
-            "\"justification\":\"Synthèse RGI / critères\",\"excerpt\":\"Citation exacte du document\","
-            "\"origin\":\"USA\",\"value\":\"Non renseigné\",\"confidence\":92}]}. "
-            "Chaque objet de \"classifications\" doit contenir au minimum ces champs; utilise "
-            "\"Non renseigné\" si une donnée manque et veille à ce que \"chapter\" soit toujours sur deux chiffres "
-            "et \"confidence\" un nombre entre 0 et 100. Le champ \"description\" doit reprendre le nom précis "
-            "du produit classé tel qu'énoncé par le douanier (ou une reformulation très courte), afin de pouvoir "
-            "l'afficher directement dans le tableau de suivi. "
-            "Si tu dois faire une déduction, indique-le dans \"justification\"."
+            "IMPORTANT - Format de réponse: " 
+            "- Si la question concerne la classification d'un produit spécifique, retourne exclusivement un objet JSON unique (aucun texte en dehors du JSON) respectant le schéma " 
+            "suivant: {\"narrative\":\"texte synthétique pour le douanier\",\"classifications\":[{" 
+            "\"description\":\"Résumé de la marchandise\",\"hs_code\":\"8517.13.00.00\"," 
+            "\"section\":\"XVI\",\"chapter\":\"85\",\"dd_rate\":\"5 %\",\"rs_rate\":\"1 %\"," 
+            "\"us_unit\":\"PIÈCE\",\"other_taxes\":\"TVA 18 %\"," 
+            "\"justification\":\"Synthèse RGI / critères\",\"excerpt\":\"Citation exacte du document\"," 
+            "\"origin\":\"USA\",\"value\":\"Non renseigné\",\"confidence\":92}]}. " 
+            "Chaque objet de \"classifications\" doit contenir au minimum ces champs; utilise " 
+            "\"Non renseigné\" si une donnée manque et veille à ce que \"chapter\" soit toujours sur deux chiffres " 
+            "et \"confidence\" un nombre entre 0 et 100. Le champ \"description\" doit reprendre le nom précis " 
+            "du produit classé tel qu'énoncé par le douanier (ou une reformulation très courte), afin de pouvoir " 
+            "l'afficher directement dans le tableau de suivi. " 
+            "Si tu dois faire une déduction, indique-le dans \"justification\". " 
+            "- Si la question est générale (explication, information, question sur les RGI, etc.) et ne concerne PAS la classification d'un produit spécifique, " 
+            "retourne un objet JSON avec uniquement {\"narrative\":\"ta réponse textuelle complète\",\"classifications\":[]}. " 
+            "Dans ce cas, fournis une réponse claire et complète dans le champ \"narrative\" sans essayer de créer des classifications."
         )
 
         client = get_openai_client()
@@ -450,56 +454,96 @@ def build_context_for_query(query, chunks, emb, index):
     return context
 
 
+def is_general_question(user_input):
+    """Détecte si la question est générale (pas de classification de produit)"""
+    general_keywords = [
+        "qu'est-ce que", "c'est quoi", "explique", "comment fonctionne", "quelle est la différence",
+        "pourquoi", "quand", "où", "qui", "définition", "signifie", "signification", "rgi", "règles générales",
+        "qu'est-ce qu'une", "qu'est-ce qu'un", "qu'est-ce qu'", "qu'est ce que", "qu'est ce qu'",
+        "aide", "help", "assistance", "information", "informations", "explication", "expliquer"
+    ]
+    user_lower = user_input.lower().strip()
+    
+    # Si la question commence par un mot-clé général
+    for keyword in general_keywords:
+        if user_lower.startswith(keyword) or f" {keyword}" in user_lower:
+            return True
+    
+    # Si la question contient "?" et pas de nom de produit évident
+    if "?" in user_input and len(user_input.split()) < 10:
+        # Vérifier si ça ressemble à une question générale
+        question_words = ["quoi", "comment", "pourquoi", "quand", "où", "qui", "quel", "quelle", "quels", "quelles"]
+        first_words = user_lower.split()[:3]
+        if any(word in question_words for word in first_words):
+            return True
+    
+    return False
+
 def process_user_input(user_input, chunks, emb, index):
     """
     Traite l'entrée utilisateur avec validation préventive
     """
-    queries = split_user_queries(user_input)
-    if not queries:
-        return "Merci de préciser au moins une marchandise à classifier.", None
-
-    # VALIDATION PRÉVENTIVE: Vérifier les feedbacks négatifs similaires
-    warning_message = None
-    try:
-        from feedback_db import check_similar_negative_feedbacks
-        similar_feedbacks = check_similar_negative_feedbacks(user_input, similarity_threshold=0.6)
-        
-        if similar_feedbacks:
-            # Construire un message d'avertissement
-            feedback_count = sum(f['count'] for f in similar_feedbacks)
-            warning_message = (
-                f"⚠️ ATTENTION: {feedback_count} requête(s) similaire(s) ont reçu des notes négatives récemment. "
-                f"Veuillez vérifier attentivement la réponse."
-            )
-            print(f"⚠️ Validation préventive: {len(similar_feedbacks)} feedback(s) négatif(s) similaire(s) détecté(s)")
-            
-            # Ajouter un contexte d'avertissement dans le prompt
-            warning_context = "\n\n⚠️ ATTENTION IMPORTANTE: Des requêtes similaires ont reçu des feedbacks négatifs. "
-            warning_context += "Sois particulièrement attentif à la précision et à la justesse de ta réponse. "
-            warning_context += "Vérifie bien les codes tarifaires, les taux et les justifications.\n"
-    except Exception as e:
-        print(f"Erreur lors de la validation préventive: {e}")
-        warning_message = None
-
-    prompt_sections = []
-    for i, query in enumerate(queries, start=1):
-        context = build_context_for_query(query, chunks, emb, index)
-        prompt_sections.append(
-            f"[MARCHANDISE {i}]\nDescription: {query}\nContexte documentaire:\n{context}"
+    # Détecter si c'est une question générale
+    is_general = is_general_question(user_input)
+    
+    if is_general:
+        # Pour les questions générales, construire un prompt différent
+        context = build_context_for_query(user_input, chunks, emb, index)
+        enriched_prompt = (
+            f"Question du douanier: {user_input}\n\n"
+            f"Contexte documentaire disponible:\n{context}\n\n"
+            "Réponds à cette question de manière claire et complète en t'appuyant sur le contexte documentaire. "
+            "Si la question ne concerne pas la classification d'un produit spécifique, retourne uniquement "
+            "un objet JSON avec {\"narrative\":\"ta réponse textuelle complète\",\"classifications\":[]}."
         )
+    else:
+        # Traitement normal pour les classifications de produits
+        queries = split_user_queries(user_input)
+        if not queries:
+            return "Merci de préciser au moins une marchandise à classifier.", None
 
-    combined_context = "\n\n".join(prompt_sections)
-    
-    # Ajouter l'avertissement au prompt si nécessaire
-    warning_prefix = warning_context if warning_message else ""
-    
-    enriched_prompt = (
-        warning_prefix +
-        "Le douanier peut avoir fourni plusieurs marchandises. "
-        "Analyse chaque bloc ci-dessous et produis une réponse structurée avec, pour chaque marchandise, "
-        "la position tarifaire, le taux d'imposition et les détails pertinents.\n\n"
-        f"{combined_context}\n\nDemande initiale du douanier:\n{user_input}"
-    )
+        # VALIDATION PRÉVENTIVE: Vérifier les feedbacks négatifs similaires
+        warning_message = None
+        try:
+            from feedback_db import check_similar_negative_feedbacks
+            similar_feedbacks = check_similar_negative_feedbacks(user_input, similarity_threshold=0.6)
+            
+            if similar_feedbacks:
+                # Construire un message d'avertissement
+                feedback_count = sum(f['count'] for f in similar_feedbacks)
+                warning_message = (
+                    f"⚠️ ATTENTION: {feedback_count} requête(s) similaire(s) ont reçu des notes négatives récemment. "
+                    f"Veuillez vérifier attentivement la réponse."
+                )
+                print(f"⚠️ Validation préventive: {len(similar_feedbacks)} feedback(s) négatif(s) similaire(s) détecté(s)")
+                
+                # Ajouter un contexte d'avertissement dans le prompt
+                warning_context = "\n\n⚠️ ATTENTION IMPORTANTE: Des requêtes similaires ont reçu des feedbacks négatifs. "
+                warning_context += "Sois particulièrement attentif à la précision et à la justesse de ta réponse. "
+                warning_context += "Vérifie bien les codes tarifaires, les taux et les justifications.\n"
+        except Exception as e:
+            print(f"Erreur lors de la validation préventive: {e}")
+            warning_message = None
+
+        prompt_sections = []
+        for i, query in enumerate(queries, start=1):
+            context = build_context_for_query(query, chunks, emb, index)
+            prompt_sections.append(
+                f"[MARCHANDISE {i}]\nDescription: {query}\nContexte documentaire:\n{context}"
+            )
+
+        combined_context = "\n\n".join(prompt_sections)
+        
+        # Ajouter l'avertissement au prompt si nécessaire
+        warning_prefix = warning_context if warning_message else ""
+        
+        enriched_prompt = (
+            warning_prefix +
+            "Le douanier peut avoir fourni plusieurs marchandises. "
+            "Analyse chaque bloc ci-dessous et produis une réponse structurée avec, pour chaque marchandise, "
+            "la position tarifaire, le taux d'imposition et les détails pertinents.\n\n"
+            f"{combined_context}\n\nDemande initiale du douanier:\n{user_input}"
+        )
     
     print("start the send of the question")
     # Passer user_input pour la validation du cache
@@ -508,4 +552,7 @@ def process_user_input(user_input, chunks, emb, index):
     
     # Retourner la réponse avec le message d'avertissement si nécessaire
     # Le message d'avertissement sera géré dans app.py
-    return response, warning_message
+    if is_general:
+        return response, None  # Pas de warning pour les questions générales
+    else:
+        return response, warning_message
