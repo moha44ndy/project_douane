@@ -381,7 +381,7 @@ def update_user(user_id: int, nom_user: str = None, identifiant_user: str = None
         update_query = f"UPDATE users SET {', '.join(update_fields)} WHERE user_id = %s"
         db.execute_update(update_query, tuple(params))
         
-        return True, f"Utilisateur mis à jour avec succès (ID: {user_id})"
+        return True, "Utilisateur mis à jour avec succès"
         
     except Exception as e:
         return False, f"Erreur lors de la mise à jour de l'utilisateur : {str(e)}"

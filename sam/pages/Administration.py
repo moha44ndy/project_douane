@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from pathlib import Path
 from auth_db import (
-    load_users, save_users, create_user,
+    load_users, save_users, create_user, update_user,
     require_admin, get_current_user, logout, initialize_default_users
 )
 from classifications_db import load_classifications
@@ -1326,6 +1326,134 @@ def main():
     
     # Tab 2: Gestion des utilisateurs
     with tab2:
+        # Section de modification des utilisateurs (avant la recherche)
+        st.markdown(f"""
+            <div id="edit-user-section">
+                <h3 style="color: {DOUANE_OR} !important;">✏️ Modifier un utilisateur</h3>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Style simple pour mettre le label en jaune
+        st.markdown(f"""
+            <style>
+                /* Titre "Modifier un utilisateur" - forcer en jaune */
+                #edit-user-section h3,
+                #edit-user-section h3 * {{
+                    color: {DOUANE_OR} !important;
+                }}
+                
+                /* Label du selectbox "Sélectionner un utilisateur à modifier" - simple et direct */
+                #select-user-to-edit-container label,
+                #select-user-to-edit-container div[data-testid="stSelectbox"] label,
+                #select-user-to-edit-container label * {{
+                    color: {DOUANE_OR} !important;
+                }}
+            </style>
+        """, unsafe_allow_html=True)
+        
+        # Charger tous les utilisateurs pour la sélection (avant filtrage)
+        all_users_for_edit = users
+        
+        # Sélectionner un utilisateur à modifier
+        user_options = {f"{u.get('nom_user', 'N/A')} ({u.get('identifiant_user', 'N/A')})": u.get('user_id') 
+                       for u in all_users_for_edit}
+        
+        if user_options:
+            # Conteneur pour cibler le selectbox avec CSS
+            st.markdown('<div id="select-user-to-edit-container">', unsafe_allow_html=True)
+            selected_user_display = st.selectbox(
+                "Sélectionner un utilisateur à modifier",
+                options=list(user_options.keys()),
+                key="user_to_edit_select"
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            selected_user_id = user_options[selected_user_display]
+            selected_user = next((u for u in all_users_for_edit if u.get('user_id') == selected_user_id), None)
+            
+            if selected_user:
+                with st.form(f"edit_user_form_{selected_user_id}", clear_on_submit=False):
+                    st.markdown(f"**Modification de : {selected_user.get('nom_user', 'N/A')}**")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        new_nom = st.text_input(
+                            "Nom complet *",
+                            value=selected_user.get('nom_user', ''),
+                            key=f"edit_nom_{selected_user_id}"
+                        )
+                        new_identifiant = st.text_input(
+                            "Identifiant *",
+                            value=selected_user.get('identifiant_user', ''),
+                            key=f"edit_identifiant_{selected_user_id}"
+                        )
+                        new_email = st.text_input(
+                            "Email *",
+                            value=selected_user.get('email', ''),
+                            key=f"edit_email_{selected_user_id}"
+                        )
+                    
+                    with col2:
+                        new_statut = st.selectbox(
+                            "Statut *",
+                            options=['actif', 'inactif'],
+                            index=0 if selected_user.get('statut', 'actif') == 'actif' else 1,
+                            key=f"edit_statut_{selected_user_id}"
+                        )
+                        new_is_admin = st.checkbox(
+                            "👑 Accorder les privilèges d'administrateur",
+                            value=bool(selected_user.get('is_admin', False)),
+                            key=f"edit_admin_{selected_user_id}"
+                        )
+                        new_password = st.text_input(
+                            "Nouveau mot de passe",
+                            type="password",
+                            placeholder="Laissez vide pour ne pas modifier",
+                            key=f"edit_password_{selected_user_id}",
+                            help="Laissez vide pour ne pas modifier le mot de passe (minimum 6 caractères si renseigné)"
+                        )
+                    
+                    submitted = st.form_submit_button("✅ Enregistrer les modifications", use_container_width=True)
+                    
+                    if submitted:
+                        # Validation
+                        if not new_nom or not new_nom.strip():
+                            st.error("❌ Le nom complet est obligatoire")
+                        elif not new_identifiant or not new_identifiant.strip():
+                            st.error("❌ L'identifiant est obligatoire")
+                        elif not new_email or not new_email.strip():
+                            st.error("❌ L'email est obligatoire")
+                        elif new_password and len(new_password.strip()) < 6:
+                            st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
+                        else:
+                            # Préparer les paramètres de mise à jour
+                            update_params = {
+                                'nom_user': new_nom.strip(),
+                                'identifiant_user': new_identifiant.strip(),
+                                'email': new_email.strip(),
+                                'statut': new_statut,
+                                'is_admin': new_is_admin
+                            }
+                            
+                            # Ajouter le mot de passe seulement s'il est renseigné
+                            if new_password and new_password.strip():
+                                update_params['password'] = new_password.strip()
+                            
+                            # Appeler la fonction de mise à jour
+                            success, message = update_user(selected_user_id, **update_params)
+                            
+                            if success:
+                                st.success(f"✅ {message}")
+                                # Recharger les utilisateurs
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {message}")
+        else:
+            st.info("📭 Aucun utilisateur à modifier")
+        
+        st.markdown("---")
+        
         # Champ de recherche
         search_term = st.text_input(
             "🔍 Rechercher un utilisateur", 
@@ -1333,14 +1461,46 @@ def main():
             key="user_search_input"
         )
         
-        # Style pour mettre le label en blanc
-        st.markdown("""
+        # Style pour mettre le label en jaune (même style que "Modifier un utilisateur")
+        st.markdown(f"""
             <style>
                 div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label,
-                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label p {
-                    color: white !important;
-                }
+                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label p,
+                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label span {{
+                    color: {DOUANE_OR} !important;
+                }}
             </style>
+            <script>
+                // Forcer le label "Rechercher un utilisateur" en jaune
+                (function() {{
+                    function setSearchLabelYellow() {{
+                        const searchLabels = document.querySelectorAll('div[data-testid="stTextInput"] label');
+                        searchLabels.forEach(function(label) {{
+                            if (label.textContent && label.textContent.includes('Rechercher un utilisateur')) {{
+                                label.style.color = '{DOUANE_OR}';
+                                label.style.setProperty('color', '{DOUANE_OR}', 'important');
+                                const children = label.querySelectorAll('*');
+                                children.forEach(function(child) {{
+                                    child.style.color = '{DOUANE_OR}';
+                                    child.style.setProperty('color', '{DOUANE_OR}', 'important');
+                                }});
+                            }}
+                        }});
+                    }}
+                    
+                    if (document.readyState === 'loading') {{
+                        document.addEventListener('DOMContentLoaded', setSearchLabelYellow);
+                    }} else {{
+                        setSearchLabelYellow();
+                    }}
+                    
+                    setTimeout(setSearchLabelYellow, 100);
+                    setTimeout(setSearchLabelYellow, 500);
+                    
+                    const observer = new MutationObserver(setSearchLabelYellow);
+                    observer.observe(document.body, {{ childList: true, subtree: true }});
+                }})();
+            </script>
         """, unsafe_allow_html=True)
         
         # Ajouter JavaScript pour déclencher un rerun automatique après la saisie
@@ -1415,12 +1575,7 @@ def main():
         # Afficher le tableau
         st.markdown(f"""
             {table_html}
-            <script>
-                // Fonctionnalité de modification supprimée - le tableau est en lecture seule
-            </script>
         """, unsafe_allow_html=True)
-        
-        # Fonctionnalité de modification supprimée
         
         # Cacher le DataFrame Streamlit car on utilise le tableau HTML
         if len(filtered_users) > 0:
