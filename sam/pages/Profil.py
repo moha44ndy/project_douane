@@ -120,7 +120,19 @@ st.markdown(f"""
         }}
         
         .user-info-container p[style*="DOUANE_OR"],
-        .user-info-container p[style*="color: #FFD700"] {{
+        .user-info-container p[style*="color: #FFD700"],
+        .user-info-container p[style*="#FFD700"],
+        .user-info-container p[style*="FFD700"],
+        .user-info-container p[style*="color:#FFD700"],
+        .user-info-container p[style*="color: #FFD700"],
+        .user-info-container p[style*="'color: #FFD700'"],
+        .user-info-container p[style*='"color: #FFD700"'] {{
+            color: {DOUANE_OR} !important;
+        }}
+        
+        /* Forcer la couleur jaune pour le paragraphe "👑 Administrateur" */
+        .user-info-container p:last-of-type,
+        [data-testid="stSidebar"] .user-info-container p:last-of-type {{
             color: {DOUANE_OR} !important;
         }}
         
@@ -230,16 +242,17 @@ st.markdown(f"""
             z-index: 1;
         }}
         
+        /* Protéger "Direction Générale des Douanes de Côte d'Ivoire" - garder la couleur #2d5016 */
+        .main-header p:first-of-type {{
+            color: #2d5016 !important;
+        }}
+        
         /* Protéger le texte "Gérez vos informations personnelles" - garder la couleur or */
         .main-header p[style*="DOUANE_OR"],
         .main-header p[style*="color: #FFD700"],
-        .main-header p[style*="FFD700"] {{
+        .main-header p[style*="FFD700"],
+        .main-header p:last-of-type {{
             color: {DOUANE_OR} !important;
-        }}
-        
-        /* Protéger "Direction Générale des Douanes de Côte d'Ivoire" - garder la couleur #2d5016 */
-        .main-header p:not([style*="DOUANE_OR"]):not([style*="FFD700"]) {{
-            color: #2d5016 !important;
         }}
         
         /* Cartes blanches style cartoon */

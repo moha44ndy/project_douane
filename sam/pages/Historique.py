@@ -939,8 +939,11 @@ def main():
         search_term = st.text_input("🔎 Recherche", placeholder="Description, code tarifaire...", key="search_input")
     
     with col2:
-        # Extraire les sections depuis les données (structure flexible)
-        sections_set = set()
+        # Toutes les sections possibles du SH (1 à 21)
+        all_sections = [str(i) for i in range(1, 22)]  # Sections 1 à 21
+        
+        # Extraire les sections présentes dans les données pour référence
+        sections_in_data = set()
         for item in history_data:
             if isinstance(item, dict):
                 # Structure nouvelle: item.get('classification', {}).get('section', {}).get('number')
@@ -948,8 +951,10 @@ def main():
                          (item.get('classification', {}).get('section', {}).get('number') if isinstance(item.get('classification'), dict) else None) or \
                          (item.get('classification', {}).get('section') if isinstance(item.get('classification'), dict) else None)
                 if section:
-                    sections_set.add(str(section))
-        sections = ['Toutes'] + sorted(sections_set)
+                    sections_in_data.add(str(section))
+        
+        # Options: Toutes + toutes les sections possibles (1-21)
+        sections = ['Toutes'] + all_sections
         selected_section = st.selectbox("📑 Section", sections, key="section_select")
     
     with col3:
@@ -1055,15 +1060,7 @@ def main():
         
         table_html += '</tbody></table></div>'
     
-    # Tableau des résultats dans une carte blanche avec le tableau intégré
-    st.markdown(f"""
-        <div class="white-card">
-            <h2 class="section-title" style="margin-bottom: 1.5rem;">📊 Résultats ({len(filtered_data)} classification(s))</h2>
-            {table_html}
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # Bouton d'export (téléchargement direct)
+    # Bouton d'export (téléchargement direct) - placé juste avant le tableau
     if len(filtered_data) > 0:
         df = pd.DataFrame(df_data)
         csv = df.to_csv(index=False, encoding='utf-8-sig')
@@ -1074,6 +1071,14 @@ def main():
             mime="text/csv",
             use_container_width=True
         )
+    
+    # Tableau des résultats dans une carte blanche avec le tableau intégré
+    st.markdown(f"""
+        <div class="white-card">
+            <h2 class="section-title" style="margin-bottom: 1.5rem;">📊 Résultats ({len(filtered_data)} classification(s))</h2>
+            {table_html}
+        </div>
+    """, unsafe_allow_html=True)
     
     # Footer
     st.markdown(f"""
