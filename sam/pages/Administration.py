@@ -458,6 +458,9 @@ st.markdown(f"""
         /* Tabs style cartoon */
         .stTabs [data-baseweb="tab-list"] {{
             gap: 8px;
+            flex-wrap: wrap;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }}
         
         .stTabs [data-baseweb="tab"] {{
@@ -468,6 +471,12 @@ st.markdown(f"""
             font-family: 'Fredoka', sans-serif;
             font-weight: 600;
             color: {DOUANE_VERT};
+            min-height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+            flex-shrink: 0;
         }}
         
         .stTabs [aria-selected="true"] {{
@@ -706,6 +715,21 @@ st.markdown(f"""
                 flex-wrap: wrap !important;
             }}
             
+            /* Tabs - responsivité pour tablette */
+            .stTabs [data-baseweb="tab-list"] {{
+                gap: 4px !important;
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+            }}
+            
+            .stTabs [data-baseweb="tab"] {{
+                padding: 0.5rem 0.8rem !important;
+                font-size: 0.85rem !important;
+                min-height: 40px !important;
+                min-width: auto !important;
+                flex: 0 0 auto !important;
+            }}
+            
             /* Markdown et textes - ajustement */
             .stMarkdown {{
                 font-size: 0.9rem !important;
@@ -766,6 +790,22 @@ st.markdown(f"""
                 min-height: 40px !important;
             }}
             
+            /* Tabs - responsivité pour mobile */
+            .stTabs [data-baseweb="tab-list"] {{
+                gap: 3px !important;
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+                padding-bottom: 5px !important;
+            }}
+            
+            .stTabs [data-baseweb="tab"] {{
+                padding: 0.4rem 0.6rem !important;
+                font-size: 0.75rem !important;
+                min-height: 44px !important;
+                min-width: auto !important;
+                flex: 0 0 auto !important;
+            }}
+            
             /* Inputs */
             .stTextInput > div > div > input,
             .stTextArea > div > div > textarea,
@@ -806,6 +846,20 @@ st.markdown(f"""
             .main .block-container {{
                 padding-left: 0.3rem !important;
                 padding-right: 0.3rem !important;
+            }}
+            
+            /* Tabs - très petits écrans */
+            .stTabs [data-baseweb="tab-list"] {{
+                gap: 2px !important;
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+            }}
+            
+            .stTabs [data-baseweb="tab"] {{
+                padding: 0.35rem 0.5rem !important;
+                font-size: 0.7rem !important;
+                min-height: 44px !important;
+                min-width: auto !important;
             }}
             
             .white-card {{

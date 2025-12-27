@@ -230,10 +230,16 @@ st.markdown(f"""
             z-index: 1;
         }}
         
-        /* Protéger le texte "Gérez vos informations personnelles" */
+        /* Protéger le texte "Gérez vos informations personnelles" - garder la couleur or */
         .main-header p[style*="DOUANE_OR"],
-        .main-header p[style*="color: #FFD700"] {{
+        .main-header p[style*="color: #FFD700"],
+        .main-header p[style*="FFD700"] {{
             color: {DOUANE_OR} !important;
+        }}
+        
+        /* Protéger "Direction Générale des Douanes de Côte d'Ivoire" - garder la couleur #2d5016 */
+        .main-header p:not([style*="DOUANE_OR"]):not([style*="FFD700"]) {{
+            color: #2d5016 !important;
         }}
         
         /* Cartes blanches style cartoon */
@@ -317,9 +323,9 @@ st.markdown(f"""
             color: {DOUANE_VERT} !important;
         }}
         
-        /* Styles pour les labels de text_input */
+        /* Styles pour les labels de text_input - en blanc */
         .stTextInput label {{
-            color: {DOUANE_VERT} !important;
+            color: white !important;
             font-family: 'Fredoka', sans-serif;
             font-weight: 600;
             font-size: 1.1rem;

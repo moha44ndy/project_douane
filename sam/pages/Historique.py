@@ -331,9 +331,25 @@ st.markdown(f"""
             font-size: 1.5rem;
         }}
         
-        /* Styles pour les labels de text_input */
+        /* Styles pour les labels de text_input - en blanc */
         .stTextInput label {{
-            color: {DOUANE_VERT} !important;
+            color: white !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }}
+        
+        /* Styles pour les labels de selectbox - en blanc */
+        .stSelectbox label {{
+            color: white !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }}
+        
+        /* Styles pour les labels de date_input - en blanc */
+        .stDateInput label {{
+            color: white !important;
             font-family: 'Fredoka', sans-serif;
             font-weight: 600;
             font-size: 1.1rem;
