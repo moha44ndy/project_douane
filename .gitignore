@@ -16,3 +16,6 @@ sam/redis/*.pdb
 sam/redis/*.dll
 sam/redis/*.conf
 sam/redis/*.docx
+
+# Fichiers de test
+sam/test_all_functionalities.py
