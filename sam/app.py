@@ -1885,8 +1885,6 @@ def display_main_content():
                             print(f"DEBUG: user contient 'user_id': {'user_id' in user}")
                             print(f"DEBUG: user contient 'identifiant_user': {'identifiant_user' in user}")
                         st.warning("⚠️ Utilisateur non identifié. Les données sont enregistrées localement mais pas dans la base de données.")
-                        st.write(f"🔍 Debug: session_state['user'] = {st.session_state.get('user')}")
-                        st.write(f"🔍 Debug: query_params['user_id'] = {st.query_params.get('user_id')}")
                         
                         # Retirer le flag de sauvegarde en cours
                         if f"saving_{response_id}" in st.query_params:
@@ -1942,8 +1940,6 @@ def display_main_content():
                     # Utilisateur non identifié - ne pas sauvegarder
                     pass
                     st.warning("⚠️ Utilisateur non identifié. Les données sont enregistrées localement mais pas dans la base de données.")
-                    st.write(f"🔍 Debug: session_state['user'] = {st.session_state.get('user')}")
-                    st.write(f"🔍 Debug: query_params['user_id'] = {st.query_params.get('user_id')}")
         else:
             fallback_text = response or f"⚠️ {parse_error}"
             response_id = f"response_{int(time.time() * 1000)}"
