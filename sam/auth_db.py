@@ -256,17 +256,28 @@ def create_user(nom_user: str, identifiant_user: str, email: str,
                 if len(password) < 6:
                     return False, "Le mot de passe doit contenir au moins 6 caractères"
                 
+                # Détecter le type de base de données pour adapter la valeur is_admin
+                try:
+                    from database import _get_db_type
+                    is_postgresql = (_get_db_type() == 'postgresql')
+                except:
+                    is_postgresql = False
+                
                 # Créer le nouvel utilisateur dans la base de données
                 insert_query = """
                     INSERT INTO users (nom_user, identifiant_user, email, password_hash, statut, is_admin)
                     VALUES (%s, %s, %s, %s, 'actif', %s)
                 """
                 
+                # Adapter la valeur is_admin selon le type de base de données
+                # PostgreSQL accepte True/False, MySQL accepte 1/0
+                is_admin_value = is_admin if is_postgresql else (1 if is_admin else 0)
+                
                 # Debug: Afficher les données avant insertion
-                print(f"DEBUG: Création utilisateur - nom={nom_user}, identifiant={identifiant_user}, email={email}")
+                print(f"DEBUG: Création utilisateur - nom={nom_user}, identifiant={identifiant_user}, email={email}, is_admin={is_admin_value} (DB: {'PostgreSQL' if is_postgresql else 'MySQL'})")
                 
                 user_id = db.execute_insert(insert_query, (
-                    nom_user, identifiant_user, email, hash_password(password), 1 if is_admin else 0
+                    nom_user, identifiant_user, email, hash_password(password), is_admin_value
                 ))
                 
                 print(f"DEBUG: Utilisateur créé avec ID: {user_id}")

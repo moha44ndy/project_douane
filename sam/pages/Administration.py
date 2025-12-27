@@ -1182,22 +1182,34 @@ def main():
             submitted = st.form_submit_button("✅ Créer l'Utilisateur", use_container_width=True)
             
             if submitted:
-                success, message = create_user(
-                    nom_user=nom_user,
-                    identifiant_user=identifiant_user,
-                    email=email,
-                    password=password,
-                    is_admin=is_admin
-                )
-                if success:
-                    st.success(f"✅ {message}")
-                    # Attendre un peu pour que l'utilisateur voie le message
-                    import time
-                    time.sleep(0.5)
-                    st.rerun()
+                # Validation des champs obligatoires
+                if not nom_user or not nom_user.strip():
+                    st.error("❌ Le nom complet est obligatoire")
+                elif not identifiant_user or not identifiant_user.strip():
+                    st.error("❌ L'identifiant est obligatoire")
+                elif not email or not email.strip():
+                    st.error("❌ L'email est obligatoire")
+                elif not password or not password.strip():
+                    st.error("❌ Le mot de passe est obligatoire")
+                elif len(password) < 6:
+                    st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
                 else:
-                    st.error(f"❌ {message}")
-                    # Ne pas faire rerun en cas d'erreur pour que l'utilisateur voie le message
+                    success, message = create_user(
+                        nom_user=nom_user.strip(),
+                        identifiant_user=identifiant_user.strip(),
+                        email=email.strip(),
+                        password=password,
+                        is_admin=is_admin
+                    )
+                    if success:
+                        st.success(f"✅ {message}")
+                        # Attendre un peu pour que l'utilisateur voie le message
+                        import time
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {message}")
+                        # Ne pas faire rerun en cas d'erreur pour que l'utilisateur voie le message
     
     # Tab 2: Gestion des utilisateurs
     with tab2:
