@@ -594,7 +594,7 @@ def render_table_component():
                 except Exception as e:
                     st.error(f"❌ Erreur lors du vidage: {e}")
                     import traceback
-                    st.code(traceback.format_exc())
+                    print(f"Traceback: {traceback.format_exc()}")  # Log uniquement, pas d'affichage dans l'UI
             else:
                 st.session_state.confirm_clear = True
                 st.warning("⚠️ Cliquez à nouveau pour confirmer la suppression")
