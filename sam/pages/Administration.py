@@ -123,8 +123,31 @@ st.markdown(f"""
             visibility: visible !important;
         }}
         
+        /* Masquer les logos GitHub et Streamlit dans le header */
         .stDeployButton {{
-            display: block !important;
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
+        [data-testid="stDecoration"] {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
+        /* Masquer le bouton Fork GitHub */
+        header a[href*="github.com"],
+        header a[href*="github.io"],
+        header a[title*="Fork"],
+        header a[aria-label*="Fork"] {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        
+        /* Masquer les icônes GitHub dans le header */
+        header svg[viewBox*="github"],
+        header svg[aria-label*="GitHub"] {{
+            display: none !important;
+            visibility: hidden !important;
         }}
         
         [data-testid="stToolbar"] {{
