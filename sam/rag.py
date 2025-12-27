@@ -108,30 +108,70 @@ def get_openai_client():
                 try:
                     # Tenter d'accéder aux secrets (peut lever StreamlitSecretNotFoundError)
                     secrets = st.secrets
-                    if 'OPENAI_API_KEY' in secrets:
-                        api_key = secrets['OPENAI_API_KEY']
-                    elif 'openai' in secrets and 'api_key' in secrets['openai']:
-                        api_key = secrets['openai']['api_key']
-                except StreamlitSecretNotFoundError:
+                    print("DEBUG: Accès aux secrets Streamlit...")
+                    
+                    # Essayer différentes structures de secrets
+                    if hasattr(secrets, 'get'):
+                        # Méthode 1: Clé directe au niveau racine
+                        api_key = secrets.get('OPENAI_API_KEY')
+                        if api_key:
+                            print("DEBUG: OPENAI_API_KEY trouvée dans secrets (niveau racine)")
+                    
+                    # Méthode 2: Structure imbriquée [openai] api_key = "..."
+                    if not api_key and hasattr(secrets, 'get'):
+                        openai_secrets = secrets.get('openai', {})
+                        if isinstance(openai_secrets, dict):
+                            api_key = openai_secrets.get('api_key')
+                            if api_key:
+                                print("DEBUG: OPENAI_API_KEY trouvée dans secrets[openai][api_key]")
+                    
+                    # Méthode 3: Accès direct avec try/except
+                    if not api_key:
+                        try:
+                            api_key = secrets['OPENAI_API_KEY']
+                            print("DEBUG: OPENAI_API_KEY trouvée via accès direct")
+                        except (KeyError, TypeError):
+                            pass
+                    
+                    # Méthode 4: Accès imbriqué direct
+                    if not api_key:
+                        try:
+                            api_key = secrets['openai']['api_key']
+                            print("DEBUG: OPENAI_API_KEY trouvée via secrets['openai']['api_key']")
+                        except (KeyError, TypeError):
+                            pass
+                            
+                except StreamlitSecretNotFoundError as e:
                     # Fichier secrets.toml non trouvé, utiliser .env
+                    print(f"DEBUG: StreamlitSecretNotFoundError: {e}")
                     pass
-                except (KeyError, AttributeError, TypeError):
+                except Exception as e:
                     # Erreur lors de l'accès aux secrets, utiliser .env
+                    print(f"DEBUG: Erreur lors de l'accès aux secrets: {type(e).__name__}: {e}")
                     pass
-        except ImportError:
+        except ImportError as e:
+            print(f"DEBUG: ImportError pour streamlit: {e}")
             pass
         
         # Sinon, utiliser les variables d'environnement
         if not api_key:
             api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                print("DEBUG: OPENAI_API_KEY trouvée dans les variables d'environnement")
         
         if not api_key:
-            raise ValueError(
+            error_msg = (
                 "OPENAI_API_KEY n'est pas définie. "
                 "Veuillez configurer cette variable d'environnement dans le fichier .env "
-                "ou dans les paramètres de Streamlit Cloud (secrets)."
+                "ou dans les paramètres de Streamlit Cloud (secrets).\n\n"
+                "Pour Streamlit Cloud, ajoutez dans .streamlit/secrets.toml :\n"
+                "OPENAI_API_KEY = \"votre-clé-api\"\n\n"
+                "Ou via l'interface Streamlit Cloud : Settings > Secrets"
             )
+            raise ValueError(error_msg)
+        
         _client = OpenAI(api_key=api_key)
+        print("DEBUG: Client OpenAI initialisé avec succès")
     return _client
 # Configuration
 from_code = "en"
