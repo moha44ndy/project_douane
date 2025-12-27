@@ -340,6 +340,25 @@ st.markdown(f"""
             font-weight: 700;
         }}
         
+        /* Styles pour les titres h4 dans markdown (section mot de passe) - FORCER en blanc */
+        .stMarkdown h4 {{
+            color: white !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 700;
+            font-size: 1.3rem;
+        }}
+        
+        /* Styles pour les paragraphes markdown - FORCER en blanc sauf sidebar et header */
+        .stMarkdown p:not(.user-info-container p):not(.main-header p) {{
+            color: white !important;
+        }}
+        
+        /* Forcer spécifiquement les paragraphes après le h4 "Changer mon mot de passe" */
+        .stMarkdown h4 + p,
+        .stMarkdown h4 ~ p {{
+            color: white !important;
+        }}
+        
         /* Info card */
         .info-card {{
             background: linear-gradient(135deg, {DOUANE_VERT} 0%, #2d5016 100%);
