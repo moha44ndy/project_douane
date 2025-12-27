@@ -114,6 +114,10 @@ st.markdown(f"""
         header[data-testid="stHeader"] {{
             display: flex !important;
             height: auto !important;
+            background: white !important;
+            border-bottom: 3px solid {DOUANE_VERT} !important;
+            padding: 0.5rem 1rem !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
         }}
         
         /* Afficher tous les boutons du header */
@@ -432,6 +436,7 @@ st.markdown(f"""
             
             /* Header Streamlit - hauteur réduite */
             header[data-testid="stHeader"] {{
+                background: white !important;
                 padding: 0.3rem 0.5rem !important;
                 flex-wrap: wrap !important;
             }}

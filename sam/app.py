@@ -1366,6 +1366,7 @@ st.markdown(f"""
             
             /* Header Streamlit - hauteur réduite */
             header[data-testid="stHeader"] {{
+                background: white !important;
                 padding: 0.3rem 0.5rem !important;
                 flex-wrap: wrap !important;
             }}
