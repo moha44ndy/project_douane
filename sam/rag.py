@@ -18,7 +18,6 @@ import urllib3
 import json
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from openai import OpenAI
-from cachetools import LRUCache
 
 # Importer l'exception Streamlit pour les secrets
 try:
@@ -26,6 +25,21 @@ try:
 except ImportError:
     # Pour les versions plus anciennes de Streamlit
     StreamlitSecretNotFoundError = Exception
+
+# Importer le module de cache Redis
+try:
+    from cache_redis import (
+        get_from_cache,
+        set_to_cache,
+        delete_from_cache,
+        clear_cache,
+        get_cache_stats,
+        is_redis_available
+    )
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    print("⚠️ Module cache_redis non disponible, utilisation du cache local")
 
 # Charger le .env depuis la racine du projet
 env_path = Path(__file__).parent.parent / '.env'
@@ -37,17 +51,17 @@ else:
 # Variable globale pour le client OpenAI (initialisée de manière paresseuse)
 _client = None
 
-# Cache LRU pour les réponses de l'API (garde les 100 dernières réponses)
-# Clé: hash du prompt, Valeur: réponse de l'API
+# Cache local de fallback (si Redis n'est pas disponible)
 # Utiliser session_state pour persister entre les pages
-_api_cache = None
+_local_cache = None
 
-def get_api_cache():
-    """Obtient le cache API depuis session_state ou en crée un nouveau"""
+def get_local_cache():
+    """Obtient le cache local depuis session_state (fallback si Redis n'est pas disponible)"""
     import streamlit as st
-    if "_api_cache" not in st.session_state:
-        st.session_state["_api_cache"] = LRUCache(maxsize=100)
-    return st.session_state["_api_cache"]
+    global _local_cache
+    if "_local_cache" not in st.session_state:
+        st.session_state["_local_cache"] = {}
+    return st.session_state["_local_cache"]
 
 def get_openai_client():
     """Obtient le client OpenAI, en le créant si nécessaire."""
@@ -300,37 +314,40 @@ def use_llm(prompt_text, user_query=None):
     Utilise le LLM pour générer une réponse
     user_query: La requête originale de l'utilisateur (pour validation préventive)
     """
-    # Obtenir le cache depuis session_state (persiste entre les pages)
-    api_cache = get_api_cache()
-    
-    # Utiliser la requête utilisateur normalisée comme clé de cache pour garantir la persistance
-    # même si le contexte change légèrement
+    # Utiliser la requête utilisateur normalisée comme clé de cache
     if user_query:
         # Normaliser la requête utilisateur (minuscules, suppression espaces multiples)
         normalized_query = ' '.join(user_query.lower().strip().split())
-        cache_key = hashlib.sha256(normalized_query.encode('utf-8')).hexdigest()
+        cache_query = normalized_query
     else:
         # Fallback: utiliser le prompt complet si pas de user_query
-        cache_key = hashlib.sha256(prompt_text.encode('utf-8')).hexdigest()
+        cache_query = prompt_text
     
     # Vérifier si le cache doit être invalidé (requêtes similaires notées négativement)
-    if user_query:
+    if user_query and REDIS_AVAILABLE:
         try:
             from feedback_db import should_invalidate_cache
             if should_invalidate_cache(user_query):
                 print("⚠️ Cache invalidé: requête similaire notée négativement")
-                # Invalider le cache pour cette requête
-                if cache_key in api_cache:
-                    del api_cache[cache_key]
+                # Invalider le cache pour cette requête (Redis)
+                delete_from_cache(cache_query)
         except Exception as e:
             print(f"Erreur lors de la vérification du cache: {e}")
     
-    if cache_key in api_cache:
-        print("✅ Réponse récupérée depuis le cache")
-        # Marquer que la réponse vient du cache pour forcer l'insertion
-        cached_response = api_cache[cache_key]
-        # Ajouter un marqueur pour indiquer que c'est du cache (sera utilisé dans app.py)
-        return cached_response
+    # Essayer de récupérer depuis le cache Redis (partagé entre tous les utilisateurs)
+    if REDIS_AVAILABLE:
+        cached_response = get_from_cache(cache_query)
+        if cached_response:
+            return cached_response
+    
+    # Fallback: utiliser le cache local (session_state) si Redis n'est pas disponible
+    if not REDIS_AVAILABLE or not is_redis_available():
+        local_cache = get_local_cache()
+        cache_key = hashlib.sha256(cache_query.encode('utf-8')).hexdigest()
+        
+        if cache_key in local_cache:
+            print("✅ Réponse récupérée depuis le cache local")
+            return local_cache[cache_key]
     
     try:
         system_instruction = (
@@ -401,10 +418,17 @@ def use_llm(prompt_text, user_query=None):
 
         response_text = response.output_text
         
-        # Mettre en cache la réponse (dans session_state pour persister entre les pages)
-        api_cache = get_api_cache()
-        api_cache[cache_key] = response_text
-        print("💾 Réponse mise en cache")
+        # Mettre en cache la réponse (Redis partagé ou cache local)
+        if REDIS_AVAILABLE and is_redis_available():
+            # Cache Redis partagé (TTL de 7 jours par défaut)
+            # Les règles douanières changent rarement, donc 7 jours est approprié
+            set_to_cache(cache_query, response_text, ttl=604800)  # 7 jours = 604800 secondes
+        else:
+            # Fallback: cache local (session_state)
+            local_cache = get_local_cache()
+            cache_key = hashlib.sha256(cache_query.encode('utf-8')).hexdigest()
+            local_cache[cache_key] = response_text
+            print("💾 Réponse mise en cache local")
         
         return response_text
 
@@ -412,19 +436,35 @@ def use_llm(prompt_text, user_query=None):
         return f"Erreur lors de l'appel au modèle OpenAI : {e}"
 
 def clear_api_cache():
-    """Vide le cache des réponses API"""
+    """Vide le cache des réponses API (Redis et cache local)"""
+    # Vider le cache Redis
+    if REDIS_AVAILABLE and is_redis_available():
+        deleted_count = clear_cache("cache:llm:*")
+        if deleted_count > 0:
+            print(f"🧹 {deleted_count} entrée(s) supprimée(s) du cache Redis")
+        else:
+            print("🧹 Cache Redis vidé")
+    
+    # Vider le cache local (fallback)
     import streamlit as st
-    if "_api_cache" in st.session_state:
-        st.session_state["_api_cache"].clear()
-    print("🧹 Cache vidé")
+    if "_local_cache" in st.session_state:
+        st.session_state["_local_cache"].clear()
+        print("🧹 Cache local vidé")
 
 def get_cache_stats():
-    """Retourne les statistiques du cache"""
-    api_cache = get_api_cache()
-    return {
-        "size": len(api_cache),
-        "maxsize": api_cache.maxsize
-    }
+    """Retourne les statistiques du cache (Redis ou local)"""
+    if REDIS_AVAILABLE and is_redis_available():
+        # Statistiques Redis
+        from cache_redis import get_cache_stats as get_redis_stats
+        return get_redis_stats()
+    else:
+        # Statistiques cache local
+        local_cache = get_local_cache()
+        return {
+            "enabled": False,
+            "size": len(local_cache),
+            "status": "Cache local (Redis non disponible)"
+        }
 
 def split_user_queries(raw_text):
     """Découpe l'entrée utilisateur si plusieurs articles sont fournis d'un coup."""
