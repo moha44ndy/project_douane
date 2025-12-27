@@ -1326,17 +1326,21 @@ def main():
     
     # Tab 2: Gestion des utilisateurs
     with tab2:
-        # Utiliser le champ Streamlit natif d'abord (sera intégré dans le conteneur via CSS)
+        # Champ de recherche
         search_term = st.text_input(
             "🔍 Rechercher un utilisateur", 
             placeholder="Nom, identifiant, email...", 
             key="user_search_input"
         )
         
-        # Créer le conteneur blanc avec le titre (le champ de recherche sera positionné juste en dessous)
-        st.markdown(f"""
-            <div class="white-card user-management-section">
-                <h2 class="section-title" style="margin-top: 0; margin-bottom: 1.5rem; padding-top: 0;">👥 Gestion des Utilisateurs</h2>
+        # Style pour mettre le label en blanc
+        st.markdown("""
+            <style>
+                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label,
+                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label p {
+                    color: white !important;
+                }
+            </style>
         """, unsafe_allow_html=True)
         
         # Ajouter JavaScript pour déclencher un rerun automatique après la saisie
@@ -1408,46 +1412,12 @@ def main():
             
             table_html += '</tbody></table></div>'
         
-        # Fermer le conteneur blanc avec le tableau
+        # Afficher le tableau
         st.markdown(f"""
-                {table_html}
-            </div>
+            {table_html}
             <script>
                 // Fonctionnalité de modification supprimée - le tableau est en lecture seule
             </script>
-            <style>
-                /* Positionner le champ de recherche juste en dessous du titre dans le conteneur blanc */
-                .user-management-section {{
-                    position: relative;
-                }}
-                /* Déplacer le champ de recherche pour qu'il soit juste après le titre avec un espace */
-                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) {{
-                    position: absolute;
-                    top: 5.5rem;
-                    left: 2rem;
-                    right: 2rem;
-                    width: calc(100% - 4rem) !important;
-                    z-index: 10;
-                    background: white;
-                }}
-                /* Ajuster le padding du conteneur pour faire de la place au champ */
-                .user-management-section {{
-                    padding-top: 7rem;
-                }}
-                /* S'assurer que le titre est en haut avec un petit espace */
-                .user-management-section h2 {{
-                    margin-top: 0 !important;
-                    padding-top: 1rem !important;
-                    position: absolute;
-                    top: 0;
-                    left: 2rem;
-                    right: 2rem;
-                }}
-                /* S'assurer que le label est bien positionné */
-                div[data-testid="stTextInput"]:has(input[placeholder*="Nom, identifiant, email"]) label {{
-                    margin-bottom: 0.5rem;
-                }}
-            </style>
         """, unsafe_allow_html=True)
         
         # Fonctionnalité de modification supprimée

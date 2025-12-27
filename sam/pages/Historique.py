@@ -20,6 +20,31 @@ DOUANE_VERT = "#1B5E20"
 DOUANE_OR = "#FFD700"
 DOUANE_BLANC = "#FFFFFF"
 
+# Fonction pour convertir un nombre en chiffres romains
+def to_roman(num):
+    """Convertit un nombre en chiffres romains"""
+    val = [
+        1000, 900, 500, 400,
+        100, 90, 50, 40,
+        10, 9, 5, 4,
+        1
+    ]
+    syb = [
+        "M", "CM", "D", "CD",
+        "C", "XC", "L", "XL",
+        "X", "IX", "V", "IV",
+        "I"
+    ]
+    roman_num = ''
+    i = 0
+    num = int(num)
+    while num > 0:
+        for _ in range(num // val[i]):
+            roman_num += syb[i]
+            num -= val[i]
+        i += 1
+    return roman_num
+
 # CSS style cohérent avec l'application principale
 st.markdown("""
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
@@ -953,9 +978,24 @@ def main():
                 if section:
                     sections_in_data.add(str(section))
         
-        # Options: Toutes + toutes les sections possibles (1-21)
-        sections = ['Toutes'] + all_sections
-        selected_section = st.selectbox("📑 Section", sections, key="section_select")
+        # Options: Toutes + toutes les sections possibles (1-21) avec affichage en chiffres romains
+        # Créer les options avec chiffres romains pour l'affichage
+        section_options = ['Toutes'] + [f"Section {to_roman(i)}" for i in range(1, 22)]
+        section_values = ['Toutes'] + all_sections
+        
+        # Créer le selectbox avec les options affichées en chiffres romains
+        selected_option = st.selectbox("📑 Section", section_options, key="section_select")
+        
+        # Convertir l'option sélectionnée (avec chiffres romains) en valeur interne (chiffre arabe)
+        if selected_option == 'Toutes':
+            selected_section = 'Toutes'
+        else:
+            # Trouver l'index de l'option sélectionnée et utiliser la valeur correspondante
+            try:
+                index = section_options.index(selected_option)
+                selected_section = section_values[index]
+            except (ValueError, IndexError):
+                selected_section = 'Toutes'
     
     with col3:
         # Filtre par statut supprimé (statut_validation n'est plus utilisé)
