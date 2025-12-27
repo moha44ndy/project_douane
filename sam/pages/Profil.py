@@ -303,12 +303,18 @@ st.markdown(f"""
             text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.1);
         }}
         
-        /* Styles pour les titres h3 dans markdown */
-        .stMarkdown h3 {{
-            color: {DOUANE_VERT} !important;
+        /* Styles pour les titres h3 dans markdown - en blanc pour les sections principales */
+        .stMarkdown h3:not(.user-info-container h3) {{
+            color: white !important;
             font-family: 'Fredoka', sans-serif;
             font-weight: 700;
             font-size: 1.5rem;
+        }}
+        
+        /* Protéger les h3 dans la sidebar - garder la couleur verte */
+        .user-info-container h3,
+        [data-testid="stSidebar"] .user-info-container h3 {{
+            color: {DOUANE_VERT} !important;
         }}
         
         /* Styles pour les labels de text_input */
