@@ -41,11 +41,36 @@ except ImportError:
     REDIS_AVAILABLE = False
     print("⚠️ Module cache_redis non disponible, utilisation du cache local")
 
+# Fonction helper pour obtenir le répertoire du fichier rag.py de manière robuste
+def get_rag_dir():
+    """Obtient le répertoire du fichier rag.py de manière robuste pour tous les environnements"""
+    try:
+        # Essayer d'abord avec __file__ (fonctionne en local)
+        return os.path.dirname(os.path.abspath(__file__))
+    except (NameError, AttributeError):
+        # Fallback pour Streamlit Cloud ou autres environnements
+        try:
+            # Utiliser le répertoire de travail actuel
+            rag_dir = os.getcwd()
+            # Si on est dans le dossier sam, on y reste, sinon on cherche sam/
+            if not os.path.basename(rag_dir) == "sam":
+                sam_path = os.path.join(rag_dir, "sam")
+                if os.path.exists(sam_path):
+                    rag_dir = sam_path
+            return rag_dir
+        except Exception:
+            # Dernier recours : utiliser le répertoire courant
+            return os.getcwd()
+
 # Charger le .env depuis la racine du projet
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(env_path)
-else:
+try:
+    rag_dir = get_rag_dir()
+    env_path = Path(rag_dir).parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+    else:
+        load_dotenv()  # Fallback to default .env location
+except Exception:
     load_dotenv()  # Fallback to default .env location
 
 # Variable globale pour le client OpenAI (initialisée de manière paresseuse)
@@ -126,7 +151,7 @@ def load_documents_and_create_chunks():
     """Charger les documents, les traduire et les diviser en chunks."""
     
     # Obtenir le répertoire du fichier rag.py
-    rag_dir = os.path.dirname(os.path.abspath(__file__))
+    rag_dir = get_rag_dir()
     chunks_filepath = os.path.join(rag_dir, "chunks.json")
     
     if os.path.exists(chunks_filepath):
@@ -188,8 +213,8 @@ def load_documents_and_create_chunks():
 
 def initialize_chatbot():
     faiss.omp_set_num_threads(3)
-    # Obtenir le répertoire du fichier rag.py
-    rag_dir = os.path.dirname(os.path.abspath(__file__))
+    # Obtenir le répertoire du fichier rag.py de manière robuste
+    rag_dir = get_rag_dir()
     index_path = os.path.join(rag_dir, "indexFaiss", "local_index.faiss")
     
     # Toujours créer les chunks
@@ -347,7 +372,7 @@ def create_faiss_index(chunks, emb):
     print(f"✅ Index FAISS créé avec {index.ntotal} vecteurs")
     
     # Obtenir le répertoire du fichier rag.py
-    rag_dir = os.path.dirname(os.path.abspath(__file__))
+    rag_dir = get_rag_dir()
     index_dir = os.path.join(rag_dir, "indexFaiss")
     
     # Créer le dossier si nécessaire
