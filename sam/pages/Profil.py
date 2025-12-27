@@ -314,6 +314,28 @@ st.markdown(f"""
             font-weight: 700;
         }}
         
+        /* Styles pour les titres h4 dans markdown (section mot de passe) */
+        .stMarkdown h4 {{
+            color: white !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 700;
+            font-size: 1.3rem;
+        }}
+        
+        /* Styles pour le texte markdown normal (paragraphes) - en blanc */
+        .stMarkdown p {{
+            color: white !important;
+        }}
+        
+        /* Styles pour les labels de text_input dans le formulaire de mot de passe */
+        form[data-testid*="modify_profile"] .stTextInput label,
+        form[data-testid*="modify_profile"] label {{
+            color: white !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }}
+        
         /* Info card */
         .info-card {{
             background: linear-gradient(135deg, {DOUANE_VERT} 0%, #2d5016 100%);
