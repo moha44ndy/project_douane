@@ -19,6 +19,10 @@ DOUANE_OR = "#FFD700"
 DOUANE_BLANC = "#FFFFFF"
 
 # CSS style inspiré de la page principale
+st.markdown("""
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+""", unsafe_allow_html=True)
+
 st.markdown(f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Fredoka:wght@400;500;600;700&display=swap');
@@ -265,21 +269,43 @@ st.markdown(f"""
         }}
         
         /* ============================================
-           OPTIMISATIONS MOBILE - PAGE LOGIN
+           OPTIMISATIONS RESPONSIVE - PAGE LOGIN
            ============================================ */
         
+        /* Viewport meta pour mobile */
+        @media screen and (max-width: 1024px) {{
+            .main .block-container {{
+                max-width: 100% !important;
+                padding: 1rem 1.5rem !important;
+            }}
+            
+            .welcome-box {{
+                padding: 1.5rem !important;
+            }}
+        }}
+        
+        /* Tablettes et mobiles (768px et moins) */
         @media screen and (max-width: 768px) {{
             .main .block-container {{
                 padding: 0.5rem 1rem !important;
+                max-width: 100% !important;
             }}
             
             .welcome-box {{
                 padding: 1rem !important;
                 margin-bottom: 1rem !important;
+                border-radius: 15px !important;
+            }}
+            
+            .welcome-box::before {{
+                font-size: 2.5rem !important;
+                top: -15px !important;
+                padding: 0.4rem !important;
             }}
             
             .welcome-text {{
                 font-size: 1.2rem !important;
+                margin-top: 1rem !important;
             }}
             
             form[data-testid="stForm"] {{
@@ -288,32 +314,144 @@ st.markdown(f"""
             
             .login-header h1 {{
                 font-size: 1.5rem !important;
+                line-height: 1.3 !important;
             }}
             
             .login-header p {{
                 font-size: 0.9rem !important;
             }}
+            
+            /* Inputs - largeur complète */
+            .stTextInput > div > div > input,
+            .stTextInput > div > div > input:focus {{
+                font-size: 1rem !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+            }}
+            
+            /* Boutons - largeur complète */
+            button, .stButton > button {{
+                font-size: 0.9rem !important;
+                padding: 0.5rem 1rem !important;
+                width: 100% !important;
+                min-height: 44px !important;
+                box-sizing: border-box !important;
+            }}
+            
+            /* Messages d'alerte */
+            .stAlert {{
+                padding: 0.8rem !important;
+                font-size: 0.9rem !important;
+            }}
         }}
         
+        /* Petits mobiles (480px et moins) */
         @media screen and (max-width: 480px) {{
             .main .block-container {{
                 padding: 0.5rem !important;
+                max-width: 100% !important;
             }}
             
             .welcome-box {{
                 padding: 0.8rem !important;
+                margin-bottom: 0.8rem !important;
+                border-radius: 12px !important;
+            }}
+            
+            .welcome-box::before {{
+                font-size: 2rem !important;
+                top: -12px !important;
+                padding: 0.3rem !important;
             }}
             
             .welcome-text {{
                 font-size: 1rem !important;
+                margin-top: 0.8rem !important;
+                line-height: 1.3 !important;
             }}
             
             form[data-testid="stForm"] {{
                 padding: 1rem !important;
             }}
             
+            .login-header {{
+                padding: 0.8rem !important;
+            }}
+            
             .login-header h1 {{
                 font-size: 1.2rem !important;
+                line-height: 1.2 !important;
+            }}
+            
+            .login-header p {{
+                font-size: 0.85rem !important;
+            }}
+            
+            /* Inputs */
+            .stTextInput > div > div > input {{
+                font-size: 0.95rem !important;
+                padding: 0.5rem !important;
+            }}
+            
+            /* Boutons */
+            button, .stButton > button {{
+                font-size: 0.85rem !important;
+                padding: 0.4rem 0.8rem !important;
+                min-height: 40px !important;
+            }}
+            
+            /* Messages d'alerte */
+            .stAlert {{
+                padding: 0.6rem !important;
+                font-size: 0.85rem !important;
+            }}
+        }}
+        
+        /* Très petits écrans (360px et moins) */
+        @media screen and (max-width: 360px) {{
+            .main .block-container {{
+                padding: 0.3rem !important;
+            }}
+            
+            .welcome-box {{
+                padding: 0.6rem !important;
+                border-radius: 10px !important;
+            }}
+            
+            .welcome-box::before {{
+                font-size: 1.8rem !important;
+                top: -10px !important;
+                padding: 0.25rem !important;
+            }}
+            
+            .welcome-text {{
+                font-size: 0.9rem !important;
+            }}
+            
+            .login-header h1 {{
+                font-size: 1rem !important;
+            }}
+            
+            form[data-testid="stForm"] {{
+                padding: 0.8rem !important;
+            }}
+            
+            button, .stButton > button {{
+                font-size: 0.8rem !important;
+                padding: 0.35rem 0.7rem !important;
+                min-height: 36px !important;
+            }}
+        }}
+        
+        /* Amélioration du touch sur mobile */
+        @media (hover: none) and (pointer: coarse) {{
+            button, a, [role="button"], .stButton > button {{
+                min-height: 44px !important;
+                min-width: 44px !important;
+            }}
+            
+            .stTextInput > div > div > input {{
+                min-height: 44px !important;
             }}
         }}
     </style>
