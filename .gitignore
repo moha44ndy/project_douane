@@ -18,3 +18,7 @@ sam/redis/*.conf
 sam/redis/*.docx
 
 # Fichiers de test (supprimés)
+
+# Fichiers de base de données
+douane_db.sql
+*.sql
