@@ -204,12 +204,48 @@ def initialize_chatbot():
     
     print("🤖 Chargement du modèle d'embeddings...")
     try:
-        # Optimiser le chargement du modèle pour réduire l'utilisation mémoire
+        # Forcer l'utilisation du CPU pour éviter les problèmes de device sur Streamlit Cloud
+        # Désactiver certaines optimisations qui peuvent causer des NotImplementedError
+        import os
+        # Définir des variables d'environnement pour forcer le CPU
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        
+        # Configuration minimale et sécurisée pour Streamlit Cloud
         emb = HuggingFaceEmbeddings(
             model_name=MODEL_DIR, 
             encode_kwargs={"normalize_embeddings": True},
-            model_kwargs={"device": "cpu", "trust_remote_code": False}  # Forcer l'utilisation du CPU
+            model_kwargs={
+                "device": "cpu",
+                "trust_remote_code": False
+            }
         )
+        print("✅ Modèle d'embeddings chargé avec succès (CPU)")
+    except NotImplementedError as e:
+        # Erreur spécifique pour les opérations non implémentées dans PyTorch
+        print(f"⚠️ NotImplementedError détectée: {str(e)}")
+        print("🔄 Tentative avec configuration alternative...")
+        try:
+            # Essayer sans model_kwargs pour utiliser les paramètres par défaut
+            emb = HuggingFaceEmbeddings(
+                model_name=MODEL_DIR, 
+                encode_kwargs={"normalize_embeddings": True}
+            )
+            print("✅ Modèle chargé avec configuration alternative")
+        except Exception as e2:
+            error_msg = f"""
+            ❌ ERREUR LORS DU CHARGEMENT DU MODÈLE D'EMBEDDINGS
+            
+            Le modèle ne peut pas être chargé sur l'environnement actuel.
+            Erreur NotImplementedError: {str(e)}
+            Erreur alternative: {str(e2)}
+            
+            Solutions possibles :
+            1. Vérifier que le modèle est disponible dans {MODEL_DIR}
+            2. Vérifier les permissions d'accès aux fichiers
+            3. Vérifier la compatibilité de PyTorch avec l'environnement Streamlit Cloud
+            4. Contacter le support technique
+            """
+            raise RuntimeError(error_msg) from e2
     except OSError as e:
         if "1455" in str(e) or "pagination" in str(e).lower() or "paging" in str(e).lower():
             error_msg = """
@@ -230,6 +266,31 @@ def initialize_chatbot():
             raise RuntimeError(error_msg) from e
         else:
             raise
+    except Exception as e:
+        # Gestion d'erreur générique pour toutes les autres exceptions
+        print(f"⚠️ Erreur lors du chargement du modèle: {type(e).__name__}: {str(e)}")
+        print("🔄 Tentative avec configuration minimale...")
+        try:
+            # Dernière tentative avec configuration minimale
+            emb = HuggingFaceEmbeddings(
+                model_name=MODEL_DIR, 
+                encode_kwargs={"normalize_embeddings": True}
+                # Pas de model_kwargs pour utiliser les paramètres par défaut
+            )
+        except Exception as e2:
+            error_msg = f"""
+            ❌ ERREUR LORS DU CHARGEMENT DU MODÈLE D'EMBEDDINGS
+            
+            Le modèle ne peut pas être chargé malgré plusieurs tentatives.
+            Erreur initiale: {type(e).__name__}: {str(e)}
+            Erreur finale: {type(e2).__name__}: {str(e2)}
+            
+            Veuillez vérifier :
+            1. Que le modèle est disponible dans {MODEL_DIR}
+            2. Que toutes les dépendances sont installées
+            3. Les logs de l'application pour plus de détails
+            """
+            raise RuntimeError(error_msg) from e2
 
     if os.path.exists(index_path):
         # Charger l'index directement depuis le fichier FAISS
