@@ -21,6 +21,10 @@ DOUANE_OR = "#FFD700"
 DOUANE_BLANC = "#FFFFFF"
 
 # CSS style cohérent avec l'application principale
+st.markdown("""
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+""", unsafe_allow_html=True)
+
 st.markdown(f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Fredoka:wght@400;500;600;700&display=swap');
@@ -409,6 +413,272 @@ st.markdown(f"""
         
         table tr:hover {{
             background: rgba(255, 215, 0, 0.1) !important;
+        }}
+        
+        /* ============================================
+           OPTIMISATIONS RESPONSIVE - PAGE HISTORIQUE
+           ============================================ */
+        
+        /* Tablettes (1024px et moins) */
+        @media screen and (max-width: 1024px) {{
+            .main .block-container {{
+                padding-left: 1.5rem !important;
+                padding-right: 1.5rem !important;
+            }}
+            
+            .white-card {{
+                padding: 1.5rem !important;
+            }}
+            
+            /* Colonnes Streamlit - réduire la largeur */
+            [data-testid="column"] {{
+                flex: 0 0 auto !important;
+            }}
+        }}
+        
+        /* Tablettes et mobiles (768px et moins) */
+        @media screen and (max-width: 768px) {{
+            /* Conteneur principal - padding réduit sur mobile */
+            .main .block-container {{
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                padding-top: 0.5rem !important;
+                max-width: 100% !important;
+            }}
+            
+            /* Cartes blanches - padding réduit */
+            .white-card {{
+                padding: 1rem !important;
+                margin-bottom: 1rem !important;
+                border-radius: 15px !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+            }}
+            
+            /* Header - taille réduite */
+            .main-header {{
+                padding: 1rem !important;
+                margin-bottom: 1rem !important;
+                flex-direction: column !important;
+                align-items: flex-start !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1.5rem !important;
+                margin-bottom: 0.5rem !important;
+            }}
+            
+            .main-header p {{
+                font-size: 0.85rem !important;
+            }}
+            
+            /* Statistiques - colonnes empilées */
+            .stat-card {{
+                margin-bottom: 1rem !important;
+                width: 100% !important;
+            }}
+            
+            /* DataFrames - largeur complète avec défilement */
+            .stDataFrame, div[data-testid="stDataFrame"] {{
+                width: 100% !important;
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+            }}
+            
+            /* Tableaux - défilement horizontal */
+            table {{
+                min-width: 600px !important;
+                font-size: 0.85rem !important;
+            }}
+            
+            table th, table td {{
+                padding: 0.5rem !important;
+                font-size: 0.85rem !important;
+            }}
+            
+            /* Inputs - largeur complète */
+            .stTextInput > div > div > input,
+            .stSelectbox > div > div > select {{
+                font-size: 0.9rem !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+            }}
+            
+            /* Boutons - taille adaptée */
+            button, .stButton > button {{
+                font-size: 0.9rem !important;
+                padding: 0.5rem 1rem !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+            }}
+            
+            /* FORCER les colonnes Streamlit à s'empiler verticalement */
+            [data-testid="stHorizontalBlock"] {{
+                flex-direction: column !important;
+                display: flex !important;
+            }}
+            
+            [data-testid="column"] {{
+                min-width: 100% !important;
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                margin-bottom: 0.5rem !important;
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+            }}
+            
+            /* Sidebar - optimisée pour mobile */
+            [data-testid="stSidebar"] {{
+                min-width: 200px !important;
+                max-width: 80vw !important;
+            }}
+            
+            /* Header Streamlit - hauteur réduite */
+            header[data-testid="stHeader"] {{
+                padding: 0.3rem 0.5rem !important;
+                flex-wrap: wrap !important;
+            }}
+            
+            /* Markdown et textes - ajustement */
+            .stMarkdown {{
+                font-size: 0.9rem !important;
+            }}
+            
+            /* Métriques - taille réduite */
+            [data-testid="stMetricValue"] {{
+                font-size: 1.2rem !important;
+            }}
+            
+            [data-testid="stMetricLabel"] {{
+                font-size: 0.85rem !important;
+            }}
+        }}
+        
+        /* Petits mobiles (480px et moins) */
+        @media screen and (max-width: 480px) {{
+            /* Très petits écrans - optimisations supplémentaires */
+            .main .block-container {{
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+                padding-top: 0.3rem !important;
+            }}
+            
+            .white-card {{
+                padding: 0.8rem !important;
+                border-radius: 12px !important;
+                margin-bottom: 0.8rem !important;
+            }}
+            
+            .main-header {{
+                padding: 0.8rem !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1.2rem !important;
+                line-height: 1.2 !important;
+            }}
+            
+            .main-header p {{
+                font-size: 0.75rem !important;
+            }}
+            
+            /* Tableaux - taille réduite */
+            table {{
+                min-width: 500px !important;
+                font-size: 0.75rem !important;
+            }}
+            
+            table th, table td {{
+                padding: 0.4rem !important;
+                font-size: 0.75rem !important;
+            }}
+            
+            button, .stButton > button {{
+                font-size: 0.85rem !important;
+                padding: 0.4rem 0.8rem !important;
+                min-height: 40px !important;
+            }}
+            
+            /* Inputs */
+            .stTextInput > div > div > input,
+            .stSelectbox > div > div > select {{
+                font-size: 0.85rem !important;
+                padding: 0.6rem 0.8rem !important;
+            }}
+            
+            /* Métriques */
+            [data-testid="stMetricValue"] {{
+                font-size: 1rem !important;
+            }}
+            
+            [data-testid="stMetricLabel"] {{
+                font-size: 0.8rem !important;
+            }}
+            
+            /* Colonnes Streamlit - empilées sur très petit écran */
+            .element-container {{
+                width: 100% !important;
+                max-width: 100% !important;
+            }}
+            
+            /* Sidebar encore plus compacte */
+            [data-testid="stSidebar"] {{
+                min-width: 180px !important;
+                max-width: 75vw !important;
+            }}
+        }}
+        
+        /* Très petits écrans (360px et moins) */
+        @media screen and (max-width: 360px) {{
+            .main .block-container {{
+                padding-left: 0.3rem !important;
+                padding-right: 0.3rem !important;
+            }}
+            
+            .white-card {{
+                padding: 0.6rem !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1rem !important;
+            }}
+            
+            table {{
+                font-size: 0.7rem !important;
+            }}
+            
+            table th, table td {{
+                padding: 0.3rem !important;
+                font-size: 0.7rem !important;
+            }}
+            
+            button, .stButton > button {{
+                font-size: 0.8rem !important;
+                padding: 0.35rem 0.7rem !important;
+                min-height: 36px !important;
+            }}
+        }}
+        
+        /* Amélioration du touch sur mobile */
+        @media (hover: none) and (pointer: coarse) {{
+            button, a, [role="button"], .stButton > button {{
+                min-height: 44px !important;
+                min-width: 44px !important;
+            }}
+            
+            .stTextInput > div > div > input,
+            .stSelectbox > div > div > select {{
+                min-height: 44px !important;
+            }}
+            
+            /* Désactiver les effets hover sur mobile */
+            .white-card:hover {{
+                transform: none !important;
+            }}
+            
+            table tr:hover {{
+                background: #f5f5f5 !important;
+            }}
         }}
     </style>
 """, unsafe_allow_html=True)
