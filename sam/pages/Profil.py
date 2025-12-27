@@ -210,7 +210,7 @@ st.markdown(f"""
         }}
         
         .main-header h1 {{
-            color: {DOUANE_VERT};
+            color: {DOUANE_VERT} !important;
             font-family: 'Fredoka', sans-serif;
             font-size: 2.5rem;
             font-weight: 700;
@@ -222,12 +222,18 @@ st.markdown(f"""
         }}
         
         .main-header p {{
-            color: #2d5016;
+            color: #2d5016 !important;
             font-size: 1.1rem;
             font-weight: 500;
             margin: 0;
             position: relative;
             z-index: 1;
+        }}
+        
+        /* Protéger le texte "Gérez vos informations personnelles" */
+        .main-header p[style*="DOUANE_OR"],
+        .main-header p[style*="color: #FFD700"] {{
+            color: {DOUANE_OR} !important;
         }}
         
         /* Cartes blanches style cartoon */
