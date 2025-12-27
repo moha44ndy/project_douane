@@ -222,6 +222,9 @@ def load_documents_and_create_chunks():
 def initialize_chatbot():
     faiss.omp_set_num_threads(3)
     # Obtenir le répertoire du fichier rag.py de manière robuste
+    # Import os au niveau de la fonction pour éviter les problèmes de portée
+    import os as os_module
+    
     try:
         rag_dir = get_rag_dir()
         if not rag_dir:
@@ -230,10 +233,10 @@ def initialize_chatbot():
     except Exception as e:
         print(f"ERREUR lors de l'obtention de rag_dir: {e}")
         # Fallback absolu
-        rag_dir = os.getcwd()
+        rag_dir = os_module.getcwd()
         print(f"DEBUG: Utilisation du répertoire courant comme fallback: {rag_dir}")
     
-    index_path = os.path.join(rag_dir, "indexFaiss", "local_index.faiss")
+    index_path = os_module.path.join(rag_dir, "indexFaiss", "local_index.faiss")
     
     # Toujours créer les chunks
     print("start loading document and create chunks")
@@ -249,9 +252,9 @@ def initialize_chatbot():
     try:
         # Forcer l'utilisation du CPU pour éviter les problèmes de device sur Streamlit Cloud
         # Désactiver certaines optimisations qui peuvent causer des NotImplementedError
-        import os
+        import os as os_env
         # Définir des variables d'environnement pour forcer le CPU
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os_env.environ["CUDA_VISIBLE_DEVICES"] = ""
         
         # Configuration minimale et sécurisée pour Streamlit Cloud
         emb = HuggingFaceEmbeddings(
@@ -335,7 +338,7 @@ def initialize_chatbot():
             """
             raise RuntimeError(error_msg) from e2
 
-    if os.path.exists(index_path):
+    if os_module.path.exists(index_path):
         # Charger l'index directement depuis le fichier FAISS
         index = faiss.read_index(index_path)
         print(f"✅ Index chargé depuis le fichier existant ({index.ntotal} vecteurs)")
