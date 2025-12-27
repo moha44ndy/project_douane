@@ -19,6 +19,10 @@ DOUANE_OR = "#FFD700"
 DOUANE_BLANC = "#FFFFFF"
 
 # CSS style cohérent avec l'application principale
+st.markdown("""
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+""", unsafe_allow_html=True)
+
 st.markdown(f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Fredoka:wght@400;500;600;700&display=swap');
@@ -308,6 +312,248 @@ st.markdown(f"""
         
         .sidebar-toggle-btn:active {{
             transform: translateY(-1px);
+        }}
+        
+        /* ============================================
+           OPTIMISATIONS RESPONSIVE - PAGE PROFIL
+           ============================================ */
+        
+        /* Tablettes (1024px et moins) */
+        @media screen and (max-width: 1024px) {{
+            .main .block-container {{
+                padding-left: 1.5rem !important;
+                padding-right: 1.5rem !important;
+            }}
+            
+            .white-card {{
+                padding: 1.5rem !important;
+            }}
+            
+            /* Colonnes Streamlit - réduire la largeur */
+            [data-testid="column"] {{
+                flex: 0 0 auto !important;
+            }}
+        }}
+        
+        /* Tablettes et mobiles (768px et moins) */
+        @media screen and (max-width: 768px) {{
+            /* Conteneur principal - padding réduit sur mobile */
+            .main .block-container {{
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                padding-top: 0.5rem !important;
+                max-width: 100% !important;
+            }}
+            
+            /* Cartes blanches - padding réduit */
+            .white-card {{
+                padding: 1rem !important;
+                margin-bottom: 1rem !important;
+                border-radius: 15px !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+            }}
+            
+            /* Header - taille réduite */
+            .main-header {{
+                padding: 1rem !important;
+                margin-bottom: 1rem !important;
+                flex-direction: column !important;
+                align-items: flex-start !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1.5rem !important;
+                margin-bottom: 0.5rem !important;
+            }}
+            
+            .main-header p {{
+                font-size: 0.85rem !important;
+            }}
+            
+            /* Section title */
+            .section-title {{
+                font-size: 1.5rem !important;
+                margin-bottom: 1rem !important;
+            }}
+            
+            /* Info cards */
+            .info-card {{
+                padding: 1rem !important;
+                margin-bottom: 0.8rem !important;
+            }}
+            
+            .info-value {{
+                font-size: 1rem !important;
+            }}
+            
+            /* Boutons - taille adaptée */
+            button, .stButton > button {{
+                font-size: 0.9rem !important;
+                padding: 0.5rem 1rem !important;
+                width: 100% !important;
+                box-sizing: border-box !important;
+            }}
+            
+            /* Inputs - largeur complète */
+            .stTextInput > div > div > input,
+            .stTextArea > div > div > textarea {{
+                font-size: 0.9rem !important;
+                width: 100% !important;
+                padding: 0.8rem 1rem !important;
+            }}
+            
+            /* User info container */
+            .user-info-container {{
+                padding: 1rem !important;
+                margin: 0.8rem 0 !important;
+            }}
+            
+            /* FORCER les colonnes Streamlit à s'empiler verticalement */
+            [data-testid="stHorizontalBlock"] {{
+                flex-direction: column !important;
+                display: flex !important;
+            }}
+            
+            [data-testid="column"] {{
+                min-width: 100% !important;
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                margin-bottom: 0.5rem !important;
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+            }}
+            
+            /* Sidebar - optimisée pour mobile */
+            [data-testid="stSidebar"] {{
+                min-width: 200px !important;
+                max-width: 80vw !important;
+            }}
+            
+            /* Header Streamlit - hauteur réduite */
+            header[data-testid="stHeader"] {{
+                padding: 0.3rem 0.5rem !important;
+                flex-wrap: wrap !important;
+            }}
+            
+            /* Markdown et textes - ajustement */
+            .stMarkdown {{
+                font-size: 0.9rem !important;
+            }}
+        }}
+        
+        /* Petits mobiles (480px et moins) */
+        @media screen and (max-width: 480px) {{
+            /* Très petits écrans - optimisations supplémentaires */
+            .main .block-container {{
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+                padding-top: 0.3rem !important;
+            }}
+            
+            .white-card {{
+                padding: 0.8rem !important;
+                border-radius: 12px !important;
+                margin-bottom: 0.8rem !important;
+            }}
+            
+            .main-header {{
+                padding: 0.8rem !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1.2rem !important;
+                line-height: 1.2 !important;
+            }}
+            
+            .main-header p {{
+                font-size: 0.75rem !important;
+            }}
+            
+            .section-title {{
+                font-size: 1.2rem !important;
+            }}
+            
+            .info-card {{
+                padding: 0.8rem !important;
+            }}
+            
+            .info-value {{
+                font-size: 0.9rem !important;
+            }}
+            
+            button, .stButton > button {{
+                font-size: 0.85rem !important;
+                padding: 0.4rem 0.8rem !important;
+                min-height: 40px !important;
+            }}
+            
+            /* Inputs */
+            .stTextInput > div > div > input,
+            .stTextArea > div > div > textarea {{
+                font-size: 0.85rem !important;
+                padding: 0.6rem 0.8rem !important;
+            }}
+            
+            .user-info-container {{
+                padding: 0.8rem !important;
+            }}
+            
+            /* Colonnes Streamlit - empilées sur très petit écran */
+            .element-container {{
+                width: 100% !important;
+                max-width: 100% !important;
+            }}
+            
+            /* Sidebar encore plus compacte */
+            [data-testid="stSidebar"] {{
+                min-width: 180px !important;
+                max-width: 75vw !important;
+            }}
+        }}
+        
+        /* Très petits écrans (360px et moins) */
+        @media screen and (max-width: 360px) {{
+            .main .block-container {{
+                padding-left: 0.3rem !important;
+                padding-right: 0.3rem !important;
+            }}
+            
+            .white-card {{
+                padding: 0.6rem !important;
+            }}
+            
+            .main-header h1 {{
+                font-size: 1rem !important;
+            }}
+            
+            .section-title {{
+                font-size: 1rem !important;
+            }}
+            
+            button, .stButton > button {{
+                font-size: 0.8rem !important;
+                padding: 0.35rem 0.7rem !important;
+                min-height: 36px !important;
+            }}
+        }}
+        
+        /* Amélioration du touch sur mobile */
+        @media (hover: none) and (pointer: coarse) {{
+            button, a, [role="button"], .stButton > button {{
+                min-height: 44px !important;
+                min-width: 44px !important;
+            }}
+            
+            .stTextInput > div > div > input,
+            .stTextArea > div > div > textarea {{
+                min-height: 44px !important;
+            }}
+            
+            /* Désactiver les effets hover sur mobile */
+            .white-card:hover {{
+                transform: none !important;
+            }}
         }}
     </style>
 """, unsafe_allow_html=True)
