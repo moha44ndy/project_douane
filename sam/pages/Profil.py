@@ -252,12 +252,43 @@ st.markdown(f"""
         
         /* Titres de section style cartoon */
         .section-title {{
-            color: {DOUANE_VERT};
+            color: {DOUANE_VERT} !important;
             font-family: 'Fredoka', sans-serif;
             font-size: 2rem;
             font-weight: 700;
             margin-bottom: 1.5rem;
             text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.1);
+        }}
+        
+        /* Styles pour les titres h3 dans markdown */
+        .stMarkdown h3 {{
+            color: {DOUANE_VERT} !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 700;
+            font-size: 1.5rem;
+        }}
+        
+        /* Styles pour les labels de text_input */
+        .stTextInput label {{
+            color: {DOUANE_VERT} !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }}
+        
+        /* Styles pour les labels de metric */
+        .stMetric label {{
+            color: {DOUANE_VERT} !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }}
+        
+        /* Styles pour les valeurs de metric */
+        .stMetric [data-testid="stMetricValue"] {{
+            color: {DOUANE_VERT} !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 700;
         }}
         
         /* Info card */
