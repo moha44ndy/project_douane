@@ -334,6 +334,14 @@ st.markdown(f"""
             font-size: 1.1rem;
         }}
         
+        /* Style pour le label "Statut *" du selectbox - même couleur que text_input */
+        .stSelectbox label {{
+            color: {DOUANE_VERT} !important;
+            font-family: 'Fredoka', sans-serif;
+            font-weight: 600;
+            font-size: 1.1rem;
+        }}
+        
         /* Styles pour les labels de metric */
         .stMetric label {{
             color: {DOUANE_VERT} !important;
@@ -1362,11 +1370,52 @@ def main():
             # Conteneur pour cibler le selectbox avec CSS
             st.markdown('<div id="select-user-to-edit-container">', unsafe_allow_html=True)
             selected_user_display = st.selectbox(
-                "Sélectionner un utilisateur à modifier",
+                "",
                 options=list(user_options.keys()),
                 key="user_to_edit_select"
             )
             st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Script pour mettre le label "Statut *" en vert (même couleur que text_input comme "Nom complet *")
+            st.markdown(f"""
+                <script>
+                    (function() {{
+                        function setStatutLabelGreen() {{
+                            const labels = document.querySelectorAll('div[data-testid="stSelectbox"] label');
+                            labels.forEach(function(label) {{
+                                const text = label.textContent ? label.textContent.trim() : '';
+                                // "Statut *" en vert (même couleur que text_input comme "Nom complet *")
+                                if (text === 'Statut *') {{
+                                    label.style.color = '{DOUANE_VERT}';
+                                    label.style.setProperty('color', '{DOUANE_VERT}', 'important');
+                                    label.style.fontFamily = "'Fredoka', sans-serif";
+                                    label.style.fontWeight = '600';
+                                    label.style.fontSize = '1.1rem';
+                                    const children = label.querySelectorAll('*');
+                                    children.forEach(function(child) {{
+                                        child.style.color = '{DOUANE_VERT}';
+                                        child.style.setProperty('color', '{DOUANE_VERT}', 'important');
+                                    }});
+                                }}
+                            }});
+                        }}
+                        
+                        if (document.readyState === 'loading') {{
+                            document.addEventListener('DOMContentLoaded', setStatutLabelGreen);
+                        }} else {{
+                            setStatutLabelGreen();
+                        }}
+                        
+                        setTimeout(setStatutLabelGreen, 100);
+                        setTimeout(setStatutLabelGreen, 300);
+                        setTimeout(setStatutLabelGreen, 500);
+                        setTimeout(setStatutLabelGreen, 1000);
+                        
+                        const observer = new MutationObserver(setStatutLabelGreen);
+                        observer.observe(document.body, {{ childList: true, subtree: true }});
+                    }})();
+                </script>
+            """, unsafe_allow_html=True)
             
             selected_user_id = user_options[selected_user_display]
             selected_user = next((u for u in all_users_for_edit if u.get('user_id') == selected_user_id), None)
