@@ -456,37 +456,10 @@ def main():
     if not st.query_params.get('user_id'):
         st.query_params['user_id'] = current_user.get('identifiant_user', '')
     
-    # Préserver les query_params importants lors du refresh (comme sur la page principale)
-    # Vérifier d'abord session_state (persiste entre pages), puis query_params (persiste après refresh)
-    preserve_params = {}
-    
-    # Vérifier session_state d'abord (priorité)
-    if "_table_cleared" in st.session_state:
-        preserve_params["table_cleared"] = "true" if st.session_state["_table_cleared"] else None
-    elif "table_cleared" in st.query_params:
-        preserve_params["table_cleared"] = st.query_params["table_cleared"]
-    
-    if "_table_product_ids" in st.session_state:
-        # Récupérer depuis session_state et mettre dans query_params
-        ids_list = st.session_state["_table_product_ids"]
-        if ids_list:
-            preserve_params["table_product_ids"] = ",".join(map(str, ids_list))
-    elif "table_product_ids" in st.query_params:
-        preserve_params["table_product_ids"] = st.query_params["table_product_ids"]
-        # Stocker aussi dans session_state pour persister entre pages
-        ids_param = st.query_params["table_product_ids"]
-        if ids_param:
-            ids_list = [int(id_str) for id_str in ids_param.split(",") if id_str.strip().isdigit()]
-            if ids_list:
-                st.session_state["_table_product_ids"] = ids_list
-    
+    # Plus besoin de préserver table_cleared ou table_product_ids - tout est dans la DB maintenant
+    # Préserver seulement user_id si nécessaire
     if "user_id" in st.query_params:
-        preserve_params["user_id"] = st.query_params["user_id"]
-    
-    # Réappliquer les paramètres préservés pour qu'ils restent dans l'URL
-    for key, value in preserve_params.items():
-        if value is not None:
-            st.query_params[key] = value
+        st.query_params["user_id"] = st.query_params["user_id"]
     
     # Afficher les informations de l'utilisateur dans la sidebar
     if current_user:
@@ -521,29 +494,10 @@ def main():
         # Récupérer depuis session_state (priorité) ou query_params (fallback)
         preserve_params = {}
         
-        # Vérifier session_state d'abord (priorité)
-        if "_table_cleared" in st.session_state:
-            preserve_params["table_cleared"] = "true" if st.session_state["_table_cleared"] else None
-        elif "table_cleared" in st.query_params:
-            preserve_params["table_cleared"] = st.query_params["table_cleared"]
-        
-        if "_table_product_ids" in st.session_state:
-            # Récupérer depuis session_state et mettre dans query_params (IMPORTANT pour l'URL)
-            ids_list = st.session_state["_table_product_ids"]
-            if ids_list:
-                preserve_params["table_product_ids"] = ",".join(map(str, ids_list))
-                print(f"DEBUG Profil retour: IDs récupérés depuis session_state: {ids_list}")
-        elif "table_product_ids" in st.query_params:
-            preserve_params["table_product_ids"] = st.query_params["table_product_ids"]
-        
+        # Plus besoin de préserver table_cleared ou table_product_ids - tout est dans la DB maintenant
+        # Préserver seulement user_id si nécessaire
         if "user_id" in st.query_params:
-            preserve_params["user_id"] = st.query_params["user_id"]
-        
-        # Appliquer les paramètres préservés dans l'URL (CRITIQUE pour que ça reste après refresh)
-        for key, value in preserve_params.items():
-            if value is not None:  # Ne pas mettre None dans query_params
-                st.query_params[key] = value
-                print(f"DEBUG Profil retour: Paramètre préservé dans URL: {key}={value}")
+            st.query_params["user_id"] = st.query_params["user_id"]
         
         st.switch_page("app.py")
     
