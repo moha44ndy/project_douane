@@ -110,6 +110,20 @@ st.markdown(f"""
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
         }}
         
+        /* Protéger les couleurs des infos de connexion dans la sidebar */
+        .user-info-container h3 {{
+            color: {DOUANE_VERT} !important;
+        }}
+        
+        .user-info-container p {{
+            color: #666 !important;
+        }}
+        
+        .user-info-container p[style*="DOUANE_OR"],
+        .user-info-container p[style*="color: #FFD700"] {{
+            color: {DOUANE_OR} !important;
+        }}
+        
         /* Header Streamlit visible */
         header[data-testid="stHeader"] {{
             display: flex !important;
@@ -283,17 +297,17 @@ st.markdown(f"""
             text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.1);
         }}
         
-        /* Styles pour les titres h3 dans markdown - en blanc pour la page Profil */
+        /* Styles pour les titres h3 dans markdown */
         .stMarkdown h3 {{
-            color: white !important;
+            color: {DOUANE_VERT} !important;
             font-family: 'Fredoka', sans-serif;
             font-weight: 700;
             font-size: 1.5rem;
         }}
         
-        /* Styles pour les labels de text_input - en blanc pour la page Profil */
+        /* Styles pour les labels de text_input */
         .stTextInput label {{
-            color: white !important;
+            color: {DOUANE_VERT} !important;
             font-family: 'Fredoka', sans-serif;
             font-weight: 600;
             font-size: 1.1rem;
@@ -312,28 +326,6 @@ st.markdown(f"""
             color: {DOUANE_VERT} !important;
             font-family: 'Fredoka', sans-serif;
             font-weight: 700;
-        }}
-        
-        /* Styles pour les titres h4 dans markdown (section mot de passe) */
-        .stMarkdown h4 {{
-            color: white !important;
-            font-family: 'Fredoka', sans-serif;
-            font-weight: 700;
-            font-size: 1.3rem;
-        }}
-        
-        /* Styles pour le texte markdown normal (paragraphes) - en blanc */
-        .stMarkdown p {{
-            color: white !important;
-        }}
-        
-        /* Styles pour les labels de text_input dans le formulaire de mot de passe */
-        form[data-testid*="modify_profile"] .stTextInput label,
-        form[data-testid*="modify_profile"] label {{
-            color: white !important;
-            font-family: 'Fredoka', sans-serif;
-            font-weight: 600;
-            font-size: 1.1rem;
         }}
         
         /* Info card */
