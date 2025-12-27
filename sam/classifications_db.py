@@ -90,14 +90,40 @@ def get_current_user_id() -> Optional[int]:
     """Récupère l'ID de l'utilisateur actuel depuis la session"""
     try:
         user = st.session_state.get("user")
+        # Debug initial
+        print(f"DEBUG get_current_user_id: Début - user dans session_state: {user is not None}")
         if user and isinstance(user, dict):
             # Vérifier si user_id existe directement
             if "user_id" in user:
                 user_id = user["user_id"]
+                # Debug pour comprendre le type
+                print(f"DEBUG get_current_user_id: user_id trouvé, type={type(user_id)}, valeur={user_id}")
                 if isinstance(user_id, int):
+                    print(f"DEBUG get_current_user_id: user_id est un int, retour: {user_id}")
                     return user_id
                 elif isinstance(user_id, str) and user_id.isdigit():
-                    return int(user_id)
+                    converted = int(user_id)
+                    print(f"DEBUG get_current_user_id: user_id est une string, conversion: {converted}")
+                    return converted
+                else:
+                    # Essayer de convertir quand même si possible
+                    try:
+                        converted = int(user_id)
+                        print(f"DEBUG get_current_user_id: Conversion réussie: {converted}")
+                        return converted
+                    except (ValueError, TypeError) as e:
+                        print(f"DEBUG get_current_user_id: Impossible de convertir user_id: {e}")
+                        pass
+            else:
+                print(f"DEBUG get_current_user_id: 'user_id' n'est pas dans user. Clés disponibles: {list(user.keys()) if user else 'None'}")
+                # Essayer aussi avec get() au cas où la clé existe mais n'est pas détectée par "in"
+                user_id = user.get("user_id")
+                if user_id is not None:
+                    print(f"DEBUG get_current_user_id: user_id trouvé via get(), type={type(user_id)}, valeur={user_id}")
+                    try:
+                        return int(user_id) if not isinstance(user_id, int) else user_id
+                    except (ValueError, TypeError):
+                        pass
             
             # Si on a identifiant_user, chercher dans la base de données
             if "identifiant_user" in user and USE_DATABASE:
@@ -107,13 +133,22 @@ def get_current_user_id() -> Optional[int]:
                         query = "SELECT user_id FROM users WHERE identifiant_user = %s AND statut = 'actif' LIMIT 1"
                         result = db.execute_query(query, (user["identifiant_user"],))
                         if result and len(result) > 0:
-                            return result[0]["user_id"]
-                except Exception:
+                            user_id_from_db = result[0].get("user_id") or result[0].get("user_id")
+                            if user_id_from_db:
+                                print(f"DEBUG get_current_user_id: user_id trouvé via DB: {user_id_from_db}")
+                                return int(user_id_from_db) if not isinstance(user_id_from_db, int) else user_id_from_db
+                    else:
+                        print(f"DEBUG get_current_user_id: Connexion DB échouée")
+                except Exception as e:
+                    print(f"DEBUG get_current_user_id: Erreur lors de la recherche dans la base: {e}")
+                    import traceback
+                    traceback.print_exc()
                     pass
         
         # Essayer de récupérer depuis query_params (qui contient identifiant_user, pas user_id)
         if "user_id" in st.query_params:
             identifiant = st.query_params.get("user_id")
+            print(f"DEBUG get_current_user_id: Tentative via query_params, identifiant={identifiant}")
             if identifiant and USE_DATABASE:
                 try:
                     db = get_db()
@@ -121,13 +156,26 @@ def get_current_user_id() -> Optional[int]:
                         query = "SELECT user_id FROM users WHERE identifiant_user = %s AND statut = 'actif' LIMIT 1"
                         result = db.execute_query(query, (identifiant,))
                         if result and len(result) > 0:
-                            return result[0]["user_id"]
-                except Exception:
+                            user_id_from_db = result[0].get("user_id") or result[0].get("user_id")
+                            if user_id_from_db:
+                                print(f"DEBUG get_current_user_id: user_id trouvé via query_params+DB: {user_id_from_db}")
+                                return int(user_id_from_db) if not isinstance(user_id_from_db, int) else user_id_from_db
+                    else:
+                        print(f"DEBUG get_current_user_id: Connexion DB échouée (via query_params)")
+                except Exception as e:
+                    print(f"DEBUG get_current_user_id: Erreur lors de la recherche via query_params: {e}")
+                    import traceback
+                    traceback.print_exc()
                     pass
     except Exception as e:
         # Log l'erreur pour debug
         import traceback
-        print(f"Erreur dans get_current_user_id: {e}\n{traceback.format_exc()}")
+        print(f"DEBUG get_current_user_id: Erreur générale: {e}\n{traceback.format_exc()}")
+    
+    print(f"DEBUG get_current_user_id: Aucun user_id trouvé, retour None")
+    print(f"DEBUG get_current_user_id: session_state['user'] = {st.session_state.get('user')}")
+    print(f"DEBUG get_current_user_id: query_params['user_id'] = {st.query_params.get('user_id')}")
+    print(f"DEBUG get_current_user_id: USE_DATABASE = {USE_DATABASE}")
     return None
 
 
@@ -166,7 +214,7 @@ def load_classifications(user_id: Optional[int] = None) -> List[dict]:
         return []
 
 
-def save_classification(json_item: dict, user_id: Optional[int] = None) -> tuple[bool, str]:
+def save_classification(json_item: dict, user_id: Optional[int] = None) -> tuple[bool, str, Optional[int]]:
     """Sauvegarde une classification dans MySQL"""
     if not USE_DATABASE:
         return False, "Base de données non disponible. Veuillez configurer MySQL."
@@ -179,15 +227,15 @@ def save_classification(json_item: dict, user_id: Optional[int] = None) -> tuple
     try:
         db = get_db()
         if not db.test_connection():
-            return False, "Impossible de se connecter à la base de données."
+            return False, "Impossible de se connecter à la base de données.", None
         
         data = convert_json_to_db_format(json_item)
         
         # Vérifier que les données essentielles sont présentes
         if not data.get("description_produit"):
-            return False, "Description du produit manquante"
+            return False, "Description du produit manquante", None
         if not data.get("code_tarifaire"):
-            return False, "Code tarifaire manquant"
+            return False, "Code tarifaire manquant", None
         
         # Toujours créer une nouvelle entrée (même si la même classification existe déjà)
         # Cela permet de compter toutes les requêtes, même celles qui viennent du cache
@@ -246,33 +294,34 @@ def save_classification(json_item: dict, user_id: Optional[int] = None) -> tuple
         verify_query = "SELECT id FROM classifications WHERE id = %s"
         verify_result = db.execute_query(verify_query, (last_id,))
         if verify_result:
-            return True, f"Classification enregistrée avec succès (ID: {last_id})"
+            return True, f"Classification enregistrée avec succès (ID: {last_id})", last_id
         else:
-            return False, f"Insertion effectuée mais vérification échouée (ID: {last_id})"
+            return False, f"Insertion effectuée mais vérification échouée (ID: {last_id})", None
     
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        return False, f"Erreur lors de la sauvegarde: {str(e)}\nDétails: {error_details}"
+        return False, f"Erreur lors de la sauvegarde: {str(e)}\nDétails: {error_details}", None
 
 
-def save_classifications(classifications: List[dict], user_id: Optional[int] = None) -> tuple[bool, str]:
-    """Sauvegarde plusieurs classifications dans MySQL"""
+def save_classifications(classifications: List[dict], user_id: Optional[int] = None) -> tuple[bool, str, List[int]]:
+    """Sauvegarde plusieurs classifications dans MySQL et retourne les IDs créés"""
     if not classifications:
-        return True, "Aucune classification à sauvegarder"
+        return True, "Aucune classification à sauvegarder", []
     
     if not user_id:
         user_id = get_current_user_id()
         if not user_id:
-            return False, "Utilisateur non identifié. Veuillez vous connecter."
+            return False, "Utilisateur non identifié. Veuillez vous connecter.", []
     
     # Debug: Vérifier USE_DATABASE
     if not USE_DATABASE:
-        return False, "Base de données non disponible. Veuillez configurer MySQL."
+        return False, "Base de données non disponible. Veuillez configurer MySQL.", []
     
     success_count = 0
     error_count = 0
     error_messages = []
+    saved_ids = []
     
     for idx, classification in enumerate(classifications):
         try:
@@ -288,10 +337,12 @@ def save_classifications(classifications: List[dict], user_id: Optional[int] = N
                 continue
             
             print(f"DEBUG: Sauvegarde de l'entrée {idx+1}/{len(classifications)}")
-            success, message = save_classification(classification, user_id)
+            success, message, classification_id = save_classification(classification, user_id)
             if success:
                 success_count += 1
-                print(f"DEBUG: Entrée {idx+1} sauvegardée avec succès: {message}")
+                if classification_id:
+                    saved_ids.append(classification_id)
+                print(f"DEBUG: Entrée {idx+1} sauvegardée avec succès: {message}, ID: {classification_id}")
             else:
                 error_count += 1
                 error_msg = f"Entrée {idx+1}: {message}"
@@ -303,10 +354,10 @@ def save_classifications(classifications: List[dict], user_id: Optional[int] = N
             error_messages.append(f"Entrée {idx+1}: Erreur: {str(e)}\n{traceback.format_exc()}")
     
     if error_count == 0:
-        return True, f"{success_count} classification(s) enregistrée(s) avec succès"
+        return True, f"{success_count} classification(s) enregistrée(s) avec succès", saved_ids
     else:
         error_detail = "; ".join(error_messages[:3])  # Limiter à 3 erreurs pour l'affichage
-        return False, f"{success_count} réussie(s), {error_count} erreur(s). Détails: {error_detail}"
+        return False, f"{success_count} réussie(s), {error_count} erreur(s). Détails: {error_detail}", saved_ids
 
 
 def delete_classifications_by_ids(classification_ids: List[int], user_id: Optional[int] = None) -> tuple[bool, str]:
@@ -436,6 +487,61 @@ def load_table_data() -> List[dict]:
     """Charge les classifications (compatibilité avec l'ancien code)"""
     user_id = get_current_user_id()
     return load_classifications(user_id)
+
+
+def load_classifications_by_ids(classification_ids: List[int], user_id: Optional[int] = None) -> List[dict]:
+    """Charge seulement les classifications dont les IDs sont spécifiés"""
+    if not USE_DATABASE:
+        st.error("❌ Base de données non disponible. Veuillez configurer MySQL.")
+        return []
+    
+    if not classification_ids:
+        return []
+    
+    if not user_id:
+        user_id = get_current_user_id()
+        if not user_id:
+            return []
+    
+    try:
+        db = get_db()
+        if not db.test_connection():
+            st.error("❌ Impossible de se connecter à la base de données.")
+            return []
+        
+        # Utiliser la syntaxe adaptée selon le type de DB
+        try:
+            from database import _get_db_type
+            is_postgresql = (_get_db_type() == 'postgresql')
+        except:
+            is_postgresql = False
+        
+        if is_postgresql:
+            # PostgreSQL: utiliser ANY pour les arrays
+            query = """
+                SELECT * FROM classifications 
+                WHERE user_id = %s 
+                AND id = ANY(%s)
+                ORDER BY date_classification DESC
+            """
+            results = db.execute_query(query, (user_id, classification_ids))
+        else:
+            # MySQL: utiliser IN avec placeholders
+            placeholders = ','.join(['%s'] * len(classification_ids))
+            query = f"""
+                SELECT * FROM classifications 
+                WHERE user_id = %s 
+                AND id IN ({placeholders})
+                ORDER BY date_classification DESC
+            """
+            results = db.execute_query(query, (user_id, *classification_ids))
+        
+        # Convertir en format JSON
+        return [convert_db_to_json_format(row) for row in results]
+    
+    except Exception as e:
+        st.error(f"❌ Erreur lors du chargement des classifications par IDs: {str(e)}")
+        return []
 
 
 def save_table_data(data: List[dict]) -> bool:

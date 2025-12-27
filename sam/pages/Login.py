@@ -332,6 +332,18 @@ if is_authenticated():
     current_user = get_current_user()
     if current_user and not st.query_params.get('user_id'):
         st.query_params['user_id'] = current_user.get('identifiant_user', '')
+    
+    # Préserver les query_params importants lors de la navigation (si présents)
+    preserve_params = {}
+    if "table_cleared" in st.query_params:
+        preserve_params["table_cleared"] = st.query_params["table_cleared"]
+    if "table_product_ids" in st.query_params:
+        preserve_params["table_product_ids"] = st.query_params["table_product_ids"]
+    
+    # Appliquer les paramètres préservés
+    for key, value in preserve_params.items():
+        st.query_params[key] = value
+    
     st.switch_page("app.py")
 
 # Boîte de bienvenue

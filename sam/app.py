@@ -136,11 +136,17 @@ def parse_structured_response(raw_text: str | None) -> tuple[dict | None, str | 
 
 def format_response_markdown(payload: dict) -> str:
     sections = []
+    classifications = payload.get("classifications", [])
+    
+    # Si plusieurs classifications, ajouter un message informatif au tout début (juste après "🤖 Mosam")
+    if len(classifications) > 1:
+        sections.append('<span style="color: red;">💡 **Plusieurs classifications possibles détectées.** Veuillez refaire une classification en précisant davantage votre produit en utilisant les informations disponibles dans la réponse ci-dessous.</span>\n')
+    
     narrative = (payload.get("narrative") or "").strip()
     if narrative:
         sections.append(narrative)
 
-    for idx, item in enumerate(payload.get("classifications", []), start=1):
+    for idx, item in enumerate(classifications, start=1):
         description = item.get("description") or "Marchandise non précisée"
         hs_code = item.get("hs_code") or "Non renseigné"
         chapter = (item.get("chapter") or "N/A")
@@ -512,11 +518,83 @@ def clear_table_data():
     """Vide toutes les données du tableau local (session_state) sans supprimer les données de la base"""
     # Ne vider que le tableau local, pas la base de données
     # Cela permet de conserver les statistiques dans la page Historique
-    st.session_state["table_products"] = []
-    # Marquer que le tableau a été vidé intentionnellement
-    st.session_state["_table_cleared"] = True
-    st.success("✅ Tableau vidé avec succès (les données restent dans l'historique)")
-    st.rerun()
+    try:
+        st.session_state["table_products"] = []
+        # Marquer que le tableau a été vidé intentionnellement (dans session_state ET query_params pour persister)
+        st.session_state["_table_cleared"] = True
+        st.query_params["table_cleared"] = "true"  # Persister dans l'URL pour survivre au refresh
+        # Supprimer les IDs du tableau dans session_state et query_params
+        if "_table_product_ids" in st.session_state:
+            del st.session_state["_table_product_ids"]
+        if "table_product_ids" in st.query_params:
+            del st.query_params["table_product_ids"]
+        
+        # Sauvegarder la préférence dans la base de données pour persister après déconnexion
+        try:
+            from classifications_db import get_current_user_id
+            from database import get_db
+            user_id = get_current_user_id()
+            if user_id:
+                db = get_db()
+                if db.test_connection():
+                    try:
+                        from database import _get_db_type
+                        is_postgresql = (_get_db_type() == 'postgresql')
+                    except:
+                        is_postgresql = False
+                    
+                    # Vérifier si la colonne existe, sinon la créer
+                    try:
+                        if is_postgresql:
+                            # Vérifier si la colonne existe
+                            check_query = """
+                            SELECT column_name 
+                            FROM information_schema.columns 
+                            WHERE table_name='users' AND column_name='table_cleared'
+                            """
+                            result = db.execute_query(check_query)
+                            if not result:
+                                # Créer la colonne
+                                db.execute_update("ALTER TABLE users ADD COLUMN table_cleared BOOLEAN DEFAULT FALSE", ())
+                        else:
+                            # MySQL
+                            check_query = """
+                            SELECT COLUMN_NAME 
+                            FROM INFORMATION_SCHEMA.COLUMNS 
+                            WHERE TABLE_SCHEMA = DATABASE() 
+                            AND TABLE_NAME = 'users' 
+                            AND COLUMN_NAME = 'table_cleared'
+                            """
+                            result = db.execute_query(check_query)
+                            if not result:
+                                # Créer la colonne
+                                db.execute_update("ALTER TABLE users ADD COLUMN table_cleared BOOLEAN DEFAULT FALSE", ())
+                    except Exception as e:
+                        # La colonne existe peut-être déjà, continuer
+                        print(f"Note: table_cleared column check: {e}")
+                    
+                    # Mettre à jour la préférence de l'utilisateur
+                    try:
+                        update_query = "UPDATE users SET table_cleared = %s WHERE user_id = %s"
+                        db.execute_update(update_query, (True, user_id))
+                    except Exception as e:
+                        # Si la colonne n'existe pas, essayer de la créer d'abord
+                        print(f"Erreur lors de la mise à jour, tentative de création de colonne: {e}")
+                        try:
+                            db.execute_update("ALTER TABLE users ADD COLUMN table_cleared BOOLEAN DEFAULT FALSE", ())
+                            db.execute_update(update_query, (True, user_id))
+                        except Exception as e2:
+                            print(f"Erreur lors de la création de la colonne: {e2}")
+        except Exception as e:
+            print(f"Erreur lors de la sauvegarde de la préférence table_cleared: {e}")
+            # Continuer quand même - le tableau est vidé localement
+        
+        st.success("✅ Tableau vidé avec succès (les données restent dans l'historique)")
+        st.rerun()
+    except Exception as e:
+        st.error(f"❌ Erreur lors du vidage du tableau: {e}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
 
 def view_table_statistics():
     """Affiche les statistiques détaillées"""
@@ -566,8 +644,13 @@ def render_table_component():
     with col1:
         if st.button("🗑️ Vider le tableau", use_container_width=True):
             if st.session_state.get('confirm_clear', False):
-                clear_table_data()
-                st.session_state.confirm_clear = False
+                try:
+                    clear_table_data()
+                    st.session_state.confirm_clear = False
+                except Exception as e:
+                    st.error(f"❌ Erreur lors du vidage: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
             else:
                 st.session_state.confirm_clear = True
                 st.warning("⚠️ Cliquez à nouveau pour confirmer la suppression")
@@ -1362,13 +1445,307 @@ if "initialized" not in st.session_state:
 
 # Initialize table products
 # Ne charger depuis la base que si le tableau n'a pas été vidé intentionnellement
+# Vérifier à la fois session_state, query_params ET la base de données pour persister après déconnexion
+table_cleared_session = st.session_state.get("_table_cleared", False) or st.query_params.get("table_cleared") == "true"
+
+# NOTE: table_cleared_db sera récupéré plus tard, après l'authentification de l'utilisateur
+# pour s'assurer que get_current_user_id() retourne une valeur valide
+table_cleared_db = False
+
+# CRITIQUE: Préserver les query_params importants dès le chargement de la page
+# Récupérer depuis session_state (priorité) et mettre dans query_params pour l'URL
+# Cela garantit que les IDs restent dans l'URL même après un retour depuis une autre page
+if "_table_product_ids" in st.session_state:
+    ids_list = st.session_state["_table_product_ids"]
+    if ids_list:
+        ids_str = ",".join(map(str, ids_list))
+        # Mettre dans query_params seulement si ce n'est pas déjà présent ou différent
+        if st.query_params.get("table_product_ids") != ids_str:
+            st.query_params["table_product_ids"] = ids_str
+            print(f"DEBUG app.py global init: IDs récupérés depuis session_state et mis dans query_params: {ids_list}")
+
+if "_table_cleared" in st.session_state:
+    cleared_value = "true" if st.session_state["_table_cleared"] else None
+    if st.query_params.get("table_cleared") != cleared_value:
+        if cleared_value is not None:
+            st.query_params["table_cleared"] = cleared_value
+            print(f"DEBUG app.py global init: table_cleared récupéré depuis session_state et mis dans query_params: {cleared_value}")
+
+# Initialiser le tableau
+# Logique : Ne vider le tableau que si le flag est True ET que le tableau n'a pas de données
 if "table_products" not in st.session_state:
-    st.session_state["table_products"] = load_table_data()
-elif st.session_state.get("_table_cleared", False):
-    # Si le tableau a été vidé, ne pas le recharger automatiquement
-    # L'utilisateur peut toujours recharger manuellement si nécessaire
-    if not st.session_state.get("table_products"):
-        st.session_state["table_products"] = []
+    # Première initialisation - vérifier les préférences
+    # PRIORITÉ: Vérifier d'abord query_params (persiste après refresh), puis DB, puis session_state
+    table_cleared_from_url = st.query_params.get("table_cleared") == "true"
+    
+    # Si le tableau a été vidé, charger seulement les produits dont les IDs sont stockés dans query_params
+    if table_cleared_db or table_cleared_from_url or table_cleared_session:
+        # Le tableau a été vidé intentionnellement
+        # Charger seulement les produits dont les IDs sont stockés dans query_params
+        print(f"DEBUG: Tableau vidé - chargement des produits par IDs - table_cleared_db={table_cleared_db}, table_cleared_from_url={table_cleared_from_url}, table_cleared_session={table_cleared_session}")
+        try:
+            from classifications_db import load_classifications_by_ids, get_current_user_id
+            user_id = get_current_user_id()
+            if user_id:
+                # Récupérer les IDs depuis session_state (priorité) ou query_params (fallback)
+                classification_ids = None
+                if "_table_product_ids" in st.session_state:
+                    classification_ids = st.session_state["_table_product_ids"]
+                    print(f"DEBUG: IDs récupérés depuis session_state: {classification_ids}")
+                else:
+                    ids_param = st.query_params.get("table_product_ids", "")
+                    if ids_param:
+                        classification_ids = [int(id_str) for id_str in ids_param.split(",") if id_str.strip().isdigit()]
+                        # Stocker aussi dans session_state pour persister entre pages
+                        if classification_ids:
+                            st.session_state["_table_product_ids"] = classification_ids
+                            print(f"DEBUG: IDs récupérés depuis query_params et stockés dans session_state: {classification_ids}")
+                
+                if classification_ids:
+                    # Charger seulement les produits avec ces IDs
+                    loaded_data = load_classifications_by_ids(classification_ids, user_id)
+                    st.session_state["table_products"] = loaded_data
+                    print(f"DEBUG: {len(loaded_data)} produit(s) chargé(s) par IDs: {classification_ids}")
+                else:
+                    st.session_state["table_products"] = []
+                    print(f"DEBUG: Aucun ID trouvé dans session_state ni query_params")
+            else:
+                st.session_state["table_products"] = []
+        except Exception as e:
+            print(f"DEBUG: Erreur lors du chargement des produits par IDs: {e}")
+            st.session_state["table_products"] = []
+        
+        st.session_state["_table_cleared"] = True
+        # Garder le flag dans query_params pour persister après refresh
+        st.query_params["table_cleared"] = "true"
+        # S'assurer que le flag est aussi dans la DB
+        if not table_cleared_db:
+            try:
+                from classifications_db import get_current_user_id
+                from database import get_db
+                user_id = get_current_user_id()
+                if user_id:
+                    db = get_db()
+                    if db.test_connection():
+                        update_query = "UPDATE users SET table_cleared = %s WHERE user_id = %s"
+                        db.execute_update(update_query, (True, user_id))
+                        print(f"DEBUG: Flag table_cleared mis à jour dans la DB")
+            except Exception as e:
+                print(f"DEBUG: Erreur lors de la mise à jour de table_cleared dans la DB: {e}")
+    else:
+        # Le tableau n'a pas été vidé - charger les données depuis la base
+        print(f"DEBUG: Tableau initialisé avec données depuis la base")
+        loaded_data = load_table_data()
+        st.session_state["table_products"] = loaded_data
+        st.session_state["_table_cleared"] = False
+        
+        # Stocker les IDs dans session_state (persiste entre pages) et query_params (persiste après refresh)
+        current_ids = [e.get('id') for e in loaded_data if e.get('id')]
+        if current_ids:
+            st.session_state["_table_product_ids"] = current_ids
+            st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+            print(f"DEBUG: IDs du tableau stockés dans session_state et query_params: {current_ids}")
+else:
+    # Le tableau existe déjà dans session_state
+    # Vérifier d'abord si le flag table_cleared est actif (priorité ABSOLUE sur le contenu du tableau)
+    # Re-vérifier query_params et DB car session_state peut être réinitialisé après refresh
+    table_cleared_from_url = st.query_params.get("table_cleared") == "true"
+    table_cleared_from_session = st.session_state.get("_table_cleared", False)
+    
+    # PRIORITÉ: Si le flag est actif dans query_params OU DB, charger seulement les produits dont les IDs sont stockés
+    if table_cleared_db or table_cleared_from_url:
+        # Le flag est actif (DB ou URL) - charger seulement les produits dont les IDs sont stockés dans query_params
+        print(f"DEBUG: Flag table_cleared actif (DB={table_cleared_db}, URL={table_cleared_from_url}) - chargement des produits par IDs")
+        try:
+            from classifications_db import load_classifications_by_ids, get_current_user_id
+            user_id = get_current_user_id()
+            if user_id:
+                # Récupérer les IDs depuis session_state (priorité) ou query_params (fallback)
+                classification_ids = None
+                if "_table_product_ids" in st.session_state:
+                    classification_ids = st.session_state["_table_product_ids"]
+                    print(f"DEBUG: IDs récupérés depuis session_state: {classification_ids}")
+                else:
+                    ids_param = st.query_params.get("table_product_ids", "")
+                    if ids_param:
+                        classification_ids = [int(id_str) for id_str in ids_param.split(",") if id_str.strip().isdigit()]
+                        # Stocker aussi dans session_state pour persister entre pages
+                        if classification_ids:
+                            st.session_state["_table_product_ids"] = classification_ids
+                            print(f"DEBUG: IDs récupérés depuis query_params et stockés dans session_state: {classification_ids}")
+                
+                if classification_ids:
+                    # Charger seulement les produits avec ces IDs
+                    loaded_data = load_classifications_by_ids(classification_ids, user_id)
+                    st.session_state["table_products"] = loaded_data
+                    print(f"DEBUG: {len(loaded_data)} produit(s) chargé(s) par IDs: {classification_ids}")
+                else:
+                    # Si pas d'IDs trouvés, garder le tableau tel quel
+                    pass
+            else:
+                # Si pas d'utilisateur, garder le tableau tel quel
+                pass
+        except Exception as e:
+            print(f"DEBUG: Erreur lors du chargement des produits par IDs: {e}")
+        
+        # S'assurer que le flag est bien défini partout
+        st.session_state["_table_cleared"] = True
+        st.query_params["table_cleared"] = "true"
+        # S'assurer que le flag est aussi dans la DB
+        if not table_cleared_db:
+            try:
+                from classifications_db import get_current_user_id
+                from database import get_db
+                user_id = get_current_user_id()
+                if user_id:
+                    db = get_db()
+                    if db.test_connection():
+                        update_query = "UPDATE users SET table_cleared = %s WHERE user_id = %s"
+                        db.execute_update(update_query, (True, user_id))
+                        print(f"DEBUG: Flag table_cleared mis à jour dans la DB")
+            except Exception as e:
+                print(f"DEBUG: Erreur lors de la mise à jour de table_cleared dans la DB: {e}")
+    elif table_cleared_from_session:
+        # Le flag est actif seulement dans session_state (mais pas dans DB/URL)
+        # Cela peut arriver si l'utilisateur vient de vider le tableau
+        # S'assurer que le flag est aussi dans query_params et DB pour persister
+        print(f"DEBUG: Flag table_cleared actif seulement dans session_state - synchronisation avec URL et DB")
+        st.session_state["_table_cleared"] = True
+        st.query_params["table_cleared"] = "true"
+        try:
+            from classifications_db import get_current_user_id
+            from database import get_db
+            user_id = get_current_user_id()
+            if user_id:
+                db = get_db()
+                if db.test_connection():
+                    update_query = "UPDATE users SET table_cleared = %s WHERE user_id = %s"
+                    db.execute_update(update_query, (True, user_id))
+                    print(f"DEBUG: Flag table_cleared synchronisé avec DB")
+        except Exception as e:
+            print(f"DEBUG: Erreur lors de la synchronisation de table_cleared: {e}")
+    else:
+        # Le flag n'est PAS actif - vérifier si le tableau contient des données
+        current_table = st.session_state.get("table_products", [])
+        
+        # Vérifier si des IDs sont disponibles dans query_params ou session_state (retour depuis autre page après refresh)
+        # Même si le tableau contient des données, vérifier les IDs pour s'assurer qu'ils sont synchronisés
+        classification_ids = None
+        if "_table_product_ids" in st.session_state:
+            classification_ids = st.session_state["_table_product_ids"]
+        else:
+            ids_param = st.query_params.get("table_product_ids", "")
+            if ids_param:
+                classification_ids = [int(id_str) for id_str in ids_param.split(",") if id_str.strip().isdigit()]
+                # Stocker aussi dans session_state pour persister entre pages
+                if classification_ids:
+                    st.session_state["_table_product_ids"] = classification_ids
+                    print(f"DEBUG: IDs récupérés depuis query_params et stockés dans session_state: {classification_ids}")
+        
+        # Si le tableau est vide mais que des IDs sont disponibles, recharger depuis les IDs
+        if not current_table and classification_ids:
+            print(f"DEBUG: Tableau vide mais IDs disponibles - rechargement depuis les IDs (retour depuis autre page)")
+            try:
+                from classifications_db import load_classifications_by_ids, get_current_user_id
+                user_id = get_current_user_id()
+                if user_id:
+                    loaded_data = load_classifications_by_ids(classification_ids, user_id)
+                    st.session_state["table_products"] = loaded_data
+                    current_table = loaded_data
+                    print(f"DEBUG: {len(loaded_data)} produit(s) rechargé(s) depuis les IDs: {classification_ids}")
+            except Exception as e:
+                print(f"DEBUG: Erreur lors du rechargement depuis les IDs: {e}")
+        
+        if current_table:
+            # Le tableau contient des données ET le flag n'est pas actif
+            # Cela signifie que le tableau n'a jamais été vidé ou a été réinitialisé
+            # Ne pas modifier le flag, juste s'assurer qu'il est à False
+            if st.session_state.get("_table_cleared", False):
+                st.session_state["_table_cleared"] = False
+            if "table_cleared" in st.query_params:
+                del st.query_params["table_cleared"]
+            
+            # S'assurer que les IDs sont synchronisés dans session_state et query_params
+            current_ids = [e.get('id') for e in current_table if e.get('id')]
+            if current_ids:
+                st.session_state["_table_product_ids"] = current_ids
+                st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                print(f"DEBUG: IDs synchronisés dans session_state et query_params: {current_ids}")
+            
+            # S'assurer que le flag est aussi à False dans la DB
+            if table_cleared_db:
+                try:
+                    from classifications_db import get_current_user_id
+                    from database import get_db
+                    user_id = get_current_user_id()
+                    if user_id:
+                        db = get_db()
+                        if db.test_connection():
+                            try:
+                                update_query = "UPDATE users SET table_cleared = %s WHERE user_id = %s"
+                                db.execute_update(update_query, (False, user_id))
+                                print(f"DEBUG: Flag table_cleared réinitialisé à False dans la DB")
+                            except Exception as e:
+                                print(f"Note: Erreur lors de la réinitialisation de table_cleared: {e}")
+                except Exception as e:
+                    print(f"Note: Erreur lors de la vérification de table_cleared: {e}")
+        else:
+            # Le tableau est vide ET le flag n'est pas actif
+            # Vérifier si des IDs sont disponibles dans query_params ou session_state (retour depuis autre page)
+            classification_ids = None
+            if "_table_product_ids" in st.session_state:
+                classification_ids = st.session_state["_table_product_ids"]
+                print(f"DEBUG: Tableau vide mais IDs trouvés dans session_state: {classification_ids}")
+            else:
+                ids_param = st.query_params.get("table_product_ids", "")
+                if ids_param:
+                    classification_ids = [int(id_str) for id_str in ids_param.split(",") if id_str.strip().isdigit()]
+                    if classification_ids:
+                        # Stocker aussi dans session_state pour persister entre pages
+                        st.session_state["_table_product_ids"] = classification_ids
+                        print(f"DEBUG: Tableau vide mais IDs trouvés dans query_params: {classification_ids}")
+            
+            if classification_ids:
+                # Recharger le tableau depuis les IDs (retour depuis autre page après refresh)
+                print(f"DEBUG: Rechargement du tableau depuis les IDs (retour depuis autre page)")
+                try:
+                    from classifications_db import load_classifications_by_ids, get_current_user_id
+                    user_id = get_current_user_id()
+                    if user_id:
+                        loaded_data = load_classifications_by_ids(classification_ids, user_id)
+                        st.session_state["table_products"] = loaded_data
+                        st.session_state["_table_cleared"] = False
+                        print(f"DEBUG: {len(loaded_data)} produit(s) rechargé(s) depuis les IDs: {classification_ids}")
+                    else:
+                        # Pas d'utilisateur, charger depuis la base
+                        loaded_data = load_table_data()
+                        st.session_state["table_products"] = loaded_data
+                        st.session_state["_table_cleared"] = False
+                except Exception as e:
+                    print(f"DEBUG: Erreur lors du rechargement depuis les IDs: {e}, chargement depuis la base")
+                    loaded_data = load_table_data()
+                    st.session_state["table_products"] = loaded_data
+                    st.session_state["_table_cleared"] = False
+                
+                # Stocker les IDs dans session_state et query_params
+                current_ids = [e.get('id') for e in st.session_state.get("table_products", []) if e.get('id')]
+                if current_ids:
+                    st.session_state["_table_product_ids"] = current_ids
+                    st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                    print(f"DEBUG: IDs du tableau stockés dans session_state et query_params: {current_ids}")
+            else:
+                # Pas d'IDs disponibles - charger depuis la base
+                print(f"DEBUG: Tableau vide et flag inactif - aucun ID disponible - chargement depuis la base")
+                loaded_data = load_table_data()
+                st.session_state["table_products"] = loaded_data
+                st.session_state["_table_cleared"] = False
+                
+                # Stocker les IDs dans session_state (persiste entre pages) et query_params (persiste après refresh)
+                current_ids = [e.get('id') for e in loaded_data if e.get('id')]
+                if current_ids:
+                    st.session_state["_table_product_ids"] = current_ids
+                    st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                    print(f"DEBUG: IDs du tableau stockés dans session_state et query_params: {current_ids}")
 
 def display_main_content():
     """Affiche le contenu principal avec le nouveau design"""
@@ -1664,35 +2041,181 @@ def display_main_content():
             st.session_state["messages"].append(("RAG", formatted_answer, response_id))
             new_entries = build_table_entries(parsed_payload.get("classifications", []))
             if new_entries:
+                # Initialiser selected_entries pour éviter UnboundLocalError
+                selected_entries = []
+                
                 # Vérifier si l'utilisateur a refusé de stocker ce produit
                 refused_key = f"_refused_{response_id}"
                 is_refused = st.session_state.get(refused_key, False)
                 
                 # Vérifier si cette réponse a déjà été sauvegardée pour éviter les doublons
                 save_key = f"_saved_{response_id}"
-                if save_key not in st.session_state and not is_refused:
-                    # Sauvegarder seulement les nouvelles entrées dans MySQL
+                saving_key = f"_saving_{response_id}"  # Clé pour indiquer qu'une sauvegarde est en cours
+                
+                # Vérifier si déjà sauvegardé OU en cours de sauvegarde
+                # Vérifier aussi dans query_params pour persister entre reruns (important avec cache Redis)
+                is_saving = (saving_key in st.session_state) or (st.query_params.get(f"saving_{response_id}") == "true")
+                is_saved = (save_key in st.session_state) or (st.query_params.get(f"saved_{response_id}") == "true")
+                
+                # Si une seule classification, sauvegarder automatiquement
+                if len(new_entries) == 1 and not is_saved and not is_saving and not is_refused:
+                    # Sauvegarder automatiquement la seule classification
                     from classifications_db import save_classifications, get_current_user_id
                     user_id = get_current_user_id()
                     
                     if user_id:
-                        # Marquer comme en cours de sauvegarde pour éviter les doublons
-                        st.session_state[save_key] = True
-                        # Forcer l'affichage immédiat avant rerun
-                        with st.spinner("💾 Sauvegarde en cours..."):
-                            success, message = save_classifications(new_entries, user_id)
+                        # Marquer IMMÉDIATEMENT comme en cours de sauvegarde AVANT de commencer
+                        st.session_state[saving_key] = True
+                        st.query_params[f"saving_{response_id}"] = "true"
+                        print(f"DEBUG: Sauvegarde automatique (1 seule classification) - response_id={response_id}, user_id={user_id}")
                         
-                        # Récupérer les IDs des classifications créées pour les feedbacks
+                        with st.spinner("💾 Sauvegarde automatique en cours..."):
+                            success, message, saved_ids = save_classifications(new_entries, user_id)
+                        print(f"DEBUG: Fin sauvegarde automatique - response_id={response_id}, success={success}, message={message}, saved_ids={saved_ids}")
+                        
                         if success:
+                            # Marquer comme sauvegardé
+                            st.session_state[save_key] = True
+                            st.query_params[f"saved_{response_id}"] = "true"
+                            # Retirer le flag de sauvegarde en cours
+                            if saving_key in st.session_state:
+                                del st.session_state[saving_key]
+                            if f"saving_{response_id}" in st.query_params:
+                                del st.query_params[f"saving_{response_id}"]
+                            
+                            # Mettre à jour le tableau avec la nouvelle classification et ajouter les IDs
+                            table_was_cleared = st.session_state.get("_table_cleared", False) or st.query_params.get("table_cleared") == "true"
+                            
+                            if table_was_cleared:
+                                # Si le tableau était vidé, juste ajouter les nouvelles classifications
+                                # NE PAS réinitialiser le flag table_cleared - il doit rester actif
+                                # pour que lors du refresh, on ne recharge pas toutes les données
+                                current_table = st.session_state.get("table_products", [])
+                                # Ajouter les IDs aux nouvelles entrées et les ajouter au tableau
+                                # Permettre de classer le même produit plusieurs fois
+                                for idx, entry in enumerate(new_entries):
+                                    # Ajouter l'ID si disponible
+                                    if idx < len(saved_ids) and saved_ids[idx]:
+                                        entry['id'] = saved_ids[idx]
+                                    current_table.append(entry)
+                                st.session_state["table_products"] = current_table
+                                
+                                # Mettre à jour les IDs dans session_state (persiste entre pages) et query_params (persiste après refresh)
+                                current_ids = [e.get('id') for e in current_table if e.get('id')]
+                                if current_ids:
+                                    st.session_state["_table_product_ids"] = current_ids
+                                    st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                                    print(f"DEBUG: IDs du tableau stockés dans session_state et query_params: {current_ids}")
+                                # Garder le flag table_cleared actif pour persister après refresh
+                                st.session_state["_table_cleared"] = True
+                                st.query_params["table_cleared"] = "true"
+                                # S'assurer que le flag est aussi dans la DB
+                                try:
+                                    from database import get_db
+                                    db = get_db()
+                                    if db.test_connection():
+                                        update_query = "UPDATE users SET table_cleared = 1 WHERE user_id = %s"
+                                        db.execute_update(update_query, (user_id,))
+                                        print(f"DEBUG: Flag table_cleared maintenu actif après ajout de produit")
+                                except Exception as e:
+                                    print(f"DEBUG: Erreur lors de la mise à jour du flag table_cleared: {e}")
+                            else:
+                                # Si le tableau n'était pas vidé, ajouter le nouveau produit
+                                # Permettre de classer le même produit plusieurs fois
+                                current_table = st.session_state.get("table_products", [])
+                                
+                                # Ajouter les IDs aux nouvelles entrées
+                                for idx, entry in enumerate(new_entries):
+                                    if idx < len(saved_ids) and saved_ids[idx]:
+                                        entry['id'] = saved_ids[idx]
+                                
+                                # Toujours ajouter les nouvelles entrées, même si le produit existe déjà
+                                # L'utilisateur peut vouloir classer le même produit plusieurs fois
+                                st.session_state["table_products"] = current_table + new_entries
+                                print(f"DEBUG: {len(new_entries)} produit(s) ajouté(s) au tableau")
+                                
+                                # Mettre à jour les IDs dans session_state (persiste entre pages) et query_params (persiste après refresh)
+                                updated_table = st.session_state.get("table_products", [])
+                                current_ids = [e.get('id') for e in updated_table if e.get('id')]
+                                if current_ids:
+                                    st.session_state["_table_product_ids"] = current_ids
+                                    st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                                    print(f"DEBUG: IDs du tableau mis à jour dans session_state et query_params: {current_ids}")
+                                # Ne PAS recharger tous les produits depuis la base si le tableau était vide
+                                # Les nouveaux produits ont déjà été ajoutés ci-dessus
+                            
+                            st.success("✅ Classification sauvegardée automatiquement")
+                            st.rerun()  # Recharger la page pour afficher le tableau mis à jour
+                        else:
+                            # Afficher l'erreur
+                            st.error(f"❌ Erreur lors de la sauvegarde: {message}")
+                            # Retirer le flag de sauvegarde en cours
+                            if saving_key in st.session_state:
+                                del st.session_state[saving_key]
+                            if f"saving_{response_id}" in st.query_params:
+                                del st.query_params[f"saving_{response_id}"]
+                    else:
+                        # Debug: pourquoi user_id est None
+                        user = st.session_state.get("user")
+                        print(f"DEBUG: user_id est None. user dans session_state: {user}")
+                        if user:
+                            print(f"DEBUG: user contient 'user_id': {'user_id' in user}")
+                            print(f"DEBUG: user contient 'identifiant_user': {'identifiant_user' in user}")
+                        st.warning("⚠️ Utilisateur non identifié. Les données sont enregistrées localement mais pas dans la base de données.")
+                        st.write(f"🔍 Debug: session_state['user'] = {st.session_state.get('user')}")
+                        st.write(f"🔍 Debug: query_params['user_id'] = {st.query_params.get('user_id')}")
+                        
+                        # Retirer le flag de sauvegarde en cours
+                        if f"saving_{response_id}" in st.query_params:
+                            del st.query_params[f"saving_{response_id}"]
+                            
+                            # Mettre à jour le tableau
+                            table_was_cleared = st.session_state.get("_table_cleared", False) or st.query_params.get("table_cleared") == "true"
+                            if table_was_cleared:
+                                # Si le tableau était vidé, juste ajouter les nouvelles classifications
+                                # Ne pas recharger les anciennes données - elles restent exclues
+                                current_table = st.session_state.get("table_products", [])
+                                # Ajouter les IDs aux nouvelles entrées
+                                for idx, entry in enumerate(new_entries):
+                                    if idx < len(saved_ids) and saved_ids[idx]:
+                                        entry['id'] = saved_ids[idx]
+                                st.session_state["table_products"] = current_table + new_entries
+                                
+                                # Mettre à jour les IDs dans session_state (persiste entre pages) et query_params (persiste après refresh)
+                                updated_table = st.session_state.get("table_products", [])
+                                current_ids = [e.get('id') for e in updated_table if e.get('id')]
+                                if current_ids:
+                                    st.session_state["_table_product_ids"] = current_ids
+                                    st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                                    print(f"DEBUG: IDs du tableau mis à jour dans session_state et query_params: {current_ids}")
+                                
+                                # Garder le flag table_cleared pour que les anciens produits ne réapparaissent pas
+                            else:
+                                # Si le tableau n'était pas vidé, ajouter le nouveau produit au tableau existant
+                                # Permettre de classer le même produit plusieurs fois
+                                current_table = st.session_state.get("table_products", [])
+                                # Toujours ajouter les nouvelles entrées, même si le produit existe déjà
+                                st.session_state["table_products"] = current_table + new_entries
+                                print(f"DEBUG: {len(new_entries)} produit(s) ajouté(s) au tableau")
+                                
+                                # Mettre à jour les IDs dans session_state (persiste entre pages) et query_params (persiste après refresh)
+                                updated_table = st.session_state.get("table_products", [])
+                                current_ids = [e.get('id') for e in updated_table if e.get('id')]
+                                if current_ids:
+                                    st.session_state["_table_product_ids"] = current_ids
+                                    st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                                    print(f"DEBUG: IDs du tableau mis à jour dans session_state et query_params: {current_ids}")
+                                
+                                # Ne PAS recharger tous les produits depuis la base si le tableau était vide
+                                # Les nouveaux produits ont déjà été ajoutés ci-dessus
+                            
+                            # Récupérer les IDs pour les feedbacks
                             try:
                                 from database import get_db
                                 db = get_db()
                                 if db.test_connection():
-                                    # Rechercher les classifications récemment créées par cet utilisateur
-                                    # avec les descriptions correspondantes
-                                    descriptions = [e.get('product', {}).get('description', '') for e in new_entries]
+                                    descriptions = st.session_state[f"_saved_descriptions_{response_id}"]
                                     if descriptions:
-                                        # Utiliser la syntaxe adaptée selon le type de DB
                                         try:
                                             from database import _get_db_type
                                             is_postgresql = (_get_db_type() == 'postgresql')
@@ -1726,20 +2249,12 @@ def display_main_content():
                                                 st.session_state[f"classification_ids_{response_id}"] = classification_ids
                             except Exception as e:
                                 print(f"Erreur lors de la récupération des IDs: {e}")
-                        
-                        if not success:
-                            st.error(f"⚠️ Erreur lors de la sauvegarde: {message}")
-                            # Stocker l'erreur dans la session pour l'afficher après rerun
-                            st.session_state["_save_error"] = message
-                            # Ne pas faire rerun si erreur pour voir le message
-                            st.stop()
                         else:
-                            # Sauvegarde réussie - pas besoin d'afficher de message
-                            # Réinitialiser le flag de vidage car on a de nouvelles données
-                            st.session_state["_table_cleared"] = False
-                            # Recharger les données depuis la base pour synchroniser
-                            from classifications_db import load_table_data
-                            st.session_state["table_products"] = load_table_data()
+                            if saving_key in st.session_state:
+                                del st.session_state[saving_key]
+                            if f"saving_{response_id}" in st.query_params:
+                                del st.query_params[f"saving_{response_id}"]
+                            st.error(f"⚠️ Erreur lors de la sauvegarde: {message}")
                 else:
                     # Utilisateur non identifié - ne pas sauvegarder
                     pass
@@ -1766,7 +2281,13 @@ def display_main_content():
         if "_save_success" in st.session_state:
             del st.session_state["_save_success"]
         
-        st.rerun()
+        # Ne faire rerun que si une sauvegarde ne vient pas de se terminer
+        # Cela évite les duplications avec le cache Redis
+        if not st.session_state.get("_just_saved", False):
+            st.rerun()
+        else:
+            # Retirer le flag après avoir évité le rerun
+            del st.session_state["_just_saved"]
     
     # Initialiser le dictionnaire des notes si nécessaire
     if "response_ratings" not in st.session_state:
@@ -1923,9 +2444,26 @@ def display_main_content():
                                         del st.session_state[f"classification_ids_{response_id}"]
                                         # Ne pas recharger depuis la base si le tableau a été vidé
                                         # L'utilisateur peut recharger manuellement si nécessaire
-                                        if not st.session_state.get("_table_cleared", False):
+                                        table_cleared = st.session_state.get("_table_cleared", False) or st.query_params.get("table_cleared") == "true"
+                                        if not table_cleared:
                                             from classifications_db import load_table_data
-                                            st.session_state["table_products"] = load_table_data()
+                                            loaded_data = load_table_data()
+                                            st.session_state["table_products"] = loaded_data
+                                            
+                                            # Mettre à jour les IDs dans session_state (persiste entre pages) et query_params (persiste après refresh)
+                                            current_ids = [e.get('id') for e in loaded_data if e.get('id')]
+                                            if current_ids:
+                                                st.session_state["_table_product_ids"] = current_ids
+                                                st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                                                print(f"DEBUG: IDs du tableau mis à jour dans session_state et query_params: {current_ids}")
+                                        else:
+                                            # Si le tableau était vidé, mettre à jour les IDs en supprimant celui qui a été retiré
+                                            current_table = st.session_state.get("table_products", [])
+                                            current_ids = [e.get('id') for e in current_table if e.get('id')]
+                                            if current_ids:
+                                                st.session_state["_table_product_ids"] = current_ids
+                                                st.query_params["table_product_ids"] = ",".join(map(str, current_ids))
+                                                print(f"DEBUG: IDs du tableau mis à jour après suppression: {current_ids}")
                                         st.warning("⚠️ Produit retiré du stockage")
                                     else:
                                         st.error(f"❌ Erreur: {message}")
@@ -1990,6 +2528,42 @@ def main():
         st.switch_page("pages/Login.py")
         return
     
+    # CRITIQUE: Récupérer table_cleared_db APRÈS l'authentification pour s'assurer que get_current_user_id() fonctionne
+    # Cela garantit que le flag est correctement récupéré lors de la reconnexion
+    global table_cleared_db
+    try:
+        from classifications_db import get_current_user_id
+        from database import get_db
+        user_id = get_current_user_id()
+        if user_id:
+            db = get_db()
+            if db.test_connection():
+                try:
+                    query = "SELECT table_cleared FROM users WHERE user_id = %s"
+                    result = db.execute_query(query, (user_id,))
+                    if result and len(result) > 0:
+                        table_cleared_db = bool(result[0].get('table_cleared', False))
+                        print(f"DEBUG main: table_cleared_db récupéré depuis la DB: {table_cleared_db}")
+                except Exception as e:
+                    # La colonne n'existe peut-être pas encore, ignorer
+                    print(f"Note: table_cleared column may not exist: {e}")
+    except Exception as e:
+        print(f"Erreur lors de la récupération de la préférence table_cleared dans main(): {e}")
+    
+    # CRITIQUE: Si table_cleared_db est True, vider le tableau même s'il a déjà été initialisé au niveau global
+    # Cela garantit que lors de la reconnexion, le tableau reste vide si l'utilisateur l'avait vidé avant
+    if table_cleared_db:
+        # Le tableau a été vidé avant la déconnexion, s'assurer qu'il reste vide
+        st.session_state["table_products"] = []
+        st.session_state["_table_cleared"] = True
+        st.query_params["table_cleared"] = "true"
+        # Supprimer les IDs du tableau car il a été vidé
+        if "_table_product_ids" in st.session_state:
+            del st.session_state["_table_product_ids"]
+        if "table_product_ids" in st.query_params:
+            del st.query_params["table_product_ids"]
+        print(f"DEBUG main: Tableau vidé car table_cleared_db=True (reconnexion après déconnexion)")
+    
     # Afficher les informations de l'utilisateur dans la sidebar
     current_user = get_current_user()
     if current_user:
@@ -2007,6 +2581,34 @@ def main():
         """, unsafe_allow_html=True)
         
         if st.sidebar.button("👤 Mon Profil", use_container_width=True):
+            # Préserver les query_params importants lors de la navigation
+            # Récupérer depuis session_state (priorité) ou query_params (fallback)
+            preserve_params = {}
+            
+            # Vérifier session_state d'abord (priorité)
+            if "_table_cleared" in st.session_state:
+                preserve_params["table_cleared"] = "true" if st.session_state["_table_cleared"] else None
+            elif "table_cleared" in st.query_params:
+                preserve_params["table_cleared"] = st.query_params["table_cleared"]
+            
+            if "_table_product_ids" in st.session_state:
+                # Récupérer depuis session_state et mettre dans query_params (IMPORTANT pour l'URL)
+                ids_list = st.session_state["_table_product_ids"]
+                if ids_list:
+                    preserve_params["table_product_ids"] = ",".join(map(str, ids_list))
+                    print(f"DEBUG app.py navigation: IDs récupérés depuis session_state: {ids_list}")
+            elif "table_product_ids" in st.query_params:
+                preserve_params["table_product_ids"] = st.query_params["table_product_ids"]
+            
+            if "user_id" in st.query_params:
+                preserve_params["user_id"] = st.query_params["user_id"]
+            
+            # Appliquer les paramètres préservés dans l'URL (CRITIQUE pour que ça reste après refresh)
+            for key, value in preserve_params.items():
+                if value is not None:  # Ne pas mettre None dans query_params
+                    st.query_params[key] = value
+                    print(f"DEBUG app.py navigation: Paramètre préservé dans URL: {key}={value}")
+            
             st.switch_page("pages/Profil.py")
         if st.sidebar.button("🚪 Déconnexion", use_container_width=True):
             logout()
