@@ -46,21 +46,29 @@ def get_rag_dir():
     """Obtient le répertoire du fichier rag.py de manière robuste pour tous les environnements"""
     try:
         # Essayer d'abord avec __file__ (fonctionne en local)
-        return os.path.dirname(os.path.abspath(__file__))
-    except (NameError, AttributeError):
+        rag_dir = os.path.dirname(os.path.abspath(__file__))
+        print(f"DEBUG get_rag_dir: Utilisation de __file__ -> {rag_dir}")
+        return rag_dir
+    except (NameError, AttributeError) as e:
+        print(f"DEBUG get_rag_dir: __file__ non disponible ({type(e).__name__}), utilisation du fallback")
         # Fallback pour Streamlit Cloud ou autres environnements
         try:
             # Utiliser le répertoire de travail actuel
             rag_dir = os.getcwd()
+            print(f"DEBUG get_rag_dir: Répertoire courant = {rag_dir}")
             # Si on est dans le dossier sam, on y reste, sinon on cherche sam/
             if not os.path.basename(rag_dir) == "sam":
                 sam_path = os.path.join(rag_dir, "sam")
                 if os.path.exists(sam_path):
                     rag_dir = sam_path
+                    print(f"DEBUG get_rag_dir: Dossier sam trouvé -> {rag_dir}")
             return rag_dir
-        except Exception:
+        except Exception as e2:
+            print(f"DEBUG get_rag_dir: Erreur dans le fallback ({type(e2).__name__}: {e2}), dernier recours")
             # Dernier recours : utiliser le répertoire courant
-            return os.getcwd()
+            rag_dir = os.getcwd()
+            print(f"DEBUG get_rag_dir: Dernier recours -> {rag_dir}")
+            return rag_dir
 
 # Charger le .env depuis la racine du projet
 try:
@@ -214,7 +222,17 @@ def load_documents_and_create_chunks():
 def initialize_chatbot():
     faiss.omp_set_num_threads(3)
     # Obtenir le répertoire du fichier rag.py de manière robuste
-    rag_dir = get_rag_dir()
+    try:
+        rag_dir = get_rag_dir()
+        if not rag_dir:
+            raise ValueError("get_rag_dir() a retourné None ou une valeur vide")
+        print(f"DEBUG: rag_dir = {rag_dir}")
+    except Exception as e:
+        print(f"ERREUR lors de l'obtention de rag_dir: {e}")
+        # Fallback absolu
+        rag_dir = os.getcwd()
+        print(f"DEBUG: Utilisation du répertoire courant comme fallback: {rag_dir}")
+    
     index_path = os.path.join(rag_dir, "indexFaiss", "local_index.faiss")
     
     # Toujours créer les chunks
