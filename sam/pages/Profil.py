@@ -283,9 +283,9 @@ st.markdown(f"""
             text-shadow: 2px 2px 0px rgba(0, 0, 0, 0.1);
         }}
         
-        /* Styles pour les titres h3 dans markdown */
+        /* Styles pour les titres h3 dans markdown - en blanc pour la page Profil */
         .stMarkdown h3 {{
-            color: {DOUANE_VERT} !important;
+            color: white !important;
             font-family: 'Fredoka', sans-serif;
             font-weight: 700;
             font-size: 1.5rem;
