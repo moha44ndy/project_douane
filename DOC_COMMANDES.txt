@@ -1,0 +1,159 @@
+Mosam – Classification Tarifaire CEDEAO
+======================================
+
+Application IA de classification douanière selon le TEC/SH CEDEAO, avec :
+- Backend : FastAPI + moteur RAG (FAISS, embeddings Hugging Face, OpenAI).
+- Frontend : Next.js (React) pour l’interface web.
+
+--------------------------------------
+1. PRÉREQUIS
+--------------------------------------
+
+- Python 3.10 ou 3.11 (64 bits)
+- Node.js 18+ (recommandé 18 ou 20)
+- Accès Internet pour :
+  - installer les dépendances Python/Node,
+  - appeler l’API OpenAI.
+
+--------------------------------------
+2. VARIABLES D’ENVIRONNEMENT
+--------------------------------------
+
+2.1. Backend (Python)
+---------------------
+
+Fichier :
+  c:\REVOLUTION\Classification tarifaire\Classification_Tarifaire__CEDEAO\.env
+
+Contenu minimum :
+
+  OPENAI_API_KEY=sk-...                # ta clé OpenAI
+  MOSAM_MODEL=gpt-4.1-mini             # ou autre modèle compatible OpenAI
+  MODEL_DIR=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+
+
+2.2. Frontend (Next.js)
+-----------------------
+
+Fichier :
+  c:\REVOLUTION\Classification tarifaire\Classification_Tarifaire__CEDEAO\frontend\.env.local
+
+Contenu :
+
+  NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+
+
+--------------------------------------
+3. INSTALLATION ET LANCEMENT
+--------------------------------------
+
+3.1. Backend FastAPI
+--------------------
+
+Depuis la racine du projet :
+
+  cd "c:\REVOLUTION\Classification tarifaire\Classification_Tarifaire__CEDEAO"
+
+  REM (une fois) installer les dépendances dans le venv
+  "sam\venv-sam-api\Scripts\python.exe" -m pip install -r "sam\requirements.txt"
+
+  REM lancer le serveur FastAPI
+  "sam\venv-sam-api\Scripts\python.exe" -m sam.api
+
+Le backend écoute sur : http://localhost:8000
+
+Endpoints principaux :
+  - GET  /health   : healthcheck simple
+  - POST /classify : classification IA
+  - GET  /history  : historique des classifications (sam/table_data.json)
+  - GET  /users    : liste des utilisateurs (sam/users.json)
+  - POST /users    : création d’un utilisateur
+
+
+3.2. Frontend Next.js
+---------------------
+
+Dans un autre terminal :
+
+  cd "c:\REVOLUTION\Classification tarifaire\Classification_Tarifaire__CEDEAO\frontend"
+
+  REM (une fois) installer les dépendances
+  npm install
+
+  REM lancer le serveur de dev
+  npm run dev
+
+Le frontend est accessible sur : http://localhost:3000
+
+
+--------------------------------------
+4. PAGES NEXT.JS
+--------------------------------------
+
+- "/" (page principale – classification)
+  - Formulaire de description de marchandise.
+  - Appelle POST /classify.
+  - Affiche la réponse structurée + le JSON brut renvoyé par le modèle.
+
+- "/historique"
+  - Consomme GET /history.
+  - Filtres : recherche texte, section, statut.
+  - Tableau de résultats + statistiques (total, confiance moyenne).
+
+- "/admin"
+  - Consomme GET /users et GET /history.
+  - Statistiques : nombre d’utilisateurs, actifs, admins, classifications.
+  - Formulaire de création d’utilisateur (POST /users).
+  - Tableau des utilisateurs (ID, nom, identifiant, email, admin).
+
+
+--------------------------------------
+5. ARCHITECTURE TECHNIQUE
+--------------------------------------
+
+Backend (dossier sam/)
+----------------------
+
+- sam/rag.py
+  - Chargement des PDF (sam/contrat/*.pdf)
+  - Chunking / splitting
+  - RAG + FAISS
+  - Embeddings Hugging Face
+  - Appel OpenAI via le client OpenAI (SDK >= 1.x)
+
+- sam/api.py
+  - Application FastAPI
+  - Endpoints :
+    - /classify
+    - /history
+    - /users
+    - /health
+  - Initialise le moteur RAG une seule fois au démarrage.
+
+- Données locales :
+  - sam/table_data.json           : historique des produits classés
+  - sam/users.json                : utilisateurs
+  - sam/indexFaiss/local_index.faiss : index FAISS persistant
+  - sam/chunks.json               : cache des chunks
+
+
+Frontend (dossier frontend/)
+----------------------------
+
+- src/app/layout.tsx     : layout global
+- src/app/globals.css    : styles globaux (thème vert/or)
+- src/app/page.tsx       : page principale (classification)
+- src/app/historique/page.tsx : page Historique
+- src/app/admin/page.tsx : panneau Admin
+
+
+--------------------------------------
+6. NOTE SUR L’ANCIENNE INTERFACE STREAMLIT
+--------------------------------------
+
+L’ancienne interface Streamlit et les scripts Windows associés ont été retirés
+du flux de production. La stack officielle est désormais :
+
+  Backend : FastAPI (sam/api.py)
+  Frontend : Next.js (frontend/)
+
