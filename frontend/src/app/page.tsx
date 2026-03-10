@@ -80,44 +80,46 @@ export default function HomePage() {
 
   return (
     <div className="space-y-8">
-      <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <header className="mosam-hero">
         <div>
-          <h1 className="text-3xl font-bold text-primary mb-1">
+          <h1 className="mosam-hero-title">
             Mosam – Classification Tarifaire CEDEAO
           </h1>
-          <p className="text-muted-foreground">
+          <p className="mosam-hero-subtitle">
             Assistant IA pour la classification douanière TEC/SH 2022 – Côte
             d&apos;Ivoire.
           </p>
         </div>
-        <div className="flex flex-col items-end gap-2 text-right text-sm text-muted-foreground">
-          <div>
-            <div className="font-semibold text-primary">
+        <div className="mosam-header-actions">
+          <div className="mosam-header-actions-primary">
+            <div className="mosam-hero-meta">
               Direction Générale des Douanes
             </div>
-            <div>21 sections · 97 chapitres · 5000+ codes</div>
+            <div className="mosam-hero-stats">
+              21 sections · 97 chapitres · 5000+ codes
+            </div>
           </div>
-          <div className="flex gap-2 text-xs">
+          <div className="mosam-header-actions-buttons">
             <Link
               href="/historique"
-              className="inline-flex items-center rounded-full bg-primary text-primary-foreground px-4 py-1 font-semibold shadow-md hover:bg-primary/90 transition-colors"
+              className="mosam-btn-secondary"
             >
-              📋 Historique
+              Historique
             </Link>
             <Link
               href="/admin"
-              className="inline-flex items-center rounded-full border border-border bg-background text-primary px-4 py-1 font-semibold shadow-md hover:bg-primary/10 transition-colors"
+              className="mosam-btn-admin"
             >
-              🛡️ Admin
+              Administration
             </Link>
           </div>
         </div>
       </header>
 
-      <section className="grid lg:grid-cols-3 gap-6">
+      <section className="mosam-main-grid">
         <div className="lg:col-span-2 rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
-          <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
-            <span className="text-2xl">✍️</span> Décrire la marchandise
+          <h2 className="text-xl font-semibold text-primary">
+            Décrire la marchandise
           </h2>
           <p className="text-sm text-muted-foreground">
             Décrivez la marchandise à classer (matière, usage, caractéristiques
@@ -128,7 +130,7 @@ export default function HomePage() {
             <textarea
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="w-full min-h-[140px] rounded-2xl border border-border bg-background px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/70 resize-vertical"
+              className="mosam-textarea min-h-[140px]"
               placeholder={
                 "Exemples :\n" +
                 "- Ordinateur portable 15'' écran LED, processeur i7, 16 Go RAM\n" +
@@ -138,7 +140,7 @@ export default function HomePage() {
             <button
               type="submit"
               disabled={loading}
-              className="inline-flex items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground px-6 py-2 text-sm font-semibold shadow-md hover:bg-primary/90 disabled:opacity-70 disabled:cursor-not-allowed transition-colors"
+              className="mosam-btn-primary"
             >
               {loading ? (
                 <>
@@ -146,9 +148,7 @@ export default function HomePage() {
                   Mosam réfléchit…
                 </>
               ) : (
-                <>
-                  <span className="text-lg">🚀</span> Lancer la classification
-                </>
+                <>Lancer la classification</>
               )}
             </button>
           </form>
@@ -158,39 +158,12 @@ export default function HomePage() {
             </div>
           )}
         </div>
-
-        <div className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
-          <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
-            <span className="text-2xl">📌</span> Résumé
-          </h2>
-          <ul className="space-y-2 text-sm text-muted-foreground">
-            <li>
-              <span className="font-semibold text-primary">Statut :</span>{" "}
-              {loading ? "Analyse en cours…" : "Prêt"}
-            </li>
-            <li>
-              <span className="font-semibold text-primary">API :</span>{" "}
-              {API_BASE_URL}
-            </li>
-            <li>
-              <span className="font-semibold text-primary">
-                Marchandises classées :
-              </span>{" "}
-              {classifications.length || "–"}
-            </li>
-          </ul>
-          <p className="text-xs text-muted-foreground mt-4">
-            Astuce : dans ta future UI Next.js, tu pourras ajouter d&apos;autres
-            pages (historique, administration) qui consommeront la même API
-            FastAPI.
-          </p>
-        </div>
       </section>
 
       {payload && (
         <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
-          <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
-            <span className="text-2xl">📊</span> Résultat structuré
+          <h2 className="text-xl font-semibold text-primary">
+            Résultat structuré
           </h2>
           {payload.narrative && (
             <p className="text-sm text-foreground leading-relaxed">
@@ -271,19 +244,6 @@ export default function HomePage() {
               </table>
             </div>
           )}
-        </section>
-      )}
-
-      {raw && (
-        <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-3">
-          <details>
-            <summary className="cursor-pointer text-sm font-semibold text-primary">
-              Voir le JSON brut renvoyé par le modèle
-            </summary>
-            <pre className="mt-3 max-h-80 overflow-auto rounded-2xl bg-background border border-border px-3 py-2 text-xs text-muted-foreground">
-{raw}
-            </pre>
-          </details>
         </section>
       )}
     </div>

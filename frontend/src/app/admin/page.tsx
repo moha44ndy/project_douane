@@ -229,7 +229,7 @@ export default function AdminPage() {
 
         <div className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
           <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
-            <span className="text-2xl">👥</span> Utilisateurs
+            Utilisateurs
           </h2>
           <div className="overflow-x-auto rounded-2xl border border-border bg-background text-sm">
             <table className="min-w-full">
@@ -254,7 +254,7 @@ export default function AdminPage() {
                     </td>
                     <td className="px-3 py-2">{u.email ?? "N/A"}</td>
                     <td className="px-3 py-2">
-                      {u.is_admin ? "👑 Oui" : "Non"}
+                      {u.is_admin ? "Oui" : "Non"}
                     </td>
                   </tr>
                 ))}

@@ -13,9 +13,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="fr">
-      <body className="bg-surface text-foreground min-h-screen">
+      <body className="text-foreground min-h-screen">
         <div className="min-h-screen bg-gradient">
-          <main className="max-w-6xl mx-auto px-4 py-10">{children}</main>
+          <main className="main-shell">{children}</main>
         </div>
       </body>
     </html>

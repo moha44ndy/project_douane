@@ -239,8 +239,8 @@ export default function HistoriquePage() {
       </section>
 
       <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
-        <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
-          <span className="text-2xl">📊</span> Résultats ({totalFiltered})
+        <h2 className="text-xl font-semibold text-primary">
+          Résultats ({totalFiltered})
         </h2>
 
         {loading && (
