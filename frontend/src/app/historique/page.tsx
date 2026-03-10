@@ -35,8 +35,8 @@ function normalizeHistoryItem(item: HistoryItem) {
   // Section
   const sectionFromFlat = item.section_produit;
   const sectionFromNested =
-    extractField(item, ["classification", "section", "number"], null) ??
-    extractField(item, ["classification", "section"], null);
+    extractField(item, ["classification", "section", "number"], undefined) ??
+    extractField(item, ["classification", "section"], undefined);
   const section = String(sectionFromFlat ?? sectionFromNested ?? "N/A");
 
   // Code tarifaire
