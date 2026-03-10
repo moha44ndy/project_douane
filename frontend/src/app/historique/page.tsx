@@ -47,7 +47,7 @@ function normalizeHistoryItem(item: HistoryItem) {
   // Confiance
   const confidenceRaw =
     item.classification_confidence ??
-    extractField(item, ["classification", "confidence"], 0);
+    extractField(item, ["classification", "confidence"], "0");
   const confidence =
     typeof confidenceRaw === "number" ? confidenceRaw : Number(confidenceRaw) || 0;
 
