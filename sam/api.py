@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional, Any
 import json
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -112,6 +113,35 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
         result = process_user_input(payload.query, chunks, emb, index)
     except Exception as exc:  # pragma: no cover - garde-fou
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Persistance best-effort dans l'historique local
+    try:
+        parsed = json.loads(result)
+        classifications = parsed.get("classifications") or []
+        if isinstance(classifications, list) and classifications:
+            history = _load_json_list(TABLE_DATA_PATH)
+            now = datetime.now(timezone.utc).isoformat()
+
+            for item in classifications:
+                if not isinstance(item, dict):
+                    continue
+                entry: dict[str, Any] = {
+                    "description_produit": item.get("description")
+                    or item.get("product", {}).get("description"),
+                    "section_produit": item.get("section"),
+                    "code_tarifaire": item.get("hs_code") or item.get("code"),
+                    "classification_confidence": item.get("confidence"),
+                    "statut_validation": "non_validé",
+                    "date_classification": now,
+                }
+                # Ne pas ajouter d'entrées totalement vides
+                if any(v is not None for v in entry.values()):
+                    history.append(entry)
+
+            _save_json_list(TABLE_DATA_PATH, history)
+    except Exception:
+        # En cas de problème de parsing/écriture, on n'empêche pas la réponse
+        pass
 
     return ClassifyResponse(raw=result)
 
