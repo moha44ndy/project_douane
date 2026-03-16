@@ -76,13 +76,12 @@ def _save_json_list(path: Path, data: list[dict]) -> None:
 @app.on_event("startup")
 def startup_event() -> None:
     """
-    Initialise le moteur RAG (chunks, embeddings, index FAISS) une seule fois au démarrage.
+    Initialise le moteur RAG (chunks + index FAISS) une seule fois au démarrage.
     Les objets sont stockés sur l'application pour être réutilisés par les endpoints.
     """
 
-    chunks, emb, index = initialize_chatbot()
+    chunks, index = initialize_chatbot()
     app.state.chunks = chunks
-    app.state.emb = emb
     app.state.index = index
 
 
@@ -104,13 +103,12 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
 
     try:
         chunks = app.state.chunks
-        emb = app.state.emb
         index = app.state.index
     except AttributeError as exc:
         raise HTTPException(status_code=503, detail="Moteur RAG non initialisé") from exc
 
     try:
-        result = process_user_input(payload.query, chunks, emb, index)
+        result = process_user_input(payload.query, chunks, index)
     except Exception as exc:  # pragma: no cover - garde-fou
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

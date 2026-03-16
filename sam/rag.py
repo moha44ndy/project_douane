@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from requests.auth import HTTPBasicAuth
 import urllib3
 import json
@@ -20,15 +19,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Nouveau client OpenAI (SDK >= 1.x)
 client = OpenAI(api_key=Config.OPENAI_API_KEY)
-# Configuration
-from_code = "en"
-to_code = "fr"
-#AUTH_URL = Config.AUTH_URL
-#API_URL = Config.API_URL
-#USERNAME = Config.USER
-#PASSWORD = Config.PASSWORD
-MODEL_DIR = Config.MODEL_DIR or "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-#MODEL_ID = Config.MODEL_ID
+
+# Configuration embeddings / modèles
+EMBEDDING_MODEL = Config.EMBEDDING_MODEL or "text-embedding-3-large"
 
 def save_chunks(chunks, filepath):
     """Sauvegarder les chunks dans un fichier JSON."""
@@ -121,33 +114,28 @@ def initialize_chatbot():
     
     print(f"[OK] {len(chunks)} chunks disponibles")
     print("finish loading document and create chunks")
-    
-    print("Chargement du modele d'embeddings...")
-    emb = HuggingFaceEmbeddings(
-        model_name=MODEL_DIR, 
-        encode_kwargs={"normalize_embeddings": True}
-    )
 
     if os.path.exists(index_path):
-        # Charger l'index directement depuis le fichier FAISS
+        # Charger l'index directement depuis le fichier FAISS (chemin pre-bâti)
         index = faiss.read_index(index_path)
         print(f"[OK] Index charge depuis le fichier existant ({index.ntotal} vecteurs)")
     else:
-        # Créer un nouvel index
-        print("start the creation of the faiss index")
-        index = create_faiss_index(chunks, emb)
+        # Créer un nouvel index en utilisant les embeddings OpenAI
+        print("start the creation of the faiss index (OpenAI embeddings)")
+        index = create_faiss_index(chunks)
         print("finish the creation of the faiss index")
-    
-    return chunks, emb, index
 
-def create_faiss_index(chunks, emb):
+    return chunks, index
+
+
+def create_faiss_index(chunks):
     """Créer un index FAISS à partir des chunks."""
     
     # VÉRIFICATIONS CRITIQUES
     if not chunks:
         raise ValueError("Liste de chunks vide!")
     
-    print(f"Generation des embeddings pour {len(chunks)} chunks...")
+    print(f"Generation des embeddings OpenAI pour {len(chunks)} chunks...")
     
     # Extraire le texte des chunks
     chunk_texts = [chunk.page_content for chunk in chunks]
@@ -158,11 +146,15 @@ def create_faiss_index(chunks, emb):
     
     print(f"Premier chunk (100 premiers caracteres): {chunk_texts[0][:100]}...")
     
-    # Générer les embeddings en batch (plus efficace)
+    # Générer les embeddings via l'API OpenAI (batch)
     try:
-        chunk_vectors = emb.embed_documents(chunk_texts)
+        response = client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=chunk_texts,
+        )
+        chunk_vectors = [d.embedding for d in response.data]
     except Exception as e:
-        print(f"[ERREUR] Generation des embeddings: {e}")
+        print(f"[ERREUR] Generation des embeddings OpenAI: {e}")
         raise
     
     # Vérifier que les embeddings ont été générés
@@ -196,9 +188,18 @@ def create_faiss_index(chunks, emb):
     
     return index
 
-def search_faiss_index(query, emb, index, k=5):
-    print("start vectorisation de la requete")
-    query_vector = np.array(emb.embed_query(query)).astype('float32')
+
+def search_faiss_index(query, index, k=5):
+    print("start vectorisation de la requete (OpenAI embeddings)")
+    try:
+        resp = client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=[query],
+        )
+        query_vector = np.array(resp.data[0].embedding).astype("float32")
+    except Exception as e:
+        print(f"[ERREUR] Embedding de la requete: {e}")
+        raise
     print("finish vectorisation de la requete")
     print("start research of index by similarity")
     distances, indices = index.search(np.array([query_vector]), k)
@@ -293,23 +294,23 @@ def split_user_queries(raw_text):
     return [raw_text.strip()] if raw_text.strip() else []
 
 
-def build_context_for_query(query, chunks, emb, index):
+def build_context_for_query(query, chunks, index):
     """Génère un contexte documentaire pour une requête précise."""
-    indices, _ = search_faiss_index(query, emb, index)
+    indices, _ = search_faiss_index(query, index)
     context = ""
     for idx in indices[0]:
         context += chunks[idx].page_content + "\n"
     return context
 
 
-def process_user_input(user_input, chunks, emb, index):
+def process_user_input(user_input, chunks, index):
     queries = split_user_queries(user_input)
     if not queries:
         return "Merci de préciser au moins une marchandise à classifier."
 
     prompt_sections = []
     for i, query in enumerate(queries, start=1):
-        context = build_context_for_query(query, chunks, emb, index)
+        context = build_context_for_query(query, chunks, index)
         prompt_sections.append(
             f"[MARCHANDISE {i}]\nDescription: {query}\nContexte documentaire:\n{context}"
         )
