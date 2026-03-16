@@ -1,6 +1,9 @@
 'use client';
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -61,6 +64,7 @@ function normalizeHistoryItem(item: HistoryItem) {
 }
 
 export default function HistoriquePage() {
+  const router = useRouter();
   const [data, setData] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,12 +73,22 @@ export default function HistoriquePage() {
     section: "Toutes",
     status: "Tous",
   });
+  const [page, setPage] = useState(1);
+  const pageSize = 25;
 
   useEffect(() => {
     const fetchHistory = async () => {
       setLoading(true);
       setError(null);
       try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session) {
+          router.push("/login");
+          return;
+        }
+
         const res = await fetch(`${API_BASE_URL}/history`);
         if (!res.ok) {
           const text = await res.text();
@@ -137,27 +151,55 @@ export default function HistoriquePage() {
 
   const total = data.length;
   const totalFiltered = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const paginated = useMemo(
+    () =>
+      filtered.slice(
+        (currentPage - 1) * pageSize,
+        (currentPage - 1) * pageSize + pageSize
+      ),
+    [filtered, currentPage, pageSize]
+  );
+
   const avgConfidence =
-    filtered.reduce((acc, it) => acc + it.confidence, 0) /
-      (filtered.length || 1) || 0;
+    paginated.reduce((acc, it) => acc + it.confidence, 0) /
+      (paginated.length || 1) || 0;
 
   return (
     <div className="space-y-8">
-      <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <Link href="/" className="mosam-btn-admin">
+              Retour à la classification
+            </Link>
+            <button
+              type="button"
+              onClick={async () => {
+                await supabase.auth.signOut();
+                router.push("/login");
+              }}
+              className="mosam-btn-secondary"
+            >
+              Se déconnecter
+            </button>
+          </div>
+          <div className="text-right text-sm text-muted-foreground">
+            <div className="font-semibold text-primary">
+              Total en base : {total}
+            </div>
+            <div>Filtrés : {totalFiltered}</div>
+          </div>
+        </div>
         <div>
           <h1 className="text-3xl font-bold text-primary mb-1">
             Historique des classifications
           </h1>
           <p className="text-muted-foreground text-sm">
-            Vue Next.js de l&apos;historique déjà enregistré dans{" "}
-            <code>sam/table_data.json</code>.
+            Retrouvez les classifications passées avec leur section, code
+            tarifaire et statut.
           </p>
-        </div>
-        <div className="text-right text-sm text-muted-foreground">
-          <div className="font-semibold text-primary">
-            Total en base : {total}
-          </div>
-          <div>Filtrés : {totalFiltered}</div>
         </div>
       </header>
 
@@ -273,9 +315,9 @@ export default function HistoriquePage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((item, idx) => (
+                {paginated.map((item, idx) => (
                   <tr
-                    key={idx}
+                    key={`${currentPage}-${idx}`}
                     className={
                       idx % 2 === 0 ? "bg-muted/40" : "bg-background"
                     }
@@ -303,6 +345,32 @@ export default function HistoriquePage() {
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+        {!loading && !error && filtered.length > 0 && (
+          <div className="flex items-center justify-between pt-4 text-sm text-muted-foreground">
+            <div>
+              Page {currentPage} / {totalPages} •{" "}
+              {paginated.length} lignes affichées
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={currentPage === 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
+              >
+                Précédent
+              </button>
+              <button
+                type="button"
+                disabled={currentPage === totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
+              >
+                Suivant
+              </button>
+            </div>
           </div>
         )}
       </section>

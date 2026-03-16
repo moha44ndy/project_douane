@@ -4,18 +4,22 @@ Configuration file for the Mosam CEDEAO tariff-classification assistant.
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Charge les variables d'environnement depuis le fichier .env à la racine du projet.
 load_dotenv()
 
+
 class Config:
-    """Configuration class for application settings."""
-    # LLM API configuration (customs analysis)
-    AUTH_URL = os.getenv('AUTH_URL')
-    API_URL = os.getenv('API_URL')
-    USER = os.getenv('USER')
-    PASSWORD = os.getenv('PASSWORD')
-    MODEL_DIR = os.getenv('MODEL_DIR')
-    MODEL_ID = os.getenv('MODEL_ID')
-    ARGOS_MODEL = os.getenv('ARGOS_MODEL')
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-    MOSAM_MODEL = os.getenv('MOSAM_MODEL', 'gpt-5-nano')
+    """Configuration centralisée de l'application."""
+
+    # LLM / OpenAI
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    MOSAM_MODEL = os.getenv("MOSAM_MODEL", "gpt-4.1-mini")
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+    # Base de données (Supabase / Postgres)
+    SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL")
+
+    # Cache Redis (Upstash)
+    UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+    UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+

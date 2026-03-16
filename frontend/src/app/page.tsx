@@ -1,7 +1,9 @@
 'use client';
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
+import { FormEvent, useEffect, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 
 type ClassificationItem = {
   description?: string;
@@ -28,11 +30,24 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function HomePage() {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState<string | null>(null);
   const [payload, setPayload] = useState<ApiPayload | null>(null);
+
+  useEffect(() => {
+    const checkSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) {
+        router.push("/login");
+      }
+    };
+    void checkSession();
+  }, [router]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();

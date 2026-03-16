@@ -1,18 +1,17 @@
-from pathlib import Path
-from typing import Optional, Any
+from __future__ import annotations
+
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy import text
 
+from .cache import cache_get, cache_set
+from .db import get_db
 from .rag import initialize_chatbot, process_user_input
-
-
-BASE_DIR = Path(__file__).resolve().parent
-TABLE_DATA_PATH = BASE_DIR / "table_data.json"
-USERS_PATH = BASE_DIR / "users.json"
 
 
 app = FastAPI(
@@ -53,23 +52,6 @@ class UserCreate(BaseModel):
     is_admin: bool = False
 
 
-def _load_json_list(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def _save_json_list(path: Path, data: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
 @app.on_event("startup")
 def startup_event() -> None:
     """
@@ -98,6 +80,12 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     - Retourne la chaîne brute produite par le modèle (JSON sérialisé) dans le champ `raw`.
     """
 
+    # Clé de cache partagée entre tous les utilisateurs (Upstash Redis)
+    cache_key = f"classify:{payload.query.strip().lower()}"
+    cached_raw = cache_get(cache_key)
+    if cached_raw is not None:
+        return ClassifyResponse(raw=cached_raw)
+
     try:
         chunks = app.state.chunks
         index = app.state.index
@@ -113,33 +101,47 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
         raise HTTPException(status_code=500, detail=detail) from exc
 
-    # Persistance best-effort dans l'historique local
+    # Mise en cache best-effort du résultat brut (par ex. 1h)
+    cache_set(cache_key, result, ex=3600)
+
+    # Persistance best-effort dans la base de données (table classifications)
     try:
         parsed = json.loads(result)
         classifications = parsed.get("classifications") or []
         if isinstance(classifications, list) and classifications:
-            history = _load_json_list(TABLE_DATA_PATH)
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(timezone.utc)
 
-            for item in classifications:
-                if not isinstance(item, dict):
-                    continue
-                entry: dict[str, Any] = {
-                    "description_produit": item.get("description")
-                    or item.get("product", {}).get("description"),
-                    "section_produit": item.get("section"),
-                    "code_tarifaire": item.get("hs_code") or item.get("code"),
-                    "classification_confidence": item.get("confidence"),
-                    "statut_validation": "non_validé",
-                    "date_classification": now,
-                }
-                # Ne pas ajouter d'entrées totalement vides
-                if any(v is not None for v in entry.values()):
-                    history.append(entry)
+            with get_db() as db:
+                for item in classifications:
+                    if not isinstance(item, dict):
+                        continue
 
-            _save_json_list(TABLE_DATA_PATH, history)
+                    db.execute(
+                        text(
+                            """
+                            insert into public.classifications
+                            (description_produit,
+                             section_produit,
+                             code_tarifaire,
+                             classification_confidence,
+                             statut_validation,
+                             created_at)
+                            values (:description, :section, :code, :confidence, :statut, :created_at)
+                            """
+                        ),
+                        {
+                            "description": item.get("description")
+                            or item.get("product", {}).get("description"),
+                            "section": item.get("section"),
+                            "code": item.get("hs_code") or item.get("code"),
+                            "confidence": item.get("confidence"),
+                            "statut": "non_validé",
+                            "created_at": now,
+                        },
+                    )
+                db.commit()
     except Exception:
-        # En cas de problème de parsing/écriture, on n'empêche pas la réponse
+        # En cas de problème de parsing/écriture, on n'empêche pas la réponse.
         pass
 
     return ClassifyResponse(raw=result)
@@ -148,38 +150,82 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
 @app.get("/history", tags=["history"])
 def get_history() -> list[dict]:
     """
-    Retourne l'historique brut des classifications stocké dans `sam/table_data.json`.
-    La structure est volontairement flexible pour rester compatible avec la version Streamlit.
+    Retourne l'historique des classifications depuis la base Supabase.
     """
 
-    return _load_json_list(TABLE_DATA_PATH)
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                select
+                  description_produit,
+                  section_produit,
+                  code_tarifaire,
+                  classification_confidence,
+                  statut_validation,
+                  created_at as date_classification
+                from public.classifications
+                order by created_at desc
+                limit 1000
+                """
+            )
+        ).mappings().all()
+
+        return [dict(row) for row in rows]
 
 
 @app.get("/users", tags=["users"])
 def get_users() -> list[dict]:
-    """Retourne la liste brute des utilisateurs (`sam/users.json`)."""
+    """Retourne la liste des utilisateurs depuis la base Supabase."""
 
-    return _load_json_list(USERS_PATH)
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                select
+                  id as user_id,
+                  nom_user,
+                  identifiant_user,
+                  email,
+                  statut,
+                  is_admin
+                from public.users
+                order by created_at asc
+                """
+            )
+        ).mappings().all()
+        return [dict(row) for row in rows]
 
 
 @app.post("/users", tags=["users"])
 def create_user(payload: UserCreate) -> dict:
-    """Crée un nouvel utilisateur et le persiste dans `sam/users.json`."""
+    """Crée un nouvel utilisateur dans la base Supabase."""
 
-    users = _load_json_list(USERS_PATH)
-    new_id = max((u.get("user_id", 0) for u in users), default=0) + 1
-
-    user = {
-        "user_id": new_id,
-        "nom_user": payload.nom_user,
-        "identifiant_user": payload.identifiant_user,
-        "email": payload.email,
-        "statut": "actif",
-        "is_admin": payload.is_admin,
-    }
-    users.append(user)
-    _save_json_list(USERS_PATH, users)
-    return user
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                insert into public.users
+                (nom_user, identifiant_user, email, is_admin, statut)
+                values (:nom_user, :identifiant_user, :email, :is_admin, 'actif')
+                returning
+                  id as user_id,
+                  nom_user,
+                  identifiant_user,
+                  email,
+                  statut,
+                  is_admin
+                """
+            ),
+            {
+                "nom_user": payload.nom_user,
+                "identifiant_user": payload.identifiant_user,
+                "email": payload.email,
+                "is_admin": payload.is_admin,
+            },
+        ).mappings().one()
+        db.commit()
+        return dict(row)
 
 
 if __name__ == "__main__":

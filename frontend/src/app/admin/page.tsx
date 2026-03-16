@@ -1,6 +1,9 @@
 'use client';
 
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
@@ -15,6 +18,7 @@ type User = {
 };
 
 export default function AdminPage() {
+  const router = useRouter();
   const [users, setUsers] = useState<User[]>([]);
   const [historyCount, setHistoryCount] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -26,11 +30,22 @@ export default function AdminPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [creating, setCreating] = useState(false);
 
+  const [userPage, setUserPage] = useState(1);
+  const userPageSize = 25;
+
   useEffect(() => {
     const fetchAll = async () => {
       setLoading(true);
       setError(null);
       try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session) {
+          router.push("/login");
+          return;
+        }
+
         const [usersRes, historyRes] = await Promise.all([
           fetch(`${API_BASE_URL}/users`),
           fetch(`${API_BASE_URL}/history`),
@@ -67,6 +82,20 @@ export default function AdminPage() {
   const totalUsers = users.length;
   const activeUsers = users.filter((u) => u.statut === "actif").length;
   const adminUsers = users.filter((u) => u.is_admin).length;
+
+  const totalUserPages = Math.max(
+    1,
+    Math.ceil(totalUsers / userPageSize)
+  );
+  const currentUserPage = Math.min(userPage, totalUserPages);
+  const paginatedUsers = useMemo(
+    () =>
+      users.slice(
+        (currentUserPage - 1) * userPageSize,
+        (currentUserPage - 1) * userPageSize + userPageSize
+      ),
+    [users, currentUserPage, userPageSize]
+  );
 
   const handleCreateUser = async (e: FormEvent) => {
     e.preventDefault();
@@ -108,21 +137,37 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-8">
-      <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <Link href="/" className="mosam-btn-admin">
+              Retour à la classification
+            </Link>
+            <button
+              type="button"
+              onClick={async () => {
+                await supabase.auth.signOut();
+                router.push("/login");
+              }}
+              className="mosam-btn-secondary"
+            >
+              Se déconnecter
+            </button>
+          </div>
+          <div className="text-right text-sm text-muted-foreground">
+            <div className="font-semibold text-primary">
+              Utilisateurs : {totalUsers}
+            </div>
+            <div>Classifications : {historyCount}</div>
+          </div>
+        </div>
         <div>
           <h1 className="text-3xl font-bold text-primary mb-1">
             Panneau administrateur
           </h1>
           <p className="text-muted-foreground text-sm">
-            Vue Next.js de la gestion des utilisateurs et des statistiques
-            globales.
+            Gestion des utilisateurs et suivi des statistiques globales.
           </p>
-        </div>
-        <div className="text-right text-sm text-muted-foreground">
-          <div className="font-semibold text-primary">
-            Utilisateurs : {totalUsers}
-          </div>
-          <div>Classifications : {historyCount}</div>
         </div>
       </header>
 
@@ -245,7 +290,7 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {paginatedUsers.map((u) => (
                   <tr key={u.user_id ?? u.identifiant_user}>
                     <td className="px-3 py-2">{u.user_id ?? "N/A"}</td>
                     <td className="px-3 py-2">{u.nom_user ?? "N/A"}</td>
@@ -271,6 +316,36 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
+          {users.length > 0 && (
+            <div className="flex items-center justify-between pt-4 text-xs text-muted-foreground">
+              <div>
+                Page {currentUserPage} / {totalUserPages} •{" "}
+                {paginatedUsers.length} utilisateurs affichés
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={currentUserPage === 1}
+                  onClick={() =>
+                    setUserPage((p) => Math.max(1, p - 1))
+                  }
+                  className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
+                >
+                  Précédent
+                </button>
+                <button
+                  type="button"
+                  disabled={currentUserPage === totalUserPages}
+                  onClick={() =>
+                    setUserPage((p) => Math.min(totalUserPages, p + 1))
+                  }
+                  className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
+                >
+                  Suivant
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </div>
