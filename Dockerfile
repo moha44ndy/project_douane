@@ -2,9 +2,12 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Installer dépendances système minimales
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && \
-    rm -rf /var/lib/apt/lists/*
+# Installer dépendances système minimales (compilateur + outils pour sentencepiece & PyTorch)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copier et installer les dépendances Python du backend
 COPY sam/requirements.txt ./sam/requirements.txt
