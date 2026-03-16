@@ -21,7 +21,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 client = OpenAI(api_key=Config.OPENAI_API_KEY)
 
 # Configuration embeddings / modèles
-EMBEDDING_MODEL = Config.EMBEDDING_MODEL or "text-embedding-3-large"
+EMBEDDING_MODEL = getattr(Config, "EMBEDDING_MODEL", None) or "text-embedding-3-large"
 
 def save_chunks(chunks, filepath):
     """Sauvegarder les chunks dans un fichier JSON."""
