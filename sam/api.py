@@ -107,7 +107,11 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     try:
         result = process_user_input(payload.query, chunks, index)
     except Exception as exc:  # pragma: no cover - garde-fou
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        import traceback
+
+        print(traceback.format_exc())
+        detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
+        raise HTTPException(status_code=500, detail=detail) from exc
 
     # Persistance best-effort dans l'historique local
     try:

@@ -21,7 +21,24 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 client = OpenAI(api_key=Config.OPENAI_API_KEY)
 
 # Configuration embeddings / modèles
-EMBEDDING_MODEL = getattr(Config, "EMBEDDING_MODEL", None) or "text-embedding-3-large"
+# Par défaut: "small" (moins cher + rapide). Tu peux override via Config.EMBEDDING_MODEL
+EMBEDDING_MODEL = getattr(Config, "EMBEDDING_MODEL", None) or "text-embedding-3-small"
+
+
+def _embed_texts_openai(texts: list[str], *, batch_size: int = 128) -> list[list[float]]:
+    """Embeddings OpenAI en batch pour éviter les limites de requête."""
+    out: list[list[float]] = []
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        resp = client.embeddings.create(model=EMBEDDING_MODEL, input=chunk)
+        out.extend([d.embedding for d in resp.data])
+    return out
+
+
+def _embedding_dim_probe() -> int:
+    """Retourne la dimension du modèle d'embeddings courant."""
+    vecs = _embed_texts_openai(["dim_probe"], batch_size=1)
+    return len(vecs[0])
 
 def save_chunks(chunks, filepath):
     """Sauvegarder les chunks dans un fichier JSON."""
@@ -115,20 +132,32 @@ def initialize_chatbot():
     print(f"[OK] {len(chunks)} chunks disponibles")
     print("finish loading document and create chunks")
 
+    index: faiss.Index
+    expected_dim = _embedding_dim_probe()
+
     if os.path.exists(index_path):
         # Charger l'index directement depuis le fichier FAISS (chemin pre-bâti)
         index = faiss.read_index(index_path)
-        print(f"[OK] Index charge depuis le fichier existant ({index.ntotal} vecteurs)")
+        print(f"[OK] Index charge depuis le fichier existant ({index.ntotal} vecteurs, dim={index.d})")
+
+        # Si l'index a été créé avec un autre modèle (HF vs OpenAI), on le reconstruit.
+        if index.d != expected_dim or int(index.ntotal) != len(chunks):
+            print(
+                "[WARN] Index FAISS incompatible avec le modèle d'embeddings courant "
+                f"(index.d={index.d}, expected_dim={expected_dim}, ntotal={index.ntotal}, chunks={len(chunks)}). "
+                "Reconstruction..."
+            )
+            index = create_faiss_index(chunks, expected_dim=expected_dim)
     else:
         # Créer un nouvel index en utilisant les embeddings OpenAI
         print("start the creation of the faiss index (OpenAI embeddings)")
-        index = create_faiss_index(chunks)
+        index = create_faiss_index(chunks, expected_dim=expected_dim)
         print("finish the creation of the faiss index")
 
     return chunks, index
 
 
-def create_faiss_index(chunks):
+def create_faiss_index(chunks, *, expected_dim: int | None = None):
     """Créer un index FAISS à partir des chunks."""
     
     # VÉRIFICATIONS CRITIQUES
@@ -148,11 +177,7 @@ def create_faiss_index(chunks):
     
     # Générer les embeddings via l'API OpenAI (batch)
     try:
-        response = client.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=chunk_texts,
-        )
-        chunk_vectors = [d.embedding for d in response.data]
+        chunk_vectors = _embed_texts_openai(chunk_texts)
     except Exception as e:
         print(f"[ERREUR] Generation des embeddings OpenAI: {e}")
         raise
@@ -162,7 +187,10 @@ def create_faiss_index(chunks):
         raise ValueError("Aucun embedding genere!")
     
     print(f"[OK] {len(chunk_vectors)} embeddings generes")
-    print(f"[OK] Dimension des embeddings: {len(chunk_vectors[0])}")
+    dim = len(chunk_vectors[0])
+    print(f"[OK] Dimension des embeddings: {dim}")
+    if expected_dim is not None and dim != expected_dim:
+        raise ValueError(f"Dimension embeddings inattendue: {dim} (attendu {expected_dim})")
     
     # Convertir en array numpy
     chunk_vectors_array = np.array(chunk_vectors).astype('float32')
@@ -192,11 +220,8 @@ def create_faiss_index(chunks):
 def search_faiss_index(query, index, k=5):
     print("start vectorisation de la requete (OpenAI embeddings)")
     try:
-        resp = client.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=[query],
-        )
-        query_vector = np.array(resp.data[0].embedding).astype("float32")
+        query_vec = _embed_texts_openai([query], batch_size=1)[0]
+        query_vector = np.array(query_vec).astype("float32")
     except Exception as e:
         print(f"[ERREUR] Embedding de la requete: {e}")
         raise
