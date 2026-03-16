@@ -21,16 +21,12 @@ app = FastAPI(
     description="API de classification tarifaire CEDEAO (RAG + OpenAI)",
 )
 
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://project-douane.vercel.app",
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
