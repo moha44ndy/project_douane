@@ -29,6 +29,48 @@ type ApiPayload = {
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
+function tryParseStructuredPayload(rawText: string): ApiPayload | null {
+  const stripCodeFences = (s: string) => {
+    const t = s.trim();
+    // ```json ... ``` or ``` ... ```
+    const m = t.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    return (m?.[1] ?? t).trim();
+  };
+
+  // On tente plusieurs passes car on a déjà vu des cas où `raw`
+  // est un JSON *string* qui contient lui-même du JSON (parfois avec ```json).
+  let current: unknown = rawText.trim();
+
+  for (let i = 0; i < 3; i++) {
+    if (typeof current === "string") {
+      const candidate = stripCodeFences(current);
+
+      // Si c'est une chaîne JSON encodée (commence par "{" mais entourée de quotes),
+      // JSON.parse la gère déjà, donc on tente un parse direct.
+      try {
+        current = JSON.parse(candidate);
+        continue;
+      } catch {
+        // Si ce n'est pas du JSON valide, on abandonne.
+        return null;
+      }
+    }
+
+    if (current && typeof current === "object") {
+      const obj = current as ApiPayload;
+      // Vérifie la forme minimale attendue
+      if (Array.isArray(obj.classifications) || typeof obj.narrative === "string") {
+        return obj;
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  return null;
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -76,12 +118,7 @@ export default function HomePage() {
       const rawText: string = data.raw ?? "";
       setRaw(rawText);
 
-      try {
-        const parsed: ApiPayload = JSON.parse(rawText);
-        setPayload(parsed);
-      } catch {
-        setPayload(null);
-      }
+      setPayload(tryParseStructuredPayload(rawText));
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur inconnue côté client";

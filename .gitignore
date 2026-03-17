@@ -1,6 +1,11 @@
 .env
 venv*/
+.env.local
 
 # Fichiers Python à ignorer
 __pycache__/
 *.py[cod]
+
+node_modules
+.next
+next-env.d.ts

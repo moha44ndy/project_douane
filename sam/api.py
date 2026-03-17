@@ -84,7 +84,13 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     cache_key = f"classify:{payload.query.strip().lower()}"
     cached_raw = cache_get(cache_key)
     if cached_raw is not None:
-        return ClassifyResponse(raw=cached_raw)
+        # Compatibilité : certains anciens enregistrements peuvent encore
+        # être au format {"value": "...", "ex": ...}. On en extrait la valeur.
+        if isinstance(cached_raw, dict) and "value" in cached_raw:
+            cached_value = cached_raw["value"]
+        else:
+            cached_value = cached_raw
+        return ClassifyResponse(raw=str(cached_value))
 
     try:
         chunks = app.state.chunks

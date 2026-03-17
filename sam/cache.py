@@ -27,6 +27,9 @@ def cache_set(key: str, value: Any, ex: Optional[int] = None) -> None:
     if not _enabled():
         return
 
+    # On stocke directement la valeur sérialisée en JSON dans Redis,
+    # sans wrapper supplémentaire, pour que cache_get puisse la relire
+    # telle quelle.
     payload = {"value": json.dumps(value)}
     if ex is not None:
         payload["ex"] = ex
@@ -60,11 +63,22 @@ def cache_get(key: str) -> Optional[Any]:
         if resp.status_code != 200:
             return None
         data = resp.json()
-        # Upstash renvoie {"result": "...."} ou similaire
+        # Upstash renvoie {"result": "..."} (chaîne JSON que nous avons stockée).
         raw = data.get("result")
         if raw is None:
             return None
-        return json.loads(raw)
+
+        # Compatibilité rétroactive : certains anciens enregistrements ont été
+        # stockés comme json.dumps({"value": ..., "ex": ...}).
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            # Si ce n'est pas du JSON valide, on renvoie la chaîne brute.
+            return raw
+
+        if isinstance(decoded, dict) and "value" in decoded:
+            return decoded["value"]
+        return decoded
     except Exception:
         return None
 
