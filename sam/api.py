@@ -46,6 +46,20 @@ class ClassifyResponse(BaseModel):
     raw: str
 
 
+class ValidateClassificationRequest(BaseModel):
+    """
+    Données envoyées par le frontend lorsqu'un agent
+    valide une classification précise.
+    """
+
+    description: str
+    section: str
+    chapter: str
+    hs_code: str
+    confidence: float | None = None
+    user_id: str | None = None
+
+
 def _extract_classifications(raw_text: str) -> list[dict]:
     """
     Essaie d'extraire la liste `classifications` à partir d'une chaîne brute.
@@ -130,64 +144,9 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
             cached_value = cached_raw
 
         raw_str = str(cached_value)
-
-        # Même si le résultat vient du cache, on l'enregistre quand même
-        # dans l'historique Supabase (best-effort).
-        try:
-            classifications = _extract_classifications(raw_str)
-            if isinstance(classifications, list) and classifications:
-                now = datetime.now(timezone.utc)
-                with get_db() as db:
-                    for item in classifications:
-                        if not isinstance(item, dict):
-                            continue
-
-                        raw_section = (item.get("section") or "") or "N/A"
-                        section_name = item.get("section_name") or ""
-                        if section_name:
-                            section_label = f"{raw_section} - {section_name}"
-                        else:
-                            section_label = str(raw_section)
-
-                        raw_chapter = (item.get("chapter") or "") or "N/A"
-                        chapter_name = item.get("chapter_name") or ""
-                        if chapter_name:
-                            chapter_label = f"{raw_chapter} - {chapter_name}"
-                        else:
-                            chapter_label = str(raw_chapter)
-
-                        db.execute(
-                            text(
-                                """
-                                insert into public.classifications
-                                (description_produit,
-                                 section_produit,
-                                 chapitre_produit,
-                                 code_tarifaire,
-                                 classification_confidence,
-                                 user_id,
-                                 statut_validation,
-                                 created_at)
-                                values (:description, :section, :chapitre, :code, :confidence, :user_id, :statut, :created_at)
-                                """
-                            ),
-                            {
-                                "description": item.get("description")
-                                or item.get("product", {}).get("description"),
-                                "section": section_label,
-                                "chapitre": chapter_label,
-                                "code": item.get("hs_code") or item.get("code"),
-                                "confidence": item.get("confidence"),
-                                "user_id": payload.user_id,
-                                "statut": "non_validé",
-                                "created_at": now,
-                            },
-                        )
-                    db.commit()
-        except Exception:
-            # On ignore toute erreur de persistance pour ne pas bloquer la réponse.
-            pass
-
+        # Option A : en cas de hit cache, on renvoie simplement la réponse
+        # sans rien enregistrer en base. La persistance se fait uniquement
+        # via l'endpoint /classifications/validate.
         return ClassifyResponse(raw=raw_str)
 
     try:
@@ -208,64 +167,66 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     # Mise en cache best-effort du résultat brut (par ex. 1h)
     cache_set(cache_key, result, ex=3600)
 
-    # Persistance best-effort dans la base de données (table classifications)
-    try:
-        classifications = _extract_classifications(result)
-        if isinstance(classifications, list) and classifications:
-            now = datetime.now(timezone.utc)
-
-            with get_db() as db:
-                for item in classifications:
-                    if not isinstance(item, dict):
-                        continue
-
-                    raw_section = (item.get("section") or "") or "N/A"
-                    section_name = item.get("section_name") or ""
-                    if section_name:
-                        section_label = f"{raw_section} - {section_name}"
-                    else:
-                        section_label = str(raw_section)
-
-                    raw_chapter = (item.get("chapter") or "") or "N/A"
-                    chapter_name = item.get("chapter_name") or ""
-                    if chapter_name:
-                        chapter_label = f"{raw_chapter} - {chapter_name}"
-                    else:
-                        chapter_label = str(raw_chapter)
-
-                    db.execute(
-                        text(
-                            """
-                            insert into public.classifications
-                            (description_produit,
-                             section_produit,
-                             chapitre_produit,
-                             code_tarifaire,
-                             classification_confidence,
-                             user_id,
-                             statut_validation,
-                             created_at)
-                            values (:description, :section, :chapitre, :code, :confidence, :user_id, :statut, :created_at)
-                            """
-                        ),
-                        {
-                            "description": item.get("description")
-                            or item.get("product", {}).get("description"),
-                            "section": section_label,
-                            "chapitre": chapter_label,
-                            "code": item.get("hs_code") or item.get("code"),
-                            "confidence": item.get("confidence"),
-                            "user_id": payload.user_id,
-                            "statut": "non_validé",
-                            "created_at": now,
-                        },
-                    )
-                db.commit()
-    except Exception:
-        # En cas de problème de parsing/écriture, on n'empêche pas la réponse.
-        pass
-
     return ClassifyResponse(raw=result)
+
+
+@app.post(
+    "/classifications/validate",
+    tags=["classification"],
+)
+def validate_classification(payload: ValidateClassificationRequest) -> dict:
+    """
+    Enregistre en base UNE classification choisie par un agent.
+
+    Cette route est appelée depuis le frontend quand l'utilisateur
+    clique sur "Valider cette classification" pour une ligne donnée.
+    """
+    now = datetime.now(timezone.utc)
+
+    # On stocke déjà section et chapitre sous forme "numéro - libellé" côté frontend
+    # (si le libellé est connu). On ne ré-interprète donc pas ici.
+    section_label = payload.section or "N/A"
+    chapter_label = payload.chapter or "N/A"
+
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                insert into public.classifications
+                (description_produit,
+                 section_produit,
+                 chapitre_produit,
+                 code_tarifaire,
+                 classification_confidence,
+                 user_id,
+                 statut_validation,
+                 created_at)
+                values (:description, :section, :chapitre, :code, :confidence, :user_id, :statut, :created_at)
+                returning
+                  description_produit,
+                  section_produit,
+                  chapitre_produit,
+                  code_tarifaire,
+                  classification_confidence,
+                  user_id,
+                  statut_validation,
+                  created_at as date_classification
+                """
+            ),
+            {
+                "description": payload.description,
+                "section": section_label,
+                "chapitre": chapter_label,
+                "code": payload.hs_code,
+                "confidence": payload.confidence,
+                "user_id": payload.user_id,
+                "statut": "validé",
+                "created_at": now,
+            },
+        ).mappings().one()
+        db.commit()
+
+    return dict(row)
 
 
 @app.get("/history", tags=["history"])

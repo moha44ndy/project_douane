@@ -9,7 +9,9 @@ type ClassificationItem = {
   description?: string;
   hs_code?: string;
   section?: string;
+  section_name?: string;
   chapter?: string;
+  chapter_name?: string;
   dd_rate?: string;
   rs_rate?: string;
   us_unit?: string;
@@ -79,6 +81,7 @@ export default function HomePage() {
   const [raw, setRaw] = useState<string | null>(null);
   const [payload, setPayload] = useState<ApiPayload | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const checkSession = async () => {
@@ -100,6 +103,7 @@ export default function HomePage() {
 
     setLoading(true);
     setError(null);
+    setValidationMessage(null);
     setRaw(null);
     setPayload(null);
 
@@ -132,6 +136,47 @@ export default function HomePage() {
   };
 
   const classifications = payload?.classifications ?? [];
+
+  const handleValidate = async (item: ClassificationItem) => {
+    if (!userId) {
+      setError("Utilisateur non authentifié, impossible de valider.");
+      return;
+    }
+    try {
+      setValidationMessage(null);
+      const res = await fetch(`${API_BASE_URL}/classifications/validate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          description: item.description ?? "",
+          section: item.section_name
+            ? `${item.section ?? "N/A"} - ${item.section_name}`
+            : item.section ?? "N/A",
+          chapter: item.chapter_name
+            ? `${item.chapter ?? "N/A"} - ${item.chapter_name}`
+            : item.chapter ?? "N/A",
+          hs_code: item.hs_code ?? "",
+          confidence: item.confidence ?? null,
+          user_id: userId,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Erreur HTTP ${res.status}`);
+      }
+      setValidationMessage("Classification validée et enregistrée.");
+      // Une fois qu'une proposition est validée, on masque les autres
+      // pour éviter toute confusion : on vide le résultat courant.
+      setPayload(null);
+      setRaw(null);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Erreur lors de la validation";
+      setError(message);
+    }
+  };
 
   return (
     <div className="space-y-8">
@@ -212,6 +257,11 @@ export default function HomePage() {
               {error}
             </div>
           )}
+          {validationMessage && (
+            <div className="mt-3 rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              {validationMessage}
+            </div>
+          )}
         </div>
       </section>
 
@@ -246,6 +296,9 @@ export default function HomePage() {
                     <th className="px-3 py-2 text-left font-semibold">
                       Confiance
                     </th>
+                  <th className="px-3 py-2 text-left font-semibold">
+                    Action
+                  </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -292,6 +345,15 @@ export default function HomePage() {
                             ? `${item.confidence}%`
                             : "N/R"}
                         </span>
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <button
+                          type="button"
+                          onClick={() => handleValidate(item)}
+                          className="inline-flex items-center rounded-full border border-primary px-3 py-1 text-xs font-semibold text-primary hover:bg-primary/10"
+                        >
+                          Valider
+                        </button>
                       </td>
                     </tr>
                   ))}
