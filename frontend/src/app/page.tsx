@@ -78,6 +78,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState<string | null>(null);
   const [payload, setPayload] = useState<ApiPayload | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
     const checkSession = async () => {
@@ -86,7 +87,9 @@ export default function HomePage() {
       } = await supabase.auth.getSession();
       if (!session) {
         router.push("/login");
+        return;
       }
+      setUserId(session.user.id ?? null);
     };
     void checkSession();
   }, [router]);
@@ -106,7 +109,7 @@ export default function HomePage() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, user_id: userId }),
       });
 
       if (!response.ok) {

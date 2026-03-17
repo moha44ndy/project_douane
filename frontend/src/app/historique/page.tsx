@@ -29,6 +29,20 @@ function extractField(item: HistoryItem, path: string[], fallback = "N/A") {
   return current ?? fallback;
 }
 
+function formatDateTime(raw: string | null | undefined): string {
+  if (!raw) return "N/A";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "N/A";
+
+  const day = String(d.getDate()).padStart(2, "0");
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const year = d.getFullYear();
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+
+  return `${day}/${month}/${year} ${hours}h${minutes}`;
+}
+
 function normalizeHistoryItem(item: HistoryItem) {
   // Description
   const description =
@@ -41,6 +55,15 @@ function normalizeHistoryItem(item: HistoryItem) {
     extractField(item, ["classification", "section", "number"], undefined) ??
     extractField(item, ["classification", "section"], undefined);
   const section = String(sectionFromFlat ?? sectionFromNested ?? "N/A");
+
+  // Chapitre (numéro)
+  const chapterFromFlat = item.chapitre_produit;
+  const chapterFromNested = extractField(
+    item,
+    ["classification", "chapter"],
+    undefined
+  );
+  const chapter = String(chapterFromFlat ?? chapterFromNested ?? "N/A");
 
   // Code tarifaire
   const code =
@@ -59,8 +82,18 @@ function normalizeHistoryItem(item: HistoryItem) {
 
   // Date
   const dateRaw = item.date_classification ?? item.date ?? "";
+  const dateLabel = formatDateTime(dateRaw);
 
-  return { description, section, code, confidence, status, dateRaw };
+  return {
+    description,
+    section,
+    chapter,
+    code,
+    confidence,
+    status,
+    dateRaw,
+    dateLabel,
+  };
 }
 
 export default function HistoriquePage() {
@@ -306,11 +339,13 @@ export default function HistoriquePage() {
                     Section
                   </th>
                   <th className="px-3 py-2 text-left font-semibold">
-                    Code tarifaire
+                    Chapitre
                   </th>
                   <th className="px-3 py-2 text-left font-semibold">
-                    Confiance
+                    Code tarifaire
                   </th>
+                  <th className="px-3 py-2 text-left font-semibold">Date / heure</th>
+                  <th className="px-3 py-2 text-left font-semibold">Confiance</th>
                   <th className="px-3 py-2 text-left font-semibold">Statut</th>
                 </tr>
               </thead>
@@ -324,7 +359,11 @@ export default function HistoriquePage() {
                   >
                     <td className="px-3 py-2">{item.description}</td>
                     <td className="px-3 py-2">{item.section}</td>
+                    <td className="px-3 py-2">{item.chapter}</td>
                     <td className="px-3 py-2 font-mono">{item.code}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {item.dateLabel}
+                    </td>
                     <td className="px-3 py-2">
                       <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
                         {item.confidence.toFixed(1)}%
@@ -336,7 +375,7 @@ export default function HistoriquePage() {
                 {filtered.length === 0 && (
                   <tr>
                     <td
-                      colSpan={5}
+                      colSpan={7}
                       className="px-3 py-4 text-center text-sm text-muted-foreground"
                     >
                       Aucune classification ne correspond aux filtres.

@@ -35,12 +35,50 @@ class ClassifyRequest(BaseModel):
     """Requête de classification d'une ou plusieurs marchandises."""
 
     query: str
+    # Identifiant de l'utilisateur (Supabase Auth ou table users),
+    # facultatif pour compatibilité.
+    user_id: str | None = None
 
 
 class ClassifyResponse(BaseModel):
     """Réponse brute renvoyée par le LLM (JSON sérialisé en texte)."""
 
     raw: str
+
+
+def _extract_classifications(raw_text: str) -> list[dict]:
+    """
+    Essaie d'extraire la liste `classifications` à partir d'une chaîne brute.
+
+    Gère plusieurs cas :
+    - JSON direct: {"narrative": "...", "classifications": [...]}
+    - JSON encodé en string: "\"{...}\""
+    - Présence éventuelle de fences ```json ... ``` autour du JSON.
+    """
+
+    def _strip_fences(s: str) -> str:
+        t = s.strip()
+        if t.startswith("```"):
+            # enlève ```json ou ``` puis la clôture finale ```
+            t = t.strip("`")
+            # si ça commence par json après les backticks
+            if t.lower().startswith("json"):
+                t = t[4:]
+            return t.strip("` \n\r")
+        return t
+
+    current: object = raw_text
+    for _ in range(3):
+        if isinstance(current, str):
+            candidate = _strip_fences(current)
+            try:
+                current = json.loads(candidate)
+            except Exception:
+                return []
+        if isinstance(current, dict):
+            classifications = current.get("classifications") or []
+            return classifications if isinstance(classifications, list) else []
+    return []
 
 
 class UserCreate(BaseModel):
@@ -90,7 +128,67 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
             cached_value = cached_raw["value"]
         else:
             cached_value = cached_raw
-        return ClassifyResponse(raw=str(cached_value))
+
+        raw_str = str(cached_value)
+
+        # Même si le résultat vient du cache, on l'enregistre quand même
+        # dans l'historique Supabase (best-effort).
+        try:
+            classifications = _extract_classifications(raw_str)
+            if isinstance(classifications, list) and classifications:
+                now = datetime.now(timezone.utc)
+                with get_db() as db:
+                    for item in classifications:
+                        if not isinstance(item, dict):
+                            continue
+
+                        raw_section = (item.get("section") or "") or "N/A"
+                        section_name = item.get("section_name") or ""
+                        if section_name:
+                            section_label = f"{raw_section} - {section_name}"
+                        else:
+                            section_label = str(raw_section)
+
+                        raw_chapter = (item.get("chapter") or "") or "N/A"
+                        chapter_name = item.get("chapter_name") or ""
+                        if chapter_name:
+                            chapter_label = f"{raw_chapter} - {chapter_name}"
+                        else:
+                            chapter_label = str(raw_chapter)
+
+                        db.execute(
+                            text(
+                                """
+                                insert into public.classifications
+                                (description_produit,
+                                 section_produit,
+                                 chapitre_produit,
+                                 code_tarifaire,
+                                 classification_confidence,
+                                 user_id,
+                                 statut_validation,
+                                 created_at)
+                                values (:description, :section, :chapitre, :code, :confidence, :user_id, :statut, :created_at)
+                                """
+                            ),
+                            {
+                                "description": item.get("description")
+                                or item.get("product", {}).get("description"),
+                                "section": section_label,
+                                "chapitre": chapter_label,
+                                "code": item.get("hs_code") or item.get("code"),
+                                "confidence": item.get("confidence"),
+                                "user_id": payload.user_id,
+                                "statut": "non_validé",
+                                "created_at": now,
+                            },
+                        )
+                    db.commit()
+        except Exception:
+            # On ignore toute erreur de persistance pour ne pas bloquer la réponse.
+            pass
+
+        return ClassifyResponse(raw=raw_str)
 
     try:
         chunks = app.state.chunks
@@ -112,8 +210,7 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
 
     # Persistance best-effort dans la base de données (table classifications)
     try:
-        parsed = json.loads(result)
-        classifications = parsed.get("classifications") or []
+        classifications = _extract_classifications(result)
         if isinstance(classifications, list) and classifications:
             now = datetime.now(timezone.utc)
 
@@ -122,25 +219,43 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
                     if not isinstance(item, dict):
                         continue
 
+                    raw_section = (item.get("section") or "") or "N/A"
+                    section_name = item.get("section_name") or ""
+                    if section_name:
+                        section_label = f"{raw_section} - {section_name}"
+                    else:
+                        section_label = str(raw_section)
+
+                    raw_chapter = (item.get("chapter") or "") or "N/A"
+                    chapter_name = item.get("chapter_name") or ""
+                    if chapter_name:
+                        chapter_label = f"{raw_chapter} - {chapter_name}"
+                    else:
+                        chapter_label = str(raw_chapter)
+
                     db.execute(
                         text(
                             """
                             insert into public.classifications
                             (description_produit,
                              section_produit,
+                             chapitre_produit,
                              code_tarifaire,
                              classification_confidence,
+                             user_id,
                              statut_validation,
                              created_at)
-                            values (:description, :section, :code, :confidence, :statut, :created_at)
+                            values (:description, :section, :chapitre, :code, :confidence, :user_id, :statut, :created_at)
                             """
                         ),
                         {
                             "description": item.get("description")
                             or item.get("product", {}).get("description"),
-                            "section": item.get("section"),
+                            "section": section_label,
+                            "chapitre": chapter_label,
                             "code": item.get("hs_code") or item.get("code"),
                             "confidence": item.get("confidence"),
+                            "user_id": payload.user_id,
                             "statut": "non_validé",
                             "created_at": now,
                         },
@@ -166,6 +281,7 @@ def get_history() -> list[dict]:
                 select
                   description_produit,
                   section_produit,
+                              chapitre_produit,
                   code_tarifaire,
                   classification_confidence,
                   statut_validation,
