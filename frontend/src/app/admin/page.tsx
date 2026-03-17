@@ -32,6 +32,7 @@ export default function AdminPage() {
 
   const [userPage, setUserPage] = useState(1);
   const userPageSize = 25;
+  const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
     const fetchAll = async () => {
@@ -42,7 +43,9 @@ export default function AdminPage() {
           data: { session },
         } = await supabase.auth.getSession();
         if (!session) {
-          router.push("/login");
+          // On ne montre jamais la page admin si l'utilisateur n'est pas connecté.
+          // On remplace l'URL par /login pour éviter tout flash.
+          router.replace("/login");
           return;
         }
 
@@ -67,17 +70,20 @@ export default function AdminPage() {
         const historyJson = await historyRes.json();
         setUsers(Array.isArray(usersJson) ? usersJson : []);
         setHistoryCount(Array.isArray(historyJson) ? historyJson.length : 0);
+        // Session valide + données chargées : on peut rendre la page
+        setCheckingSession(false);
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "Erreur inconnue côté client";
         setError(msg);
+        setCheckingSession(false);
       } finally {
         setLoading(false);
       }
     };
 
     fetchAll();
-  }, []);
+  }, [router]);
 
   const totalUsers = users.length;
   const activeUsers = users.filter((u) => u.statut === "actif").length;
@@ -88,15 +94,6 @@ export default function AdminPage() {
     Math.ceil(totalUsers / userPageSize)
   );
   const currentUserPage = Math.min(userPage, totalUserPages);
-  const paginatedUsers = useMemo(
-    () =>
-      users.slice(
-        (currentUserPage - 1) * userPageSize,
-        (currentUserPage - 1) * userPageSize + userPageSize
-      ),
-    [users, currentUserPage, userPageSize]
-  );
-
   const handleCreateUser = async (e: FormEvent) => {
     e.preventDefault();
     if (!nomUser || !identifiantUser || !email) return;
@@ -135,6 +132,21 @@ export default function AdminPage() {
     }
   };
 
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen bg-background" />
+    );
+  }
+
+  const paginatedUsers = useMemo(
+    () =>
+      users.slice(
+        (currentUserPage - 1) * userPageSize,
+        (currentUserPage - 1) * userPageSize + userPageSize
+      ),
+    [users, currentUserPage, userPageSize]
+  );
+
   return (
     <div className="space-y-8">
       <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 space-y-4">
@@ -153,12 +165,6 @@ export default function AdminPage() {
             >
               Se déconnecter
             </button>
-          </div>
-          <div className="text-right text-sm text-muted-foreground">
-            <div className="font-semibold text-primary">
-              Utilisateurs : {totalUsers}
-            </div>
-            <div>Classifications : {historyCount}</div>
           </div>
         </div>
         <div>
@@ -206,8 +212,8 @@ export default function AdminPage() {
         </div>
       </section>
 
-      <section className="grid lg:grid-cols-2 gap-6">
-        <div className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
+      <section className="flex justify-center">
+        <div className="w-full max-w-xl rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
           <h2 className="text-xl font-semibold text-primary">
             Inscription d&apos;un nouvel utilisateur
           </h2>
@@ -271,82 +277,80 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+      </section>
 
-        <div className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
-          <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
-            Utilisateurs
-          </h2>
-          <div className="overflow-x-auto rounded-2xl border border-border bg-background text-sm">
-            <table className="min-w-full">
-              <thead className="bg-primary text-primary-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-left font-semibold">ID</th>
-                  <th className="px-3 py-2 text-left font-semibold">Nom</th>
-                  <th className="px-3 py-2 text-left font-semibold">
-                    Identifiant
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold">Email</th>
-                  <th className="px-3 py-2 text-left font-semibold">Admin</th>
+      <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
+        <h2 className="text-xl font-semibold text-primary flex items-center gap-2">
+          Utilisateurs
+        </h2>
+        <div className="overflow-x-auto rounded-2xl border border-border bg-background text-sm">
+          <table className="min-w-full">
+            <thead className="bg-primary text-primary-foreground">
+              <tr>
+                <th className="px-3 py-2 text-left font-semibold">ID</th>
+                <th className="px-3 py-2 text-left font-semibold">Nom</th>
+                <th className="px-3 py-2 text-left font-semibold">
+                  Identifiant
+                </th>
+                <th className="px-3 py-2 text-left font-semibold">Email</th>
+                <th className="px-3 py-2 text-left font-semibold">Admin</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedUsers.map((u) => (
+                <tr key={u.user_id ?? u.identifiant_user}>
+                  <td className="px-3 py-2">{u.user_id ?? "N/A"}</td>
+                  <td className="px-3 py-2">{u.nom_user ?? "N/A"}</td>
+                  <td className="px-3 py-2">
+                    {u.identifiant_user ?? "N/A"}
+                  </td>
+                  <td className="px-3 py-2">{u.email ?? "N/A"}</td>
+                  <td className="px-3 py-2">
+                    {u.is_admin ? "Oui" : "Non"}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {paginatedUsers.map((u) => (
-                  <tr key={u.user_id ?? u.identifiant_user}>
-                    <td className="px-3 py-2">{u.user_id ?? "N/A"}</td>
-                    <td className="px-3 py-2">{u.nom_user ?? "N/A"}</td>
-                    <td className="px-3 py-2">
-                      {u.identifiant_user ?? "N/A"}
-                    </td>
-                    <td className="px-3 py-2">{u.email ?? "N/A"}</td>
-                    <td className="px-3 py-2">
-                      {u.is_admin ? "Oui" : "Non"}
-                    </td>
-                  </tr>
-                ))}
-                {users.length === 0 && (
-                  <tr>
-                    <td
-                      colSpan={5}
-                      className="px-3 py-4 text-center text-sm text-muted-foreground"
-                    >
-                      Aucun utilisateur enregistré pour le moment.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          {users.length > 0 && (
-            <div className="flex items-center justify-between pt-4 text-xs text-muted-foreground">
-              <div>
-                Page {currentUserPage} / {totalUserPages} •{" "}
-                {paginatedUsers.length} utilisateurs affichés
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  disabled={currentUserPage === 1}
-                  onClick={() =>
-                    setUserPage((p) => Math.max(1, p - 1))
-                  }
-                  className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
-                >
-                  Précédent
-                </button>
-                <button
-                  type="button"
-                  disabled={currentUserPage === totalUserPages}
-                  onClick={() =>
-                    setUserPage((p) => Math.min(totalUserPages, p + 1))
-                  }
-                  className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
-                >
-                  Suivant
-                </button>
-              </div>
-            </div>
-          )}
+              ))}
+              {users.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-3 py-4 text-center text-sm text-muted-foreground"
+                  >
+                    Aucun utilisateur enregistré pour le moment.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
+        {users.length > 0 && (
+          <div className="flex items-center justify-between pt-4 text-xs text-muted-foreground">
+            <div>
+              Page {currentUserPage} / {totalUserPages} •{" "}
+              {paginatedUsers.length} utilisateurs affichés
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={currentUserPage === 1}
+                onClick={() => setUserPage((p) => Math.max(1, p - 1))}
+                className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
+              >
+                Précédent
+              </button>
+              <button
+                type="button"
+                disabled={currentUserPage === totalUserPages}
+                onClick={() =>
+                  setUserPage((p) => Math.min(totalUserPages, p + 1))
+                }
+                className="px-3 py-1 rounded-full border border-border bg-background disabled:opacity-50"
+              >
+                Suivant
+              </button>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );

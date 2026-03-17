@@ -120,8 +120,10 @@ export default function HistoriquePage() {
     section: "Toutes",
     status: "Tous",
   });
+  const [userId, setUserId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const pageSize = 25;
+  const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -132,28 +134,39 @@ export default function HistoriquePage() {
           data: { session },
         } = await supabase.auth.getSession();
         if (!session) {
-          router.push("/login");
+          // Utilisateur non connecté : on reste sur un écran vide
+          // et on remplace l'URL par /login pour éviter tout flash.
+          router.replace("/login");
           return;
         }
+        const id = session.user.id ?? null;
+        setUserId(id);
 
-        const res = await fetch(`${API_BASE_URL}/history`);
+        const url =
+          id != null
+            ? `${API_BASE_URL}/history?user_id=${encodeURIComponent(id)}`
+            : `${API_BASE_URL}/history`;
+        const res = await fetch(url);
         if (!res.ok) {
           const text = await res.text();
           throw new Error(text || `Erreur HTTP ${res.status}`);
         }
         const json = await res.json();
         setData(Array.isArray(json) ? json : []);
+        // On ne termine le "checking" que si la session est valide
+        setCheckingSession(false);
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "Erreur inconnue côté client";
         setError(msg);
+        // En cas d'erreur réseau/API, on sort aussi de l'état de "checking"
+        setCheckingSession(false);
       } finally {
         setLoading(false);
       }
     };
     fetchHistory();
-  }, []);
-
+  }, [router]);
   const normalized = useMemo(
     () => data.map((item) => normalizeHistoryItem(item)),
     [data]
@@ -208,6 +221,12 @@ export default function HistoriquePage() {
       ),
     [filtered, currentPage, pageSize]
   );
+
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen bg-background" />
+    );
+  }
 
   const avgConfidence =
     paginated.reduce((acc, it) => acc + it.confidence, 0) /
@@ -336,11 +355,13 @@ export default function HistoriquePage() {
             <button
               type="button"
               onClick={() => {
-                window.open(
-                  `${API_BASE_URL}/history.csv`,
-                  "_blank",
-                  "noopener,noreferrer"
-                );
+                const url =
+                  userId != null
+                    ? `${API_BASE_URL}/history.csv?user_id=${encodeURIComponent(
+                        userId
+                      )}`
+                    : `${API_BASE_URL}/history.csv`;
+                window.open(url, "_blank", "noopener,noreferrer");
               }}
               className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
             >

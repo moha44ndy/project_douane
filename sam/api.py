@@ -269,47 +269,49 @@ def validate_classification(payload: ValidateClassificationRequest) -> dict:
 
 
 @app.get("/history", tags=["history"])
-def get_history() -> list[dict]:
+def get_history(user_id: str | None = None) -> list[dict]:
     """
     Retourne l'historique des classifications depuis la base Supabase.
     """
 
-    with get_db() as db:
-        rows = db.execute(
-            text(
-                """
-                select
-                  description_produit,
-                  section_produit,
-                  chapitre_produit,
-                  code_tarifaire,
-                  classification_confidence,
-                  dd_rate,
-                  rs_rate,
-                  other_taxes,
-                  us_unit,
-                  origin,
-                  value,
-                  statut_validation,
-                  created_at as date_classification
-                from public.classifications
-                order by created_at desc
-                limit 1000
-                """
-            )
-        ).mappings().all()
+    base_sql = """
+        select
+          description_produit,
+          section_produit,
+          chapitre_produit,
+          code_tarifaire,
+          classification_confidence,
+          dd_rate,
+          rs_rate,
+          other_taxes,
+          us_unit,
+          origin,
+          value,
+          statut_validation,
+          created_at as date_classification
+        from public.classifications
+    """
 
+    params: dict[str, Any] = {}
+    if user_id:
+        base_sql += " where user_id = :user_id"
+        params["user_id"] = user_id
+
+    base_sql += " order by created_at desc limit 1000"
+
+    with get_db() as db:
+        rows = db.execute(text(base_sql), params).mappings().all()
         return [dict(row) for row in rows]
 
 
 @app.get("/history.csv", tags=["history"])
-def export_history_csv() -> Response:
+def export_history_csv(user_id: str | None = None) -> Response:
     """
     Exporte l'historique des classifications au format CSV.
 
     Inclut les principaux champs utilisés dans l'interface.
     """
-    rows = get_history()
+    rows = get_history(user_id=user_id)
 
     headers = [
         "description_produit",

@@ -82,6 +82,7 @@ export default function HomePage() {
   const [payload, setPayload] = useState<ApiPayload | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
     const checkSession = async () => {
@@ -89,10 +90,13 @@ export default function HomePage() {
         data: { session },
       } = await supabase.auth.getSession();
       if (!session) {
-        router.push("/login");
+        // Si pas de session, on remplace l'URL par /login et
+        // on garde checkingSession à true pour ne jamais afficher la page.
+        router.replace("/login");
         return;
       }
       setUserId(session.user.id ?? null);
+      setCheckingSession(false);
     };
     void checkSession();
   }, [router]);
@@ -136,6 +140,12 @@ export default function HomePage() {
   };
 
   const classifications = payload?.classifications ?? [];
+
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen bg-background" />
+    );
+  }
 
   const handleValidate = async (item: ClassificationItem) => {
     if (!userId) {
@@ -206,18 +216,22 @@ export default function HomePage() {
             </div>
           </div>
           <div className="mosam-header-actions-buttons">
-            <Link
-              href="/historique"
-              className="mosam-btn-secondary"
-            >
+            <Link href="/historique" className="mosam-btn-secondary">
               Historique
             </Link>
-            <Link
-              href="/admin"
-              className="mosam-btn-admin"
-            >
+            <Link href="/admin" className="mosam-btn-admin">
               Administration
             </Link>
+            <button
+              type="button"
+              onClick={async () => {
+                await supabase.auth.signOut();
+                router.push("/login");
+              }}
+              className="mosam-btn-secondary"
+            >
+              Se déconnecter
+            </button>
           </div>
         </div>
       </header>
