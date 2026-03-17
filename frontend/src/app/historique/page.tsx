@@ -77,6 +77,14 @@ function normalizeHistoryItem(item: HistoryItem) {
   const confidence =
     typeof confidenceRaw === "number" ? confidenceRaw : Number(confidenceRaw) || 0;
 
+  // Taux et métadonnées
+  const ddRate = (item.dd_rate ?? "N/R") as string;
+  const rsRate = (item.rs_rate ?? "N/R") as string;
+  const otherTaxes = (item.other_taxes ?? "N/R") as string;
+  const usUnit = (item.us_unit ?? "N/R") as string;
+  const origin = (item.origin ?? "N/A") as string;
+  const value = (item.value ?? "N/A") as string;
+
   // Statut
   const status = (item.statut_validation ?? item.statut ?? "N/A") as string;
 
@@ -90,6 +98,12 @@ function normalizeHistoryItem(item: HistoryItem) {
     chapter,
     code,
     confidence,
+    ddRate,
+    rsRate,
+    otherTaxes,
+    usUnit,
+    origin,
+    value,
     status,
     dateRaw,
     dateLabel,
@@ -314,9 +328,26 @@ export default function HistoriquePage() {
       </section>
 
       <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
-        <h2 className="text-xl font-semibold text-primary">
-          Résultats ({totalFiltered})
-        </h2>
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-xl font-semibold text-primary">
+            Résultats ({totalFiltered})
+          </h2>
+          {!loading && !error && (
+            <button
+              type="button"
+              onClick={() => {
+                window.open(
+                  `${API_BASE_URL}/history.csv`,
+                  "_blank",
+                  "noopener,noreferrer"
+                );
+              }}
+              className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
+            >
+              Exporter en CSV
+            </button>
+          )}
+        </div>
 
         {loading && (
           <div className="text-sm text-muted-foreground">Chargement...</div>
@@ -344,6 +375,14 @@ export default function HistoriquePage() {
                   <th className="px-3 py-2 text-left font-semibold">
                     Code tarifaire
                   </th>
+                  <th className="px-3 py-2 text-left font-semibold">D.D.</th>
+                  <th className="px-3 py-2 text-left font-semibold">R.S.</th>
+                  <th className="px-3 py-2 text-left font-semibold">
+                    Autres taxes
+                  </th>
+                  <th className="px-3 py-2 text-left font-semibold">U.S.</th>
+                  <th className="px-3 py-2 text-left font-semibold">Origine</th>
+                  <th className="px-3 py-2 text-left font-semibold">Valeur</th>
                   <th className="px-3 py-2 text-left font-semibold">Date / heure</th>
                   <th className="px-3 py-2 text-left font-semibold">Confiance</th>
                   <th className="px-3 py-2 text-left font-semibold">Statut</th>
@@ -361,6 +400,12 @@ export default function HistoriquePage() {
                     <td className="px-3 py-2">{item.section}</td>
                     <td className="px-3 py-2">{item.chapter}</td>
                     <td className="px-3 py-2 font-mono">{item.code}</td>
+                    <td className="px-3 py-2">{item.ddRate}</td>
+                    <td className="px-3 py-2">{item.rsRate}</td>
+                    <td className="px-3 py-2">{item.otherTaxes}</td>
+                    <td className="px-3 py-2">{item.usUnit}</td>
+                    <td className="px-3 py-2">{item.origin}</td>
+                    <td className="px-3 py-2">{item.value}</td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       {item.dateLabel}
                     </td>
@@ -375,7 +420,7 @@ export default function HistoriquePage() {
                 {filtered.length === 0 && (
                   <tr>
                     <td
-                      colSpan={7}
+                      colSpan={13}
                       className="px-3 py-4 text-center text-sm text-muted-foreground"
                     >
                       Aucune classification ne correspond aux filtres.

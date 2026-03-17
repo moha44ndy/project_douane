@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -57,6 +57,12 @@ class ValidateClassificationRequest(BaseModel):
     chapter: str
     hs_code: str
     confidence: float | None = None
+    dd_rate: str | None = None
+    rs_rate: str | None = None
+    other_taxes: str | None = None
+    us_unit: str | None = None
+    origin: str | None = None
+    value: str | None = None
     user_id: str | None = None
 
 
@@ -198,16 +204,43 @@ def validate_classification(payload: ValidateClassificationRequest) -> dict:
                  chapitre_produit,
                  code_tarifaire,
                  classification_confidence,
+                 dd_rate,
+                 rs_rate,
+                 other_taxes,
+                 us_unit,
+                 origin,
+                 value,
                  user_id,
                  statut_validation,
                  created_at)
-                values (:description, :section, :chapitre, :code, :confidence, :user_id, :statut, :created_at)
+                values (
+                  :description,
+                  :section,
+                  :chapitre,
+                  :code,
+                  :confidence,
+                  :dd_rate,
+                  :rs_rate,
+                  :other_taxes,
+                  :us_unit,
+                  :origin,
+                  :value,
+                  :user_id,
+                  :statut,
+                  :created_at
+                )
                 returning
                   description_produit,
                   section_produit,
                   chapitre_produit,
                   code_tarifaire,
                   classification_confidence,
+                  dd_rate,
+                  rs_rate,
+                  other_taxes,
+                  us_unit,
+                  origin,
+                  value,
                   user_id,
                   statut_validation,
                   created_at as date_classification
@@ -219,6 +252,12 @@ def validate_classification(payload: ValidateClassificationRequest) -> dict:
                 "chapitre": chapter_label,
                 "code": payload.hs_code,
                 "confidence": payload.confidence,
+                "dd_rate": payload.dd_rate,
+                "rs_rate": payload.rs_rate,
+                "other_taxes": payload.other_taxes,
+                "us_unit": payload.us_unit,
+                "origin": payload.origin,
+                "value": payload.value,
                 "user_id": payload.user_id,
                 "statut": "validé",
                 "created_at": now,
@@ -242,9 +281,15 @@ def get_history() -> list[dict]:
                 select
                   description_produit,
                   section_produit,
-                              chapitre_produit,
+                  chapitre_produit,
                   code_tarifaire,
                   classification_confidence,
+                  dd_rate,
+                  rs_rate,
+                  other_taxes,
+                  us_unit,
+                  origin,
+                  value,
                   statut_validation,
                   created_at as date_classification
                 from public.classifications
@@ -255,6 +300,50 @@ def get_history() -> list[dict]:
         ).mappings().all()
 
         return [dict(row) for row in rows]
+
+
+@app.get("/history.csv", tags=["history"])
+def export_history_csv() -> Response:
+    """
+    Exporte l'historique des classifications au format CSV.
+
+    Inclut les principaux champs utilisés dans l'interface.
+    """
+    rows = get_history()
+
+    headers = [
+        "description_produit",
+        "section_produit",
+        "chapitre_produit",
+        "code_tarifaire",
+        "classification_confidence",
+        "dd_rate",
+        "rs_rate",
+        "other_taxes",
+        "us_unit",
+        "origin",
+        "value",
+        "statut_validation",
+        "date_classification",
+    ]
+
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow([row.get(h, "") for h in headers])
+
+    content = output.getvalue()
+    output.close()
+
+    return Response(
+        content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="historique.csv"'},
+    )
 
 
 @app.get("/users", tags=["users"])

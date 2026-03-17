@@ -159,6 +159,12 @@ export default function HomePage() {
             : item.chapter ?? "N/A",
           hs_code: item.hs_code ?? "",
           confidence: item.confidence ?? null,
+          dd_rate: item.dd_rate ?? null,
+          rs_rate: item.rs_rate ?? null,
+          other_taxes: item.other_taxes ?? null,
+          us_unit: item.us_unit ?? null,
+          origin: item.origin ?? null,
+          value: item.value ?? null,
           user_id: userId,
         }),
       });
@@ -329,8 +335,21 @@ export default function HomePage() {
                       </td>
                       <td className="px-3 py-2 align-top text-sm">
                         <div>{item.section || "N/A"}</div>
-                        <div className="text-xs text-muted-foreground">
-                          Chapitre {item.chapter || "N/A"}
+                        {item.section_name && (
+                          <div className="text-xs text-muted-foreground">
+                            {item.section_name}
+                          </div>
+                        )}
+                        <div className="mt-1 text-xs">
+                          <span className="font-semibold">
+                            Chapitre {item.chapter || "N/A"}
+                          </span>
+                          {item.chapter_name && (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              – {item.chapter_name}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-3 py-2 align-top text-xs">
