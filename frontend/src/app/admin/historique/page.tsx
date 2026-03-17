@@ -344,7 +344,7 @@ export default function AdminHistoriquePage() {
   return (
     <div className="space-y-8">
       <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 space-y-4">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-2">
             <Link href="/admin" className="mosam-btn-admin">
               Retour au panneau admin
@@ -375,13 +375,11 @@ export default function AdminHistoriquePage() {
         </div>
       </header>
 
-      <section className="rounded-3xl bg-card border border-border shadow-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-lg font-semibold text-primary">Cache des classifications</h2>
-          <p className="text-sm text-muted-foreground">
-            Vider le cache pour forcer de nouvelles réponses du modèle.
-          </p>
-        </div>
+      <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
+        <h2 className="text-xl font-semibold text-primary">Cache des classifications</h2>
+        <p className="text-sm text-muted-foreground">
+          Vider le cache pour forcer de nouvelles réponses du modèle.
+        </p>
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-3">
             <span className="text-sm font-medium text-muted-foreground">
@@ -393,9 +391,9 @@ export default function AdminHistoriquePage() {
               title={cacheDisabled ? "Activer le cache" : "Désactiver le cache"}
               disabled={cacheDisabled === null}
               onClick={() => {
-              setConfirmCacheAction("disable");
-              setCacheFeedback(null);
-            }}
+                setConfirmCacheAction("disable");
+                setCacheFeedback(null);
+              }}
               className={`
                 relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent
                 transition-colors focus:outline-none focus:ring-2 focus:ring-primary/50 focus:ring-offset-2
@@ -436,7 +434,7 @@ export default function AdminHistoriquePage() {
           </button>
         </div>
         {cacheFeedback && (
-          <div className="mt-4 w-full">
+          <div className="pt-2">
             {cacheFeedback.error && (
               <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-2xl px-3 py-2">
                 {cacheFeedback.error}
@@ -613,12 +611,12 @@ export default function AdminHistoriquePage() {
         )}
 
         {!loading && !error && (
-          <div className="overflow-x-auto rounded-2xl border border-border bg-background">
-            <table className="min-w-full text-sm">
+          <div className="overflow-x-auto rounded-2xl border border-border bg-background text-sm">
+            <table className="min-w-full">
               <thead className="bg-primary text-primary-foreground">
                 <tr>
                   <th className="px-3 py-2 text-left font-semibold">
-                    ID produit / classification
+                    ID
                   </th>
                   <th className="px-3 py-2 text-left font-semibold">
                     Description
@@ -677,7 +675,7 @@ export default function AdminHistoriquePage() {
                     <td className="px-3 py-2">{item.status}</td>
                     <td className="px-3 py-2">{item.agentName}</td>
                     <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-1">
+                      <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
                           onClick={() =>
@@ -686,7 +684,7 @@ export default function AdminHistoriquePage() {
                               item.status === "validé" ? "invalidé" : "validé"
                             )
                           }
-                          className="px-2 py-1 rounded-full border border-emerald-300 bg-emerald-50 text-xs text-emerald-700"
+                          className="px-3 py-1 rounded-full border border-emerald-300 bg-emerald-50 text-xs text-emerald-700"
                         >
                           {item.status === "validé" ? "Invalider" : "Valider"}
                         </button>
@@ -698,7 +696,7 @@ export default function AdminHistoriquePage() {
                               item.status === "archivé" ? "validé" : "archivé"
                             )
                           }
-                          className="px-2 py-1 rounded-full border border-slate-300 bg-slate-50 text-xs text-slate-700"
+                          className="px-3 py-1 rounded-full border border-slate-300 bg-slate-50 text-xs text-slate-700"
                         >
                           {item.status === "archivé"
                             ? "Désarchiver"

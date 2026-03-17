@@ -391,77 +391,114 @@ export default function HistoriquePage() {
         )}
 
         {!loading && !error && (
-          <div className="overflow-x-auto rounded-2xl border border-border bg-background">
-            <table className="min-w-full text-sm">
-              <thead className="bg-primary text-primary-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-left font-semibold">
-                    Description
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold">
-                    Section
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold">
-                    Chapitre
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold">
-                    Code tarifaire
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold">D.D.</th>
-                  <th className="px-3 py-2 text-left font-semibold">R.S.</th>
-                  <th className="px-3 py-2 text-left font-semibold">
-                    Autres taxes
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold">U.S.</th>
-                  <th className="px-3 py-2 text-left font-semibold">Origine</th>
-                  <th className="px-3 py-2 text-left font-semibold">Valeur</th>
-                  <th className="px-3 py-2 text-left font-semibold">Date / heure</th>
-                  <th className="px-3 py-2 text-left font-semibold">Confiance</th>
-                  <th className="px-3 py-2 text-left font-semibold">Statut</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paginated.map((item, idx) => (
-                  <tr
+          <>
+            {/* Vue cartes (mobile / tablette) */}
+            <div className="md:hidden space-y-4">
+              {filtered.length === 0 ? (
+                <p className="px-3 py-4 text-center text-sm text-muted-foreground">
+                  Aucune classification ne correspond aux filtres.
+                </p>
+              ) : (
+                paginated.map((item, idx) => (
+                  <div
                     key={`${currentPage}-${idx}`}
-                    className={
-                      idx % 2 === 0 ? "bg-muted/40" : "bg-background"
-                    }
+                    className="rounded-2xl border border-border bg-background p-4 space-y-2"
                   >
-                    <td className="px-3 py-2">{item.description}</td>
-                    <td className="px-3 py-2">{item.section}</td>
-                    <td className="px-3 py-2">{item.chapter}</td>
-                    <td className="px-3 py-2 font-mono">{item.code}</td>
-                    <td className="px-3 py-2">{item.ddRate}</td>
-                    <td className="px-3 py-2">{item.rsRate}</td>
-                    <td className="px-3 py-2">{item.otherTaxes}</td>
-                    <td className="px-3 py-2">{item.usUnit}</td>
-                    <td className="px-3 py-2">{item.origin}</td>
-                    <td className="px-3 py-2">{item.value}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      {item.dateLabel}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                    <div className="font-semibold text-foreground line-clamp-2">
+                      {item.description}
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <span className="font-mono rounded bg-muted/60 px-2 py-0.5">
+                        {item.code}
+                      </span>
+                      <span className="rounded-full bg-primary/10 px-2 py-0.5 font-semibold text-primary">
                         {item.confidence.toFixed(1)}%
                       </span>
-                    </td>
-                    <td className="px-3 py-2">{item.status}</td>
-                  </tr>
-                ))}
-                {filtered.length === 0 && (
+                      <span>{item.status}</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {item.section} · {item.chapter} · {item.dateLabel}
+                    </div>
+                    <div className="text-xs">
+                      D.D. {item.ddRate} · R.S. {item.rsRate}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            {/* Vue tableau (desktop) */}
+            <div className="hidden md:block overflow-x-auto rounded-2xl border border-border bg-background">
+              <table className="min-w-full text-sm">
+                <thead className="bg-primary text-primary-foreground">
                   <tr>
-                    <td
-                      colSpan={13}
-                      className="px-3 py-4 text-center text-sm text-muted-foreground"
-                    >
-                      Aucune classification ne correspond aux filtres.
-                    </td>
+                    <th className="px-3 py-2 text-left font-semibold">
+                      Description
+                    </th>
+                    <th className="px-3 py-2 text-left font-semibold">
+                      Section
+                    </th>
+                    <th className="px-3 py-2 text-left font-semibold">
+                      Chapitre
+                    </th>
+                    <th className="px-3 py-2 text-left font-semibold">
+                      Code tarifaire
+                    </th>
+                    <th className="px-3 py-2 text-left font-semibold">D.D.</th>
+                    <th className="px-3 py-2 text-left font-semibold">R.S.</th>
+                    <th className="px-3 py-2 text-left font-semibold">
+                      Autres taxes
+                    </th>
+                    <th className="px-3 py-2 text-left font-semibold">U.S.</th>
+                    <th className="px-3 py-2 text-left font-semibold">Origine</th>
+                    <th className="px-3 py-2 text-left font-semibold">Valeur</th>
+                    <th className="px-3 py-2 text-left font-semibold">Date / heure</th>
+                    <th className="px-3 py-2 text-left font-semibold">Confiance</th>
+                    <th className="px-3 py-2 text-left font-semibold">Statut</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {paginated.map((item, idx) => (
+                    <tr
+                      key={`${currentPage}-${idx}`}
+                      className={
+                        idx % 2 === 0 ? "bg-muted/40" : "bg-background"
+                      }
+                    >
+                      <td className="px-3 py-2">{item.description}</td>
+                      <td className="px-3 py-2">{item.section}</td>
+                      <td className="px-3 py-2">{item.chapter}</td>
+                      <td className="px-3 py-2 font-mono">{item.code}</td>
+                      <td className="px-3 py-2">{item.ddRate}</td>
+                      <td className="px-3 py-2">{item.rsRate}</td>
+                      <td className="px-3 py-2">{item.otherTaxes}</td>
+                      <td className="px-3 py-2">{item.usUnit}</td>
+                      <td className="px-3 py-2">{item.origin}</td>
+                      <td className="px-3 py-2">{item.value}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {item.dateLabel}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                          {item.confidence.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">{item.status}</td>
+                    </tr>
+                  ))}
+                  {filtered.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={13}
+                        className="px-3 py-4 text-center text-sm text-muted-foreground"
+                      >
+                        Aucune classification ne correspond aux filtres.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
         {!loading && !error && filtered.length > 0 && (
           <div className="flex items-center justify-between pt-4 text-sm text-muted-foreground">

@@ -221,8 +221,70 @@ code,
   gap: 1.5rem;
 }
 
+/* Responsive visibility (mobile: cartes, desktop: tableau) */
+.hidden {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .sm\:flex-row {
+    flex-direction: row;
+  }
+
+  .sm\:items-center {
+    align-items: center;
+  }
+
+  .sm\:justify-between {
+    justify-content: space-between;
+  }
+
+  .sm\:px-8 {
+    padding-left: 2rem;
+    padding-right: 2rem;
+  }
+
+  .sm\:text-3xl {
+    font-size: 1.875rem;
+    line-height: 2.25rem;
+  }
+
+  .sm\:text-right {
+    text-align: right;
+  }
+
+  .sm\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 768px) {
+  .md\:block {
+    display: block;
+  }
+
+  .md\:hidden {
+    display: none;
+  }
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .grid {
   display: grid;
+}
+
+.grid-cols-1 {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.grid-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .lg\:grid-cols-2,
@@ -267,6 +329,26 @@ code,
 
 .min-h-\[140px\] {
   min-height: 140px;
+}
+
+.min-h-\[44px\] {
+  min-height: 44px;
+}
+
+.min-w-\[44px\] {
+  min-width: 44px;
+}
+
+.min-w-\[120px\] {
+  min-width: 120px;
+}
+
+.touch-manipulation {
+  touch-action: manipulation;
+}
+
+.flex-1 {
+  flex: 1 1 0%;
 }
 
 .min-w-full {
@@ -510,6 +592,7 @@ pre {
   border: 1px solid rgba(255, 255, 255, 0.3);
   color: #ffffff;
   border-radius: 6px;
+  min-height: 44px;
   height: 36px;
   padding: 0 16px;
   font-size: 13px;
@@ -518,6 +601,7 @@ pre {
   align-items: center;
   justify-content: center;
   text-decoration: none;
+  touch-action: manipulation;
 }
 
 .mosam-btn-admin {
@@ -525,6 +609,7 @@ pre {
   color: var(--color-primary);
   border: none;
   border-radius: 6px;
+  min-height: 44px;
   height: 36px;
   padding: 0 16px;
   font-size: 13px;
@@ -533,6 +618,7 @@ pre {
   align-items: center;
   justify-content: center;
   text-decoration: none;
+  touch-action: manipulation;
 }
 
 .mosam-btn-primary {
@@ -540,6 +626,7 @@ pre {
   color: #ffffff;
   border: none;
   border-radius: 6px;
+  min-height: 44px;
   height: 44px;
   padding: 0 24px;
   font-size: 15px;
@@ -551,6 +638,7 @@ pre {
   width: 100%;
   cursor: pointer;
   transition: background 150ms ease;
+  touch-action: manipulation;
 }
 
 .mosam-btn-primary:hover {

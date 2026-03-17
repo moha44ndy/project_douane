@@ -422,22 +422,22 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-8">
-      <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <Link href="/" className="mosam-btn-admin">
+      <header className="rounded-3xl bg-card border border-border shadow-xl px-4 sm:px-8 py-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href="/" className="mosam-btn-admin min-h-[44px] inline-flex items-center touch-manipulation">
               Retour à la classification
             </Link>
-            <Link href="/admin/historique" className="mosam-btn-admin">
+            <Link href="/admin/historique" className="mosam-btn-admin min-h-[44px] inline-flex items-center touch-manipulation">
               Historique global
             </Link>
-            <Link href="/admin/logs" className="mosam-btn-admin">
+            <Link href="/admin/logs" className="mosam-btn-admin min-h-[44px] inline-flex items-center touch-manipulation">
               Journal d&apos;audit
             </Link>
           </div>
         </div>
         <div>
-          <h1 className="text-3xl font-bold text-primary mb-1">
+          <h1 className="text-2xl sm:text-3xl font-bold text-primary mb-1">
             Panneau administrateur
           </h1>
           <p className="text-muted-foreground text-sm">

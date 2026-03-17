@@ -326,102 +326,152 @@ export default function HomePage() {
           )}
 
           {classifications.length > 0 && (
-            <div className="overflow-x-auto rounded-2xl border border-border bg-background">
-              <table className="min-w-full text-sm">
-                <thead className="bg-primary text-primary-foreground">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-semibold">
-                      Marchandise
-                    </th>
-                    <th className="px-3 py-2 text-left font-semibold">
-                      Code TEC/SH
-                    </th>
-                    <th className="px-3 py-2 text-left font-semibold">
-                      Section / Chapitre
-                    </th>
-                    <th className="px-3 py-2 text-left font-semibold">
-                      Taux
-                    </th>
-                    <th className="px-3 py-2 text-left font-semibold">
-                      Confiance
-                    </th>
-                  <th className="px-3 py-2 text-left font-semibold">
-                    Action
-                  </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {classifications.map((item, index) => (
-                    <tr
-                      key={index}
-                      className={index % 2 === 0 ? "bg-muted/40" : "bg-background"}
+            <>
+              {/* Vue cartes (mobile / tablette) */}
+              <div className="md:hidden space-y-4">
+                {classifications.map((item, index) => (
+                  <div
+                    key={index}
+                    className="rounded-2xl border border-border bg-background p-4 space-y-3"
+                  >
+                    <div className="font-semibold text-foreground">
+                      {item.description || "Marchandise"}
+                    </div>
+                    {item.origin && (
+                      <div className="text-xs text-muted-foreground">
+                        Origine : {item.origin}
+                      </div>
+                    )}
+                    {item.value && (
+                      <div className="text-xs text-muted-foreground">
+                        Valeur : {item.value}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-2 text-sm">
+                      <span className="font-mono rounded bg-muted/60 px-2 py-1">
+                        {item.hs_code || "N/R"}
+                      </span>
+                      <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
+                        {typeof item.confidence === "number"
+                          ? `${item.confidence}%`
+                          : "N/R"}
+                      </span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Section {item.section || "N/A"} · Chapitre {item.chapter || "N/A"}
+                      {item.chapter_name && ` – ${item.chapter_name}`}
+                    </div>
+                    <div className="text-xs">
+                      D.D. {item.dd_rate || "N/R"} · R.S. {item.rs_rate || "N/R"}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleValidate(item)}
+                      className="w-full min-h-[44px] inline-flex items-center justify-center rounded-full border border-primary px-4 py-3 text-sm font-semibold text-primary hover:bg-primary/10 touch-manipulation"
                     >
-                      <td className="px-3 py-2 align-top">
-                        <div className="font-semibold">
-                          {item.description || "Marchandise"}
-                        </div>
-                        {item.origin && (
-                          <div className="text-xs text-muted-foreground">
-                            Origine : {item.origin}
-                          </div>
-                        )}
-                        {item.value && (
-                          <div className="text-xs text-muted-foreground">
-                            Valeur : {item.value}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <div className="font-mono">
-                          {item.hs_code || "Non renseigné"}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 align-top text-sm">
-                        <div>{item.section || "N/A"}</div>
-                        {item.section_name && (
-                          <div className="text-xs text-muted-foreground">
-                            {item.section_name}
-                          </div>
-                        )}
-                        <div className="mt-1 text-xs">
-                          <span className="font-semibold">
-                            Chapitre {item.chapter || "N/A"}
-                          </span>
-                          {item.chapter_name && (
-                            <span className="text-muted-foreground">
-                              {" "}
-                              – {item.chapter_name}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 align-top text-xs">
-                        <div>D.D. {item.dd_rate || "N/R"}</div>
-                        <div>R.S. {item.rs_rate || "N/R"}</div>
-                        <div>Autres {item.other_taxes || "N/R"}</div>
-                        <div>U.S. {item.us_unit || "N/R"}</div>
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                          {typeof item.confidence === "number"
-                            ? `${item.confidence}%`
-                            : "N/R"}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <button
-                          type="button"
-                          onClick={() => handleValidate(item)}
-                          className="inline-flex items-center rounded-full border border-primary px-3 py-1 text-xs font-semibold text-primary hover:bg-primary/10"
-                        >
-                          Valider
-                        </button>
-                      </td>
+                      Valider cette classification
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {/* Vue tableau (desktop) */}
+              <div className="hidden md:block overflow-x-auto rounded-2xl border border-border bg-background">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-primary text-primary-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold">
+                        Marchandise
+                      </th>
+                      <th className="px-3 py-2 text-left font-semibold">
+                        Code TEC/SH
+                      </th>
+                      <th className="px-3 py-2 text-left font-semibold">
+                        Section / Chapitre
+                      </th>
+                      <th className="px-3 py-2 text-left font-semibold">
+                        Taux
+                      </th>
+                      <th className="px-3 py-2 text-left font-semibold">
+                        Confiance
+                      </th>
+                      <th className="px-3 py-2 text-left font-semibold">
+                        Action
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {classifications.map((item, index) => (
+                      <tr
+                        key={index}
+                        className={index % 2 === 0 ? "bg-muted/40" : "bg-background"}
+                      >
+                        <td className="px-3 py-2 align-top">
+                          <div className="font-semibold">
+                            {item.description || "Marchandise"}
+                          </div>
+                          {item.origin && (
+                            <div className="text-xs text-muted-foreground">
+                              Origine : {item.origin}
+                            </div>
+                          )}
+                          {item.value && (
+                            <div className="text-xs text-muted-foreground">
+                              Valeur : {item.value}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <div className="font-mono">
+                            {item.hs_code || "Non renseigné"}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 align-top text-sm">
+                          <div>{item.section || "N/A"}</div>
+                          {item.section_name && (
+                            <div className="text-xs text-muted-foreground">
+                              {item.section_name}
+                            </div>
+                          )}
+                          <div className="mt-1 text-xs">
+                            <span className="font-semibold">
+                              Chapitre {item.chapter || "N/A"}
+                            </span>
+                            {item.chapter_name && (
+                              <span className="text-muted-foreground">
+                                {" "}
+                                – {item.chapter_name}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 align-top text-xs">
+                          <div>D.D. {item.dd_rate || "N/R"}</div>
+                          <div>R.S. {item.rs_rate || "N/R"}</div>
+                          <div>Autres {item.other_taxes || "N/R"}</div>
+                          <div>U.S. {item.us_unit || "N/R"}</div>
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                            {typeof item.confidence === "number"
+                              ? `${item.confidence}%`
+                              : "N/R"}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <button
+                            type="button"
+                            onClick={() => handleValidate(item)}
+                            className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
+                          >
+                            Valider
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
       )}
