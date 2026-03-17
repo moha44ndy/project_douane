@@ -1,0 +1,406 @@
+Je veux classer un “appareil électronique portable” pour la douane. Il tient dans la main, a un écran, une batterie rechargeable et peut se connecter à internet. Donne-moi le code tarifaire, le libellé et les droits et taxes: Résultat structuré
+Classification d'un appareil électronique portable avec écran, batterie rechargeable et connexion internet. Selon la description, il s'agit d'une machine automatique de traitement de l'information portable contenant au moins une unité centrale de traitement et un écran. La position tarifaire applicable est 8471.30.00.00. Les droits de douane sont de 5 %, la taxe statistique de 1 % selon les tarifs en vigueur. Cette classification respecte la RGI 3, la matière principale et la fonction du produit sont prises en compte.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Appareil électronique portable avec écran, batterie rechargeable et connexion internet
+Origine : Non renseigné
+Valeur : Non renseigné
+8471.30.00.00
+XVI
+Machines et appareils, matériel électrique
+Chapitre 84 – Machines, appareils et matériel électrique
+D.D. 5 %
+R.S. 1 %
+Autres Non renseigné
+U.S. PIÈCE
+95%	Valider
+
+
+
+
+
+
+
+Je souhaite classer les produits suivants pour une déclaration douanière :
+
+Produit 1 : Ordinateur portable (laptop)
+- Écran 15,6 pouces
+- Processeur Intel Core i7
+- 16 Go de RAM
+- SSD 512 Go
+- Poids : 1,8 kg
+- Utilisation : bureautique et multimédia
+- Vendu avec système d’exploitation préinstallé
+
+Produit 2 : Chargeur secteur pour cet ordinateur
+- Entrée : 100-240 V AC
+- Sortie : 19 V DC, 65 W
+- Connecteur spécifique à la marque du laptop
+- Vendu séparément comme accessoire de rechange
+
+Donne-moi un code tarifaire séparé pour chaque produit, avec libellé et justification: Résultat structuré
+Classification tarifaire distincte pour les composants et accessoires d'un ordinateur portable et son chargeur, sur la base des tarifs CEDEAO et règles générales d'interprétation (RGI).
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Ordinateur portable (laptop) complet
+Origine : Non renseigné
+Valeur : Non renseigné
+8471.30.10.00
+XVI
+Machines et appareils, matériel électrique et leurs parties
+Chapitre 84 – Réacteurs nucléaires, chaudières, machines, appareils et matériels mécaniques; parties
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
+Écran 15,6 pouces pour ordinateur portable
+Origine : Non renseigné
+Valeur : Non renseigné
+8524.11.00.00
+XVI
+Machines et appareils, matériel électrique et leurs parties
+Chapitre 85 – Machines, appareils et matériel électrique, et leurs parties
+D.D. 10 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+90%	Valider
+Processeur Intel Core i7
+Origine : Non renseigné
+Valeur : Non renseigné
+8473.30.00.00
+XVI
+Machines et appareils, matériel électrique et leurs parties
+Chapitre 84 – Réacteurs nucléaires, chaudières, machines, appareils et matériels mécaniques; parties
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+85%	Valider
+Mémoire vive (RAM) 16 Go
+Origine : Non renseigné
+Valeur : Non renseigné
+8473.30.00.00
+XVI
+Machines et appareils, matériel électrique et leurs parties
+Chapitre 84 – Réacteurs nucléaires, chaudières, machines, appareils et matériels mécaniques; parties
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+90%	Valider
+Disque SSD 512 Go
+Origine : Non renseigné
+Valeur : Non renseigné
+8523.51.00.00
+XVI
+Machines et appareils, matériel électrique et leurs parties
+Chapitre 85 – Machines, appareils et matériel électrique, et leurs parties
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
+Poids (1,8 kg) pour laptop
+Origine : Non renseigné
+Valeur : Non renseigné
+Non applicable
+Non applicable
+Non applicable
+Chapitre Non applicable – Non applicable
+D.D. Non applicable
+R.S. Non applicable
+Autres Non applicable
+U.S. kg
+100%	Valider
+Chargeur secteur pour ordinateur portable, 100-240 V AC, 19 V DC, 65 W
+Origine : Non renseigné
+Valeur : Non renseigné
+8504.40.20.00
+XVI
+Machines et appareils, matériel électrique et leurs parties
+Chapitre 85 – Machines, appareils et matériel électrique, et leurs parties
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+90%	Valider
+Connecteur spécifique à la marque du laptop
+Origine : Non renseigné
+Valeur : Non renseigné
+8536.69.00.00
+XVI
+Machines et appareils, matériel électrique et leurs parties
+Chapitre 85 – Machines, appareils et matériel électrique, et leurs parties
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+85%	Valider
+
+
+
+
+
+
+
+
+Je veux classer un sirop buvable :
+- Composition : extrait de plantes (thym, eucalyptus), sucre, eau, arômes
+- Présentation : flacon de 150 ml, avec gobelet doseur
+- Allégations : “soulage la gorge irritée”, “favorise le confort respiratoire”
+- Mention : “complément alimentaire” sur l’étiquette
+- Vente : en pharmacie et parapharmacie, sans ordonnance
+
+Donne-moi le code tarifaire le plus approprié, en expliquant pourquoi ce n’est pas un médicament et pourquoi tu le classes dans cette position: Résultat structuré
+Analyse et classification du sirop buvable composé d'extraits de plantes (thym, eucalyptus), sucre, eau, arômes, présenté en flacon de 150 ml avec gobelet doseur, avec allégations de soulagement de gorge et mention de complément alimentaire, vendu en pharmacie et parapharmacie sans ordonnance. Ce produit n'est pas un médicament car il est étiqueté comme complément alimentaire et ne s'inscrit pas dans les définitions des médicaments présentées sous forme dose ou à usage thérapeutique direct. La classification s'appuie sur les RGI et les sections traitant des compléments alimentaires et sirops aromatisés, prenant en compte la composition, la présentation et l'usage déclaré.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Sirop buvable extrait de plantes (thym, eucalyptus), sucre, eau, arômes, complément alimentaire
+Origine : Non renseigné
+Valeur : Non renseigné
+2106.90.96.00
+IV
+Produits alimentaires
+Chapitre 21 – Préparations alimentaires diverses
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. kg
+98%	Valider
+Flacon de 150 ml avec gobelet doseur (emballage)
+Origine : Non renseigné
+Valeur : Non renseigné
+7010.90.29.00
+VII
+Verre et ses ouvrages
+Chapitre 70 – Verre et ouvrages en verre
+D.D. 10 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. kg
+90%	Valider
+
+
+
+
+
+
+
+
+
+
+
+
+Je souhaite classer un “mix de fruits secs” :
+- Mélange d’amandes, de noix de cajou, de noisettes, de raisins secs
+- Non salés, non grillés
+- Conditionnés en sachets de 250 g
+- Destinés à être consommés tels quels comme encas
+
+Donne-moi :
+1) Les différents codes tarifaires possibles si on classe par type de fruit (amandes, noix de cajou, etc.)
+2) Le code tarifaire le plus approprié pour le mélange, avec justification.: Résultat structuré
+Classification d'un mélange de fruits secs (amandes, noix de cajou, noisettes, raisins secs), non salés et non grillés, conditionnés en sachets de 250 g et destinés à être consommés tels quels comme encas.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Mélange d'amandes, noix de cajou, noisettes et raisins secs
+Origine : Non renseigné
+Valeur : Non renseigné
+2008.19.00.00
+II
+Produits du règne végétal
+Chapitre 08 – Fruits comestibles; écorces d'agrumes ou de melons
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. kg
+95%	Valider
+Amandes, en coques
+Origine : Non renseigné
+Valeur : Non renseigné
+0802.11.00.00
+II
+Produits du règne végétal
+Chapitre 08 – Fruits comestibles; écorces d'agrumes ou de melons
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. kg
+100%	Valider
+Noix de cajou, sans coques
+Origine : Non renseigné
+Valeur : Non renseigné
+0801.32.00.00
+II
+Produits du règne végétal
+Chapitre 08 – Fruits comestibles; écorces d'agrumes ou de melons
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. kg
+100%	Valider
+Noisettes, sans coques
+Origine : Non renseigné
+Valeur : Non renseigné
+0802.22.00.00
+II
+Produits du règne végétal
+Chapitre 08 – Fruits comestibles; écorces d'agrumes ou de melons
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. kg
+100%	Valider
+Raisins secs
+Origine : Non renseigné
+Valeur : Non renseigné
+0806.20.00.00
+II
+Produits du règne végétal
+Chapitre 08 – Fruits comestibles; écorces d'agrumes ou de melons
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. kg
+100%	Valider
+
+
+
+
+
+
+
+
+
+Explique-moi le classement douanier d’un smartphone 5G (téléphone mobile intelligent) comme si je n’étais pas spécialiste, en évitant le jargon technique douanier au maximum. Donne-moi le code tarifaire, le libellé et une justification en français simple.: Résultat structuré
+Le smartphone 5G est classé comme un téléphone intelligent. Le code tarifaire correspond à une catégorie précise dans le système douanier qui regroupe tous les téléphones intelligents. Ce classement est fondé sur la nature principale du produit, qui est un appareil de communication mobile avancé. Les taux d'imposition sont définis pour cette catégorie spécifique selon les réglementations en vigueur.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Smartphone 5G (téléphone mobile intelligent)
+Origine : Non renseigné
+Valeur : Non renseigné
+8517.13.00.00
+XVIII
+Instruments et appareils de mesure, de contrôle, de précision, médicaux ou chirurgicaux ; horlogerie ; instruments d'optique ; photographiques ou cinématographiques
+Chapitre 85 – Machines, appareils et matériel électrique et leurs parties ; enregistreurs ou lecteurs magnétiques, machines automatiques pour le traitement ou la transmission de données et les parties et accessoires de ces machines
+D.D. 10 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. Unité
+95%	Valider
+
+
+
+
+
+
+
+
+
+Je veux classer un produit décrit comme suit :
+- “Boisson alcoolisée” sur l’étiquette
+- Teneur en alcool indiquée : 0,0 %
+- Ingrédients : eau, sucre, arômes de bière, dioxyde de carbone
+- Mention : “boisson sans alcool, goût bière”
+- Vendu au rayon “bières” du supermarché
+
+Donne-moi une classification en expliquant comment tu gères ces informations contradictoires.: Résultat structuré
+Classification des marchandises selon les règles générales d'interprétation du Système harmonisé (RGI). Les boissons alcoolisées sont classées dans le chapitre 22 selon leur teneur en alcool. Les boissons non alcooliques sont également au chapitre 22 mais dans des positions distinctes. En cas de mélanges ou d'informations contradictoires, priorité est donnée à la teneur en alcool et au caractère essentiel de la matière selon les RGI 3 a) et b).
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Produit présenté en assortiments divers, classification indéterminée
+Origine : Non renseigné
+Valeur : Non renseigné
+Non renseigné
+Non renseigné
+Non renseigné
+Chapitre Non renseigné – Non renseigné
+D.D. Non renseigné
+R.S. Non renseigné
+Autres Non renseigné
+U.S. Non renseigné
+50%	Valider
+Boisson alcoolisée (étiquette : 'Boisson alcoolisée')
+Origine : Non renseigné
+Valeur : Non renseigné
+2208.90.00.00
+IV
+Produits des industries alimentaires; boissons, liquides alcooliques et vinaigres
+Chapitre 22 – Boissons, liquides alcooliques et vinaigres
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. LITRE
+90%	Valider
+Boisson avec teneur alcool 0,0 % (non alcoolique)
+Origine : Non renseigné
+Valeur : Non renseigné
+2202.10.00.00
+IV
+Produits des industries alimentaires; boissons, liquides alcooliques et vinaigres
+Chapitre 22 – Boissons, liquides alcooliques et vinaigres
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. LITRE
+95%	Valider
+Boisson non alcoolique aromatisée goût bière
+Origine : Non renseigné
+Valeur : Non renseigné
+2202.10.00.00
+IV
+Produits des industries alimentaires; boissons, liquides alcooliques et vinaigres
+Chapitre 22 – Boissons, liquides alcooliques et vinaigres
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. LITRE
+90%	Valider
+Boisson sans alcool goût bière, vendue au rayon bières
+Origine : Non renseigné
+Valeur : Non renseigné
+2202.91.00.00
+IV
+Produits des industries alimentaires; boissons, liquides alcooliques et vinaigres
+Chapitre 22 – Boissons, liquides alcooliques et vinaigres
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. LITRE
+94%	Valider
+Bière (vendue au rayon bières)
+Origine : Non renseigné
+Valeur : Non renseigné
+2203.00.90.00
+IV
+Produits des industries alimentaires; boissons, liquides alcooliques et vinaigres
+Chapitre 22 – Boissons, liquides alcooliques et vinaigres
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. LITRE
+88%	Valider
+Boisson complexe avec éléments contradictoires (alcoolisée, 0% alcool, goût bière, vendu au rayon bière)
+Origine : Non renseigné
+Valeur : Non renseigné
+2202.91.00.00
+IV
+Produits des industries alimentaires; boissons, liquides alcooliques et vinaigres
+Chapitre 22 – Boissons, liquides alcooliques et vinaigres
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. LITRE
+90%	Valider
+
+
+
+
+
+
+
+
+Donne-moi directement le code tarifaire officiel et définitif qui sera accepté par la douane pour ce produit, sans mention de vérification humaine.: Résultat structuré
+La demande ne spécifie pas la nature précise du produit à classifier. Plusieurs codes tarifaires sont listés selon différentes sections et chapitres, chacun correspondant à des marchandises distinctes : imprimés à caractère administratif (section X, chapitre 48), préparations (section VI, chapitre 34), produits sidérurgiques divers (section XV, chapitre 72), chiffons (section XI, chapitre 63) et café (section II, chapitre 10). Pour fournir un code tarifaire officiel et définitif, la description claire et précise de la marchandise est nécessaire. Sans cette indication, aucune classification précise ne peut être donnée conformément aux informations disponibles.

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
 
 type ClassificationItem = {
   description?: string;
@@ -83,6 +84,7 @@ export default function HomePage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   useEffect(() => {
     const checkSession = async () => {
@@ -126,10 +128,20 @@ export default function HomePage() {
       }
 
       const data = await response.json();
-      const rawText: string = data.raw ?? "";
+      const rawText: string =
+        typeof data.raw === "string" ? data.raw : JSON.stringify(data.raw ?? "");
       setRaw(rawText);
 
-      setPayload(tryParseStructuredPayload(rawText));
+      let parsed = tryParseStructuredPayload(rawText);
+      if (!parsed && rawText.trim().startsWith('"')) {
+        try {
+          const once = JSON.parse(rawText.trim()) as unknown;
+          if (typeof once === "string") parsed = tryParseStructuredPayload(once);
+        } catch {
+          /* ignore */
+        }
+      }
+      setPayload(parsed);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur inconnue côté client";
@@ -176,6 +188,8 @@ export default function HomePage() {
           origin: item.origin ?? null,
           value: item.value ?? null,
           user_id: userId,
+          query: query || undefined,
+          raw_response: raw || undefined,
         }),
       });
       if (!res.ok) {
@@ -224,10 +238,7 @@ export default function HomePage() {
             </Link>
             <button
               type="button"
-              onClick={async () => {
-                await supabase.auth.signOut();
-                router.push("/login");
-              }}
+              onClick={() => setShowLogoutModal(true)}
               className="mosam-btn-secondary"
             >
               Se déconnecter
@@ -285,11 +296,29 @@ export default function HomePage() {
         </div>
       </section>
 
+      {!loading && raw && !payload && (
+        <section className="rounded-3xl bg-card border border-amber-200 bg-amber-50/50 border-border shadow-xl p-6 space-y-2">
+          <h2 className="text-lg font-semibold text-amber-800">
+            Réponse reçue mais format inattendu
+          </h2>
+          <p className="text-sm text-amber-700">
+            La réponse du serveur n&apos;a pas pu être affichée sous forme de tableau. Vous pouvez réessayer ou vider le cache (admin).
+          </p>
+          <pre className="text-xs overflow-auto max-h-48 p-3 rounded-xl bg-white border border-amber-200 text-left">
+            {raw.slice(0, 2000)}
+            {raw.length > 2000 ? "…" : ""}
+          </pre>
+        </section>
+      )}
+
       {payload && (
         <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
           <h2 className="text-xl font-semibold text-primary">
             Résultat structuré
           </h2>
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+            Proposition indicative, à faire valider par l&apos;autorité douanière.
+          </p>
           {payload.narrative && (
             <p className="text-sm text-foreground leading-relaxed">
               {payload.narrative}
@@ -396,6 +425,16 @@ export default function HomePage() {
           )}
         </section>
       )}
+
+      <ConfirmLogoutModal
+        open={showLogoutModal}
+        onCancel={() => setShowLogoutModal(false)}
+        onConfirm={async () => {
+          setShowLogoutModal(false);
+          await supabase.auth.signOut();
+          router.push("/login");
+        }}
+      />
     </div>
   );
 }

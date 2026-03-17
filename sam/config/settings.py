@@ -19,6 +19,11 @@ class Config:
     # Base de données (Supabase / Postgres)
     SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL")
 
+    # Supabase Auth (API d'admin pour créer des comptes)
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+
     # Cache Redis (Upstash)
     UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
     UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")

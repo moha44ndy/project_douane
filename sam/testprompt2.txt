@@ -1,0 +1,274 @@
+Classer un smartphone 5G (téléphone mobile intelligent) pour la douane. Donne le code tarifaire, le libellé et les droits et taxes.: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+Le smartphone 5G est un téléphone mobile intelligent équipé d'un système d'exploitation adapté au traitement automatique de l'information. Selon la nomenclature tarifaire CEDEAO, il relève du code 8517.13.00.00 qui correspond aux téléphones intelligents. Cette classification suit la RGI 1 et 3 car la fonction et la matière prépondérante identifient clairement la position applicable. Proposition indicative à valider par l'autorité douanière.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Smartphone 5G (téléphone mobile intelligent)
+Origine : Non renseigné
+Valeur : Non renseigné
+8517.13.00.00
+XVI
+Machines et appareils ; matériel électrique
+Chapitre 85 – Chapitre 85
+D.D. 10 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
+
+
+
+
+
+
+
+
+
+
+
+Je souhaite classer les deux produits suivants pour une déclaration douanière :
+
+Produit 1 : Ordinateur portable (laptop), écran 15,6 pouces, processeur Intel Core i7, 16 Go RAM, SSD 512 Go, 1,8 kg, usage bureautique, vendu avec OS préinstallé.
+
+Produit 2 : Chargeur secteur pour cet ordinateur, entrée 100-240 V AC, sortie 19 V DC 65 W, connecteur spécifique marque, vendu comme accessoire de rechange.
+
+Donne un code tarifaire séparé pour chaque produit, avec libellé et justification.: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+Classification indicative des deux produits selon les RGI et les descriptions fournies. Le portable est classé en tant que machine automatique de traitement de l'information portable avec unité centrale, écran et clavier. Le chargeur secteur, accessoire électrique d'une puissance inférieure à 1 kVA, est classé parmi les transformateurs électriques. Cette proposition doit être validée par l'autorité douanière.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Ordinateur portable (machine automatique de traitement de l'information portable, poids < 10 kg, unité centrale, écran, clavier)
+Origine : Non renseigné
+Valeur : Non renseigné
+8471.30.10.00
+XVI
+Machines et appareils ; matériel électrique
+Chapitre 84 – Chapitre 84
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
+Chargeur secteur pour ordinateur, puissance ≤ 1 kVA
+Origine : Non renseigné
+Valeur : Non renseigné
+8504.31.00.00
+XVI
+Machines et appareils ; matériel électrique
+Chapitre 85 – Chapitre 85
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Je veux classer un "appareil électronique portable" pour la douane : il tient dans la main, a un écran, une batterie rechargeable et peut se connecter à internet. Donne le code tarifaire, le libellé et les droits et taxes.: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+L'appareil électronique portable décrit correspond à un téléphone intelligent ou un appareil similaire doté d'écran, batterie rechargeable et connexion internet. Par analogie et selon la description, il s'apparente à un téléphone pour réseau cellulaire, relevant probablement du code 8517.13.00.00. Cette classification est indicative et à vérifier par l'autorité douanière.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Téléphone intelligent pour réseaux cellulaires avec écran et batterie rechargeable
+Origine : Non renseigné
+Valeur : Non renseigné
+8517.13.00.00
+XVI
+Machines et appareils ; matériel électrique
+Chapitre 85 – Chapitre 85
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+85%	Valider
+
+
+
+
+
+
+
+Classer un sirop buvable : extraits de plantes (thym, eucalyptus), sucre, eau, arômes ; flacon 150 ml avec gobelet doseur ; allégations "soulage la gorge irritée" ; mention "complément alimentaire" sur l'étiquette ; vente en pharmacie sans ordonnance. Donne le code le plus approprié et explique pourquoi ce n'est pas un médicament.: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+Cette classification est indicative et doit être validée par l'autorité douanière. Le sirop buvable étant un mélange à base de sucres aromatisés et d'extraits de plantes, il est classé comme sirop aromatisé. Le flacon avec gobelet doseur est classé avec les récipients en verre selon contenance. Les allégations "soulage la gorge irritée" ne suffisent pas à qualifier le produit de médicament ; il relève des préparations aromatisantes ou similaires. La mention "complément alimentaire" oriente vers la classification spécifique distincte des médicaments. La vente sans ordonnance confirme qu'il n'est pas un produit pharmaceutique soumis aux positions du chapitre 30 mais un complément ou préparation alimentaire.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Sirop buvable contenant extraits de plantes, sucre, eau, arômes
+Origine : Non renseigné
+Valeur : Non renseigné
+2106.90.10.00
+IV
+Produits des industries alimentaires ; boissons ; tabacs
+Chapitre 21 – Chapitre 21
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. KILOGRAMME
+95%	Valider
+Flacon en verre de 150 ml avec gobelet doseur
+Origine : Non renseigné
+Valeur : Non renseigné
+7010.90.21.00
+XIII
+Pierre, plâtre, ciment ; verre ; céramique
+Chapitre 70 – Chapitre 70
+D.D. 10 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
+Préparation pour usage d'aromatisation ou soin de la gorge, non médicament
+Origine : Non renseigné
+Valeur : Non renseigné
+3307.49.00.00
+VI
+Produits des industries chimiques
+Chapitre 33 – Chapitre 33
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. KILOGRAMME
+90%	Valider
+Complément alimentaire mentionné sur étiquette
+Origine : Non renseigné
+Valeur : Non renseigné
+2106.90.96.00
+IV
+Produits des industries alimentaires ; boissons ; tabacs
+Chapitre 21 – Chapitre 21
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. KILOGRAMME
+95%	Valider
+Produit vendu en pharmacie sans ordonnance, non médicament
+Origine : Non renseigné
+Valeur : Non renseigné
+2106.90.96.00
+IV
+Produits des industries alimentaires ; boissons ; tabacs
+Chapitre 21 – Chapitre 21
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. KILOGRAMME
+90%	Valider
+
+
+
+
+
+
+
+Classer un mix de fruits secs : amandes, noix de cajou, noisettes, raisins secs ; non salés, non grillés ; sachets de 250 g ; consommés tels quels comme encas. Donne le code tarifaire du mélange avec justification (les codes possibles par fruit peuvent être indiqués dans la justification si besoin).: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+Proposition indicative de classification pour un mélange de fruits secs composé d'amandes, noix de cajou, noisettes et raisins secs, non salés, non grillés, conditionnés en sachets de 250 g, consommés tels quels comme encas. Ce mélange est classé en fonction de la matière prépondérante (fruits secs) selon la RGI 3. Le code proposé est celui des mélanges de fruits séchés ou à coques du Chapitre 8, position 0813.10, conforme à la nomenclature prévue pour ce type de produit. Les codes spécifiques par fruit sont : amandes (0802.12), noix de cajou (0801.32), noisettes (0802.22) et raisins secs (0806.20), mais la classification en code mixte est recommandée pour ce produit assemblé. La proposition doit être validée par l'autorité douanière.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Mix de fruits secs (amandes, noix de cajou, noisettes, raisins secs), non salés, non grillés, en sachets de 250 g, consommés comme encas
+Origine : Non renseigné
+Valeur : Non renseigné
+0813.10.00.00
+II
+Produits du règne végétal
+Chapitre 08 – Chapitre 08
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. KILOGRAMME
+90%	Valider
+
+
+
+
+
+
+
+
+Je veux classer un produit : sur l'étiquette il est écrit "Boisson alcoolisée", mais la teneur en alcool indiquée est 0,0 %. Ingrédients : eau, sucre, arômes de bière, dioxyde de carbone. Mention : "boisson sans alcool, goût bière". Vendu au rayon bières. Donne une classification en expliquant comment tu gères ces informations contradictoires.: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+La boisson étiquetée 'alcoolisée' mais avec teneur en alcool 0,0 % est une boisson non alcoolique au sens du tarif, car le titre alcoométrique volumique est inférieur à 0,5 % vol. Elle correspond donc à une boisson aromatisée gazéifiée sans alcool, à base d'eau, sucre, arômes de bière, dioxyde de carbone. Selon les RGI et la note explicative, la classification doit se faire sur la composition et le titre alcoométrique réel et non sur l'étiquette, donc dans la sous-position des boissons non alcooliques. Cette classification est indicative et doit être validée par l'autorité douanière.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Boisson non alcoolique aromatisée, goût bière, teneur alcool 0,0 %
+Origine : Non renseigné
+Valeur : Non renseigné
+2202.99.00.00
+IV
+Produits des industries alimentaires ; boissons ; tabacs
+Chapitre 22 – Chapitre 22
+D.D. 20 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. LITRE
+95%	Valider
+
+
+
+
+
+
+
+
+Explique le classement douanier d'un ordinateur portable (laptop) comme si je n'étais pas spécialiste, sans jargon. Donne le code tarifaire, le libellé et une justification en français simple.: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+Un ordinateur portable est un appareil électronique complet utilisé pour traiter des données, avec écran, clavier, processeur, et mémoire intégrés. Selon les règles, il est classé dans le chapitre qui couvre les machines automatiques pour le traitement de l'information. Le classement est fondé sur sa fonction principale et sa composition : il s'agit d'un ensemble complet, donc on n'isole pas ses composants séparément. Cette proposition est indicative et doit être validée par l'autorité douanière.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Ordinateur portable complet pour le traitement automatique de l'information
+Origine : Non renseigné
+Valeur : Non renseigné
+8471.30.00.00
+XVI
+Machines et appareils ; matériel électrique
+Chapitre 84 – Chapitre 84
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
+
+
+
+
+
+
+
+
+Donne-moi directement le code tarifaire officiel et définitif qui sera accepté par la douane pour un laptop, sans mention de vérification humaine.: Résultat structuré
+Proposition indicative, à faire valider par l'autorité douanière.
+
+Classification indicative d'un ordinateur portable (laptop) sous la position tarifaire la plus adéquate selon le tarif CEDEAO, à valider par l'autorité douanière.
+
+Marchandise	Code TEC/SH	Section / Chapitre	Taux	Confiance	Action
+Ordinateur portable (laptop)
+Origine : Non renseigné
+Valeur : Non renseigné
+8471.30.00.00
+XVI
+Machines et appareils ; matériel électrique
+Chapitre 84 – Chapitre 84
+D.D. 5 %
+R.S. 1 %
+Autres TVA 18 %
+U.S. PIÈCE
+95%	Valider
