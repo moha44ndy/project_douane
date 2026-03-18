@@ -4,8 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
-import { ConfirmLogoutModal } from "../../../components/ConfirmLogoutModal";
-
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -77,7 +75,6 @@ export default function AdminLogsPage() {
     dateTo: "",
   });
   const [checkingSession, setCheckingSession] = useState(true);
-  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   useEffect(() => {
     const fetchLogs = async () => {
@@ -457,16 +454,6 @@ export default function AdminLogsPage() {
           </div>
         )}
       </section>
-
-      <ConfirmLogoutModal
-        open={showLogoutModal}
-        onCancel={() => setShowLogoutModal(false)}
-        onConfirm={async () => {
-          setShowLogoutModal(false);
-          await supabase.auth.signOut();
-          router.push("/login");
-        }}
-      />
     </div>
   );
 }

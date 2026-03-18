@@ -4,8 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
-import { ConfirmLogoutModal } from "../../components/ConfirmLogoutModal";
-
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -134,8 +132,6 @@ export default function HistoriquePage() {
   const [page, setPage] = useState(1);
   const pageSize = 25;
   const [checkingSession, setCheckingSession] = useState(true);
-  const [showLogoutModal, setShowLogoutModal] = useState(false);
-
   useEffect(() => {
     const fetchHistory = async () => {
       setLoading(true);
@@ -254,13 +250,6 @@ export default function HistoriquePage() {
             <Link href="/" className="mosam-btn-admin">
               Retour à la classification
             </Link>
-            <button
-              type="button"
-              onClick={() => setShowLogoutModal(true)}
-              className="mosam-btn-secondary"
-            >
-              Se déconnecter
-            </button>
           </div>
           <div className="text-right text-sm text-muted-foreground">
             <div className="font-semibold text-primary">
@@ -528,15 +517,6 @@ export default function HistoriquePage() {
         )}
       </section>
 
-      <ConfirmLogoutModal
-        open={showLogoutModal}
-        onCancel={() => setShowLogoutModal(false)}
-        onConfirm={async () => {
-          setShowLogoutModal(false);
-          await supabase.auth.signOut();
-          router.push("/login");
-        }}
-      />
     </div>
   );
 }

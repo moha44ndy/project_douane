@@ -650,6 +650,32 @@ pre {
   cursor: not-allowed;
 }
 
+/* Bouton déconnexion (icône rouge) */
+.mosam-btn-logout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9999px;
+  border: 1px solid #fca5a5;
+  background: #fef2f2;
+  color: #dc2626;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+  touch-action: manipulation;
+}
+
+.mosam-btn-logout:hover {
+  background: #fee2e2;
+  border-color: #f87171;
+}
+
+.mosam-btn-logout:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.3);
+}
+
 /* Main grid */
 .mosam-main-grid {
   display: grid;

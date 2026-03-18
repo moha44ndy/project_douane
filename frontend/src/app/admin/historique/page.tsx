@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
-import { ConfirmLogoutModal } from "../../../components/ConfirmLogoutModal";
 import { ConfirmModal } from "../../../components/ConfirmModal";
 
 const API_BASE_URL =
@@ -129,7 +128,6 @@ export default function AdminHistoriquePage() {
   const [page, setPage] = useState(1);
   const pageSize = 25;
   const [checkingSession, setCheckingSession] = useState(true);
-  const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [cacheDisabled, setCacheDisabled] = useState<boolean | null>(null);
   const [hasCacheStatus, setHasCacheStatus] = useState(false);
@@ -349,13 +347,6 @@ export default function AdminHistoriquePage() {
             <Link href="/admin" className="mosam-btn-admin">
               Retour au panneau admin
             </Link>
-            <button
-              type="button"
-              onClick={() => setShowLogoutModal(true)}
-              className="mosam-btn-secondary"
-            >
-              Se déconnecter
-            </button>
           </div>
           <div className="text-right text-sm text-muted-foreground">
             <div className="font-semibold text-primary">
@@ -833,16 +824,6 @@ export default function AdminHistoriquePage() {
                   : "Erreur lors du vidage du cache.",
             });
           }
-        }}
-      />
-
-      <ConfirmLogoutModal
-        open={showLogoutModal}
-        onCancel={() => setShowLogoutModal(false)}
-        onConfirm={async () => {
-          setShowLogoutModal(false);
-          await supabase.auth.signOut();
-          router.push("/login");
         }}
       />
     </div>

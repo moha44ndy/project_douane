@@ -4,8 +4,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
-import { ConfirmLogoutModal } from "../../components/ConfirmLogoutModal";
-
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -34,7 +32,6 @@ export default function AdminPage() {
   const [userPage, setUserPage] = useState(1);
   const userPageSize = 25;
   const [checkingSession, setCheckingSession] = useState(true);
-  const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const [editNom, setEditNom] = useState("");
   const [editIdentifiant, setEditIdentifiant] = useState("");
@@ -805,16 +802,6 @@ export default function AdminPage() {
           </div>
         )}
       </section>
-
-      <ConfirmLogoutModal
-        open={showLogoutModal}
-        onCancel={() => setShowLogoutModal(false)}
-        onConfirm={async () => {
-          setShowLogoutModal(false);
-          await supabase.auth.signOut();
-          router.push("/login");
-        }}
-      />
     </div>
   );
 }
