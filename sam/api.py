@@ -1363,13 +1363,73 @@ def get_history(user_id: str | None = None) -> list[dict]:
 
 
 @app.get("/history.csv", tags=["history"])
-def export_history_csv(user_id: str | None = None) -> Response:
+def export_history_csv(
+    user_id: str | None = None,
+    q: str | None = None,
+    search: str | None = None,
+    section: str | None = None,
+    status: str | None = None,
+) -> Response:
     """
     Exporte l'historique des classifications au format CSV.
 
     Inclut les principaux champs utilisés dans l'interface.
     """
-    rows = get_history(user_id=user_id)
+    # Compat : certains clients envoient `q` (search global).
+    search_term = (q or search or "").strip()
+
+    base_sql = """
+        select
+          c.id,
+          c.description_produit,
+          c.section_produit,
+          c.chapitre_produit,
+          c.code_tarifaire,
+          c.classification_confidence,
+          c.dd_rate,
+          c.rs_rate,
+          c.other_taxes,
+          c.us_unit,
+          c.origin,
+          c.value,
+          c.statut_validation,
+          c.created_at as date_classification,
+          c.user_id,
+          u.nom_user as agent_name,
+          u.id as agent_id
+        from public.classifications c
+        left join public.users u on u.id = c.user_id
+    """
+
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+
+    if user_id:
+        conditions.append("c.user_id = :user_id")
+        params["user_id"] = user_id
+
+    if search_term:
+        conditions.append(
+            "(lower(c.description_produit) like :search_term or lower(c.code_tarifaire) like :search_term)"
+        )
+        params["search_term"] = f"%{search_term.lower()}%"
+
+    if section and section not in {"Toutes", "Tout"}:
+        conditions.append("c.section_produit = :section")
+        params["section"] = section
+
+    if status and status not in {"Tous", "Tout"}:
+        conditions.append("c.statut_validation = :status")
+        params["status"] = status
+
+    if conditions:
+        base_sql += " where " + " and ".join(conditions)
+
+    base_sql += " order by c.created_at desc limit 1000"
+
+    with get_db() as db:
+        rows = db.execute(text(base_sql), params).mappings().all()
+        rows = [dict(row) for row in rows]
 
     headers = [
         "id",
@@ -1407,6 +1467,131 @@ def export_history_csv(user_id: str | None = None) -> Response:
         content,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="historique.csv"'},
+    )
+
+
+@app.get("/admin/history.csv", tags=["history"])
+def export_admin_history_csv(
+    request: Request,
+    admin_id: str = Depends(admin_required),
+    search: str | None = None,
+    section: str | None = None,
+    status: str | None = None,
+    agent: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 5000,
+) -> Response:
+    """
+    Exporte l'historique filtré (mêmes filtres que l'admin/historique).
+    Réservé aux admins.
+    """
+    _rate_limit(request, "admin.history.csv.export")
+    _ = admin_id
+
+    base_sql = """
+        select
+          c.id,
+          c.description_produit,
+          c.section_produit,
+          c.chapitre_produit,
+          c.code_tarifaire,
+          c.classification_confidence,
+          c.dd_rate,
+          c.rs_rate,
+          c.other_taxes,
+          c.us_unit,
+          c.origin,
+          c.value,
+          c.statut_validation,
+          c.created_at as date_classification,
+          c.user_id,
+          u.nom_user as agent_name,
+          u.id as agent_id
+        from public.classifications c
+        left join public.users u on u.id = c.user_id
+    """
+
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+
+    if search and search.strip():
+        conditions.append(
+            "("
+            "lower(c.description_produit) like :search "
+            "or lower(c.code_tarifaire) like :search"
+            ")"
+        )
+        params["search"] = f"%{search.strip().lower()}%"
+
+    if section and section not in {"Toutes", "Tout"}:
+        conditions.append("c.section_produit = :section")
+        params["section"] = section
+
+    if status and status not in {"Tous", "Tout"}:
+        conditions.append("c.statut_validation = :status")
+        params["status"] = status
+
+    if agent and agent not in {"Tous", "Tout"}:
+        conditions.append("u.nom_user = :agent")
+        params["agent"] = agent
+
+    if date_from and date_from.strip():
+        conditions.append("c.created_at::date >= :date_from")
+        params["date_from"] = date_from.strip()
+
+    if date_to and date_to.strip():
+        conditions.append("c.created_at::date <= :date_to")
+        params["date_to"] = date_to.strip()
+
+    if conditions:
+        base_sql += " where " + " and ".join(conditions)
+
+    base_sql += " order by c.created_at desc"
+    params["limit"] = max(1, min(limit, 50000))
+    base_sql += " limit :limit"
+
+    rows: list[dict[str, Any]]
+    with get_db() as db:
+        rows = db.execute(text(base_sql), params).mappings().all()
+        rows = [dict(r) for r in rows]
+
+    headers = [
+        "id",
+        "description_produit",
+        "section_produit",
+        "chapitre_produit",
+        "code_tarifaire",
+        "classification_confidence",
+        "dd_rate",
+        "rs_rate",
+        "other_taxes",
+        "us_unit",
+        "origin",
+        "value",
+        "statut_validation",
+        "date_classification",
+        "user_id",
+        "agent_name",
+        "agent_id",
+    ]
+
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow([row.get(h, "") for h in headers])
+
+    content = output.getvalue()
+    output.close()
+
+    return Response(
+        content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="historique_filtre.csv"'},
     )
 
 

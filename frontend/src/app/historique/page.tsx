@@ -355,18 +355,40 @@ export default function HistoriquePage() {
             Résultats ({totalFiltered})
           </h2>
           {!loading && !error && userId && (
-            <button
-              type="button"
-              onClick={() => {
-                const url = `${API_BASE_URL}/history.csv?user_id=${encodeURIComponent(
-                  userId
-                )}`;
-                window.open(url, "_blank", "noopener,noreferrer");
-              }}
-              className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
-            >
-              Exporter en CSV
-            </button>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  const url = `${API_BASE_URL}/history.csv?user_id=${encodeURIComponent(
+                    userId
+                  )}`;
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
+              >
+                Exporter tout (CSV)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  params.set("user_id", userId);
+                  if (filters.search.trim())
+                    params.set("search", filters.search.trim());
+                  if (filters.section !== "Toutes")
+                    params.set("section", filters.section);
+                  if (filters.status !== "Tous")
+                    params.set("status", filters.status);
+
+                  const url = `${API_BASE_URL}/history.csv?${params.toString()}`;
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
+              >
+                Exporter filtré (CSV)
+              </button>
+            </div>
           )}
         </div>
 

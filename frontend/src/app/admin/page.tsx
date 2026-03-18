@@ -37,6 +37,7 @@ export default function AdminPage() {
   const [editIdentifiant, setEditIdentifiant] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [exportingUsers, setExportingUsers] = useState(false);
 
   const [userSearch, setUserSearch] = useState("");
   const [userStatusFilter, setUserStatusFilter] = useState<string>("Tous");
@@ -622,32 +623,128 @@ export default function AdminPage() {
             Utilisateurs
           </h2>
           {users.length > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                const params = new URLSearchParams();
-                if (userSearch.trim()) {
-                  params.append("search", userSearch.trim());
-                }
-                if (userStatusFilter !== "Tous") {
-                  params.append("statut", userStatusFilter);
-                }
-                if (userRoleFilter !== "Tous") {
-                  params.append(
-                    "is_admin",
-                    userRoleFilter === "Admins" ? "true" : "false"
-                  );
-                }
-                const url =
-                  params.toString().length > 0
-                    ? `${API_BASE_URL}/users.csv?${params.toString()}`
-                    : `${API_BASE_URL}/users.csv`;
-                window.open(url, "_blank", "noopener,noreferrer");
-              }}
-              className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
-            >
-              Exporter les utilisateurs (CSV)
-            </button>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="button"
+                disabled={exportingUsers}
+                onClick={async () => {
+                  try {
+                    setExportingUsers(true);
+                    setError(null);
+                    const {
+                      data: { session },
+                    } = await supabase.auth.getSession();
+                    const accessToken = session?.access_token;
+                    if (!accessToken) {
+                      alert(
+                        "Session expirée, veuillez vous reconnecter."
+                      );
+                      return;
+                    }
+                    const url = `${API_BASE_URL}/users.csv`;
+                    const res = await fetch(url, {
+                      headers: { Authorization: `Bearer ${accessToken}` },
+                    });
+                    if (!res.ok) {
+                      const text = await res.text();
+                      throw new Error(text || `Erreur HTTP ${res.status}`);
+                    }
+                    const blob = await res.blob();
+                    const downloadUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = downloadUrl;
+                    a.download = `utilisateurs_tout_${new Date()
+                      .toISOString()
+                      .slice(0, 10)}.csv`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(downloadUrl);
+                  } catch (err) {
+                    const msg =
+                      err instanceof Error
+                        ? err.message
+                        : "Erreur lors de l'export des utilisateurs.";
+                    setError(msg);
+                  } finally {
+                    setExportingUsers(false);
+                  }
+                }}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Exporter tout (CSV)
+              </button>
+
+              <button
+                type="button"
+                disabled={exportingUsers}
+                onClick={async () => {
+                  try {
+                    setExportingUsers(true);
+                    setError(null);
+                    const {
+                      data: { session },
+                    } = await supabase.auth.getSession();
+                    const accessToken = session?.access_token;
+                    if (!accessToken) {
+                      alert(
+                        "Session expirée, veuillez vous reconnecter."
+                      );
+                      return;
+                    }
+
+                    const params = new URLSearchParams();
+                    if (userSearch.trim()) {
+                      params.append("search", userSearch.trim());
+                    }
+                    if (userStatusFilter !== "Tous") {
+                      params.append("statut", userStatusFilter);
+                    }
+                    if (userRoleFilter !== "Tous") {
+                      params.append(
+                        "is_admin",
+                        userRoleFilter === "Admins" ? "true" : "false"
+                      );
+                    }
+
+                    const url =
+                      params.toString().length > 0
+                        ? `${API_BASE_URL}/users.csv?${params.toString()}`
+                        : `${API_BASE_URL}/users.csv`;
+
+                    const res = await fetch(url, {
+                      headers: { Authorization: `Bearer ${accessToken}` },
+                    });
+                    if (!res.ok) {
+                      const text = await res.text();
+                      throw new Error(text || `Erreur HTTP ${res.status}`);
+                    }
+                    const blob = await res.blob();
+                    const downloadUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = downloadUrl;
+                    a.download = `utilisateurs_filtre_${new Date()
+                      .toISOString()
+                      .slice(0, 10)}.csv`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(downloadUrl);
+                  } catch (err) {
+                    const msg =
+                      err instanceof Error
+                        ? err.message
+                        : "Erreur lors de l'export des utilisateurs.";
+                    setError(msg);
+                  } finally {
+                    setExportingUsers(false);
+                  }
+                }}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Exporter filtré (CSV)
+              </button>
+            </div>
           )}
         </div>
         <div className="grid md:grid-cols-3 gap-3 text-sm">

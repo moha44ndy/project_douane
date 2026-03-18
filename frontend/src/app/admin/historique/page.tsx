@@ -131,6 +131,7 @@ export default function AdminHistoriquePage() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [cacheDisabled, setCacheDisabled] = useState<boolean | null>(null);
   const [hasCacheStatus, setHasCacheStatus] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [confirmCacheAction, setConfirmCacheAction] = useState<
     null | "disable" | "clear"
   >(null);
@@ -302,6 +303,55 @@ export default function AdminHistoriquePage() {
       throw new Error("Session expirée, veuillez vous reconnecter.");
     }
     return accessToken;
+  };
+
+  const handleExportFilteredCsv = async () => {
+    setExporting(true);
+    setError(null);
+    setActionMessage(null);
+    try {
+      const accessToken = await withAdminToken();
+      const params = new URLSearchParams();
+
+      if (filters.search.trim()) params.set("search", filters.search.trim());
+      if (filters.section !== "Toutes") params.set("section", filters.section);
+      if (filters.status !== "Tous") params.set("status", filters.status);
+      if (filters.agent !== "Tous") params.set("agent", filters.agent);
+      if (filters.dateFrom) params.set("date_from", filters.dateFrom);
+      if (filters.dateTo) params.set("date_to", filters.dateTo);
+
+      const url = `${API_BASE_URL}/admin/history.csv?${params.toString()}`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Erreur HTTP ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = `historique_filtre_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+
+      setActionMessage(`Export filtré prêt (${totalFiltered} ligne(s)).`);
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Erreur lors de l'export filtré.";
+      setError(msg);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const updateStatus = async (itemId: number | undefined, statut: string) => {
@@ -574,16 +624,26 @@ export default function AdminHistoriquePage() {
             Résultats ({totalFiltered})
           </h2>
           {!loading && !error && (
-            <button
-              type="button"
-              onClick={() => {
-                const url = `${API_BASE_URL}/history.csv`;
-                window.open(url, "_blank", "noopener,noreferrer");
-              }}
-              className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
-            >
-              Exporter en CSV
-            </button>
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  const url = `${API_BASE_URL}/history.csv`;
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
+              >
+                Exporter en CSV (tout)
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExportFilteredCsv()}
+                disabled={exporting}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {exporting ? "Export..." : "Exporter filtré (CSV)"}
+              </button>
+            </div>
           )}
         </div>
 

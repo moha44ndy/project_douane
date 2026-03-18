@@ -336,38 +336,95 @@ export default function AdminLogsPage() {
             Résultats ({filtered.length})
           </h2>
           {!loading && !error && filtered.length > 0 && (
-            <button
-              type="button"
-              onClick={async () => {
-                const {
-                  data: { session },
-                } = await supabase.auth.getSession();
-                const accessToken = session?.access_token;
-                if (!accessToken) {
-                  alert("Session expirée, veuillez vous reconnecter.");
-                  return;
-                }
-                const params = new URLSearchParams();
-                if (filters.actor) params.append("actor_id", filters.actor);
-                if (filters.entityType)
-                  params.append("entity_type", filters.entityType);
-                if (filters.action) params.append("action", filters.action);
-                if (filters.search) params.append("q", filters.search);
-                if (filters.dateFrom)
-                  params.append("date_from", filters.dateFrom);
-                if (filters.dateTo) params.append("date_to", filters.dateTo);
-                params.append("limit", "1000");
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                type="button"
+                onClick={async () => {
+                  const {
+                    data: { session },
+                  } = await supabase.auth.getSession();
+                  const accessToken = session?.access_token;
+                  if (!accessToken) {
+                    alert("Session expirée, veuillez vous reconnecter.");
+                    return;
+                  }
 
-                const url =
-                  params.toString().length > 0
-                    ? `${API_BASE_URL}/audit-logs.csv?${params.toString()}`
-                    : `${API_BASE_URL}/audit-logs.csv`;
-                window.open(url, "_blank", "noopener,noreferrer");
-              }}
-              className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
-            >
-              Exporter les logs (CSV)
-            </button>
+                  // Export admin-only : pas de window.open possible (pas de header).
+                  const url = `${API_BASE_URL}/audit-logs.csv?limit=1000`;
+                  const res = await fetch(url, {
+                    headers: { Authorization: `Bearer ${accessToken}` },
+                  });
+                  if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text || `Erreur HTTP ${res.status}`);
+                  }
+                  const blob = await res.blob();
+                  const downloadUrl = window.URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = downloadUrl;
+                  a.download = `audit_logs_tout_${new Date()
+                    .toISOString()
+                    .slice(0, 10)}.csv`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  window.URL.revokeObjectURL(downloadUrl);
+                }}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
+              >
+                Exporter tous les logs (CSV)
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  const {
+                    data: { session },
+                  } = await supabase.auth.getSession();
+                  const accessToken = session?.access_token;
+                  if (!accessToken) {
+                    alert("Session expirée, veuillez vous reconnecter.");
+                    return;
+                  }
+                  const params = new URLSearchParams();
+                  if (filters.actor) params.append("actor_id", filters.actor);
+                  if (filters.entityType)
+                    params.append("entity_type", filters.entityType);
+                  if (filters.action) params.append("action", filters.action);
+                  if (filters.search) params.append("q", filters.search);
+                  if (filters.dateFrom)
+                    params.append("date_from", filters.dateFrom);
+                  if (filters.dateTo) params.append("date_to", filters.dateTo);
+                  params.append("limit", "1000");
+
+                  const url = `${API_BASE_URL}/audit-logs.csv?${params.toString()}`;
+
+                  const res = await fetch(url, {
+                    headers: {
+                      Authorization: `Bearer ${accessToken}`,
+                    },
+                  });
+                  if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text || `Erreur HTTP ${res.status}`);
+                  }
+                  const blob = await res.blob();
+                  const downloadUrl = window.URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = downloadUrl;
+                  a.download = `audit_logs_filtre_${new Date()
+                    .toISOString()
+                    .slice(0, 10)}.csv`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  window.URL.revokeObjectURL(downloadUrl);
+                }}
+                className="inline-flex items-center rounded-full border border-border bg-background px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/5"
+              >
+                Exporter les logs filtrés (CSV)
+              </button>
+            </div>
           )}
         </div>
 
