@@ -127,5 +127,6 @@ weasel==0.4.1
 wrapt==2.0.0
 yarl==1.20.1
 zstandard==0.25.0
+python-multipart==0.0.22
 fastapi==0.132.0
 uvicorn[standard]==0.41.0

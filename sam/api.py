@@ -16,10 +16,15 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from fastapi import FastAPI, HTTPException, Response, Header, Request, Depends
+from fastapi import UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
 import requests
+import io
+import csv
+import re
+from pypdf import PdfReader
 
 from .cache import (
     cache_clear_classify,
@@ -72,6 +77,16 @@ class ClassifyResponse(BaseModel):
     """Réponse brute renvoyée par le LLM (JSON sérialisé en texte)."""
 
     raw: str
+
+
+class ClassifyFileResponse(BaseModel):
+    """Réponse pour classification depuis un fichier."""
+
+    raw: str
+    # Texte/requête effectivement envoyée au moteur de classification.
+    # Sert notamment au cache lors de la validation côté admin.
+    effective_query: str
+    items_count: int
 
 
 class ValidateClassificationRequest(BaseModel):
@@ -1059,6 +1074,465 @@ def health() -> dict:
     """Endpoint de healthcheck simple."""
 
     return {"status": "ok"}
+
+
+def _clean_text_line(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _filter_candidate_lines(lines: list[str], max_items: int) -> list[str]:
+    """
+    Filtre simple pour réduire les requêtes envoyées au LLM.
+    L'objectif est d'obtenir des descriptions produit plausibles.
+    """
+    cleaned: list[str] = []
+    for line in lines:
+        line = _clean_text_line(line)
+        if not line:
+            continue
+        # Élimine les lignes trop courtes (souvent du bruit).
+        if len(line) < 2:
+            continue
+        # Garde uniquement les lignes qui ressemblent à du contenu (lettres/ chiffres).
+        if not re.search(r"[A-Za-zÀ-ÿ0-9]", line):
+            continue
+        # Réduit le spam de très longues lignes.
+        if len(line) > 1200:
+            continue
+        cleaned.append(line)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned
+
+
+def _extract_items_from_txt(text_content: str, max_items: int) -> tuple[str, list[str]]:
+    raw = (text_content or "").replace("\r", "\n").strip()
+    if not raw:
+        return "", []
+
+    # 1) Priorité: découpage par blocs (souvent séparés par lignes vides)
+    blocks = [b.strip() for b in re.split(r"\n\s*\n+", raw) if b.strip()]
+
+    # 2) Si on trouve des marqueurs "Produit 1:" / "Marchandise 2:" dans un même bloc,
+    #    on découpe en sous-chunks.
+    marker_re = re.compile(
+        r"(?im)\b(?:produit|marchandise|item)\s*(\d+)?\s*[\:\-]\s*"
+    )
+    chunks: list[str] = []
+    for b in blocks:
+        matches = list(marker_re.finditer(b))
+        if len(matches) >= 2:
+            for i, m in enumerate(matches):
+                start = m.start()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(b)
+                sub = b[start:end].strip()
+                sub = marker_re.sub("", sub, count=1).strip()
+                if sub:
+                    chunks.append(sub)
+        else:
+            chunks.append(b)
+
+    # 3) Nettoyage + réduction longueur
+    items: list[str] = []
+    for ch in chunks:
+        ch = ch.strip()
+        # Réduit les espaces sans perdre trop de contenu.
+        ch = re.sub(r"\s+", " ", ch)
+        if not re.search(r"[A-Za-zÀ-ÿ0-9]", ch):
+            continue
+        if len(ch) < 2:
+            continue
+        if len(ch) > 1200:
+            ch = ch[:1200].strip()
+        items.append(ch)
+        if len(items) >= max_items:
+            break
+
+    # Fallback: ancien mode "ligne par ligne"
+    if not items:
+        lines = [ln for ln in raw.splitlines()]
+        items = _filter_candidate_lines(lines, max_items=max_items)
+
+    if not items:
+        truncated = raw[:20000]
+        return truncated, [truncated] if truncated else []
+
+    # Préfixe utile pour que split_user_queries renvoie une requête par ligne.
+    effective_query = "\n".join([f"- {it}" for it in items])
+    return effective_query, items
+
+
+def _extract_items_from_pdf(pdf_bytes: bytes, max_items: int, max_chars: int) -> tuple[str, list[str]]:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    page_texts: list[str] = []
+    total_chars = 0
+    for page in reader.pages:
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:
+            page_text = ""
+        if not page_text:
+            continue
+        if total_chars + len(page_text) > max_chars:
+            page_text = page_text[: max_chars - total_chars]
+        page_texts.append(page_text)
+        total_chars += len(page_text)
+        if total_chars >= max_chars:
+            break
+
+    raw_text = "\n".join(page_texts).strip()
+    if not raw_text:
+        return "", []
+
+    # Découpage blocs (PDF -> souvent sans vraies lignes vides, mais on tente quand même)
+    blocks = [b.strip() for b in re.split(r"\n\s*\n+", raw_text) if b.strip()]
+    chunks: list[str] = []
+    marker_re = re.compile(
+        r"(?im)\b(?:produit|marchandise|item)\s*(\d+)?\s*[\:\-]\s*"
+    )
+    for b in blocks:
+        matches = list(marker_re.finditer(b))
+        if len(matches) >= 2:
+            for i, m in enumerate(matches):
+                start = m.start()
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(b)
+                sub = b[start:end].strip()
+                sub = marker_re.sub("", sub, count=1).strip()
+                if sub:
+                    chunks.append(sub)
+        else:
+            chunks.append(b)
+
+    items: list[str] = []
+    for ch in chunks:
+        ch = re.sub(r"\s+", " ", ch.strip())
+        if not re.search(r"[A-Za-zÀ-ÿ0-9]", ch):
+            continue
+        if len(ch) < 2:
+            continue
+        if len(ch) > 1200:
+            ch = ch[:1200].strip()
+        items.append(ch)
+        if len(items) >= max_items:
+            break
+
+    # Fallback: lignes
+    if not items:
+        lines = raw_text.splitlines()
+        items = _filter_candidate_lines(lines, max_items=max_items)
+
+    effective_query = "\n".join([f"- {it}" for it in items]) if items else raw_text[:max_chars].strip()
+    return (effective_query, items)
+
+
+def _sniff_csv_dialect(sample: str) -> csv.Dialect:
+    # Petit sniffing de séparateurs fréquent.
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t", "|"])
+    except Exception:
+        # Par défaut : CSV français souvent séparé par ';'.
+        class _D(csv.Dialect):
+            delimiter = ";"
+            quotechar = '"'
+            escapechar = None
+            doublequote = True
+            skipinitialspace = False
+            lineterminator = "\n"
+            quoting = csv.QUOTE_MINIMAL
+
+        return _D()
+
+
+def _extract_items_from_csv(csv_text: str, max_items: int) -> tuple[str, list[str]]:
+    csv_text = (csv_text or "").strip()
+    if not csv_text:
+        return "", []
+
+    sample = csv_text[:4096]
+    dialect = _sniff_csv_dialect(sample)
+
+    f = io.StringIO(csv_text)
+    reader = csv.reader(f, dialect)
+    rows = list(reader)
+    if not rows:
+        return "", []
+
+    header = rows[0]
+    header_lower = [(_clean_text_line(h).lower()) for h in header]
+    candidate_keys = [
+        "description",
+        "libelle",
+        "libellé",
+        "libellé",
+        "marchandise",
+        "produit",
+        "nom",
+        "intitule",
+        "libelle produit",
+        "détails",
+        "details",
+    ]
+    chosen_idx = None
+    for i, h in enumerate(header_lower):
+        if not h:
+            continue
+        if any(k in h for k in candidate_keys):
+            chosen_idx = i
+            break
+    if chosen_idx is None:
+        chosen_idx = 0
+
+    items: list[str] = []
+    # Par défaut on suppose que la 1ère ligne est un en-tête.
+    for row in rows[1:]:
+        if chosen_idx >= len(row):
+            continue
+        cell = _clean_text_line(row[chosen_idx])
+        if not cell:
+            continue
+        # Découpe par ';' si la cellule contient plusieurs éléments.
+        parts = [p.strip() for p in cell.split(";") if p.strip()]
+        if len(parts) > 1:
+            for p in parts:
+                if p and len(p) <= 500:
+                    items.append(p)
+                    if len(items) >= max_items:
+                        break
+            if len(items) >= max_items:
+                break
+        else:
+            if len(cell) <= 500:
+                items.append(cell)
+        if len(items) >= max_items:
+            break
+
+    # Fallback : certains CSV n'ont pas d'en-tête ou ont un en-tête non détecté.
+    if not items and len(rows) >= 1:
+        for row in rows:
+            if chosen_idx >= len(row):
+                continue
+            cell = _clean_text_line(row[chosen_idx])
+            if not cell:
+                continue
+            parts = [p.strip() for p in cell.split(";") if p.strip()]
+            if len(parts) > 1:
+                for p in parts:
+                    if p and len(p) <= 500:
+                        items.append(p)
+                        if len(items) >= max_items:
+                            break
+                if len(items) >= max_items:
+                    break
+            else:
+                if len(cell) <= 500:
+                    items.append(cell)
+            if len(items) >= max_items:
+                break
+
+    effective_query = "\n".join(items)
+    return effective_query, items
+
+
+def _extract_items_from_json(json_text: str, max_items: int) -> tuple[str, list[str]]:
+    json_text = (json_text or "").strip()
+    if not json_text:
+        return "", []
+
+    try:
+        obj = json.loads(json_text)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"JSON invalide: {type(exc).__name__}") from exc
+
+    def _extract_from_obj(item: Any) -> str | None:
+        if item is None:
+            return None
+        if isinstance(item, str):
+            return _clean_text_line(item)
+        if isinstance(item, dict):
+            keys_priority = [
+                "description",
+                "libelle",
+                "libellé",
+                "marchandise",
+                "produit",
+                "nom",
+                "intitule",
+                "libelle_produit",
+                "libellé_produit",
+                "text",
+                "item",
+            ]
+            for k in keys_priority:
+                if k in item and isinstance(item.get(k), str):
+                    val = _clean_text_line(item[k])
+                    return val if val else None
+            # Fallback : première valeur string trouvée
+            for _, v in item.items():
+                if isinstance(v, str):
+                    val = _clean_text_line(v)
+                    return val if val else None
+            return None
+        # Fallback : si c'est un nombre (ou autre), on stringify
+        if isinstance(item, (int, float, bool)):
+            return str(item)
+        return None
+
+    items: list[str] = []
+    if isinstance(obj, list):
+        iterable = obj
+    elif isinstance(obj, dict):
+        if isinstance(obj.get("products"), list):
+            iterable = obj.get("products") or []
+        elif isinstance(obj.get("items"), list):
+            iterable = obj.get("items") or []
+        elif isinstance(obj.get("data"), list):
+            iterable = obj.get("data") or []
+        else:
+            iterable = [obj]
+    else:
+        iterable = [obj]
+
+    for it in iterable:
+        val = _extract_from_obj(it)
+        if val:
+            items.append(val)
+        if len(items) >= max_items:
+            break
+
+    effective_query = "\n".join(items)
+    return effective_query, items
+
+
+@app.post(
+    "/classify/file",
+    response_model=ClassifyFileResponse,
+    tags=["classification"],
+)
+async def classify_file(
+    file: UploadFile = File(...),
+    max_items: int = 30,
+    max_chars: int = 20000,
+) -> ClassifyFileResponse:
+    """
+    Classe des produits à partir d'un fichier (txt/pdf).
+
+    Note: le cache de classification est alimenté uniquement lors de la validation
+    (voir POST /classifications/validate).
+    """
+    request_id = uuid.uuid4().hex[:8]
+
+    if max_items < 1 or max_items > 80:
+        raise HTTPException(status_code=400, detail="max_items doit être entre 1 et 80")
+    if max_chars < 1000 or max_chars > 200000:
+        raise HTTPException(status_code=400, detail="max_chars invalide")
+
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Fichier vide")
+
+    # Limite pour éviter les requêtes abusives / PDFs trop lourds.
+    if len(raw_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 10MB)")
+
+    filename = (file.filename or "").strip()
+    ext = ""
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[-1].lower()
+    if not ext and file.content_type:
+        ct = (file.content_type or "").lower()
+        if "pdf" in ct:
+            ext = "pdf"
+        elif "text" in ct or "plain" in ct:
+            ext = "txt"
+
+    logger.debug(
+        "[classify-file %s] filename=%r content_type=%r ext=%r",
+        request_id,
+        filename,
+        file.content_type,
+        ext,
+    )
+
+    effective_query = ""
+    items: list[str] = []
+    try:
+        if ext in {"txt", "text"}:
+            text_content = raw_bytes.decode("utf-8", errors="ignore")
+            effective_query, items = _extract_items_from_txt(text_content, max_items=max_items)
+        elif ext in {"pdf"}:
+            effective_query, items = _extract_items_from_pdf(
+                raw_bytes, max_items=max_items, max_chars=max_chars
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Type de fichier non supporté. Utilise uniquement: txt, pdf",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[classify-file %s] extraction échouée", request_id)
+        raise HTTPException(status_code=500, detail=f"Extraction fichier échouée: {type(exc).__name__}") from exc
+
+    effective_query = (effective_query or "").strip()
+    if not effective_query:
+        raise HTTPException(
+            status_code=400,
+            detail="Impossible d'extraire des marchandises du fichier. Vérifie le format.",
+        )
+
+    cache_key = f"classify:{effective_query.lower()}"
+    cache_disabled = cache_classify_is_disabled() or len(effective_query) > 4000
+    preview = effective_query.replace("\n", " ")
+    preview = preview[:80] + ("…" if len(preview) > 80 else "")
+
+    logger.debug(
+        "[classify-file %s] cache_disabled=%s key=%s preview=%r items=%s",
+        request_id,
+        cache_disabled,
+        cache_key,
+        preview,
+        len(items),
+    )
+
+    if not cache_disabled:
+        cached_raw = cache_get(cache_key)
+        if cached_raw is not None:
+            raw_out = _ensure_json_raw(cached_raw)
+            _inspect_raw_json(raw_out, request_id, "HIT")
+            return ClassifyFileResponse(
+                raw=raw_out, effective_query=effective_query, items_count=len(items)
+            )
+
+    try:
+        chunks = app.state.chunks
+        index = app.state.index
+    except AttributeError as exc:
+        raise HTTPException(status_code=503, detail="Moteur RAG non initialisé") from exc
+
+    try:
+        result = process_user_input(effective_query, chunks, index)
+    except Exception as exc:  # pragma: no cover
+        logger.exception("[classify-file %s] process_user_input failed", request_id)
+        detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
+        raise HTTPException(status_code=500, detail=detail) from exc
+
+    result = _normalize_classifications_response(result)
+    raw_out = _ensure_json_raw(result)
+    _inspect_raw_json(raw_out, request_id, "FRESH")
+
+    logger.debug(
+        "[classify-file %s] fresh done raw_len=%s raw_preview=%r",
+        request_id,
+        len(raw_out),
+        raw_out[:80],
+    )
+
+    return ClassifyFileResponse(
+        raw=raw_out, effective_query=effective_query, items_count=len(items)
+    )
 
 
 @app.post("/classify", response_model=ClassifyResponse, tags=["classification"])

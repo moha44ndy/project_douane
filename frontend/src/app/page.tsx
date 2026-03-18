@@ -78,11 +78,16 @@ function tryParseStructuredPayload(rawText: string): ApiPayload | null {
 export default function HomePage() {
   const router = useRouter();
   const [query, setQuery] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState<string | null>(null);
   const [payload, setPayload] = useState<ApiPayload | null>(null);
   const [parseFailureDetail, setParseFailureDetail] = useState<string | null>(null);
+  // Texte réellement envoyé au moteur de classification.
+  // Utilisé ensuite pour `POST /classifications/validate` (cache).
+  const [classifyQueryForCache, setClassifyQueryForCache] = useState<string | null>(null);
+  const [fileItemsCount, setFileItemsCount] = useState<number | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
@@ -125,6 +130,8 @@ export default function HomePage() {
     if (!query.trim()) return;
 
     log.debug("[frontend submit] start query_preview=", query.slice(0, 60));
+    setClassifyQueryForCache(query.trim());
+    setFileItemsCount(null);
     setLoading(true);
     setError(null);
     setValidationMessage(null);
@@ -204,9 +211,113 @@ export default function HomePage() {
     }
   };
 
+  const classifyFromFile = async (file: File) => {
+    if (!file) return;
+
+    log.debug("[frontend submit] start file name=", file.name);
+    setFileItemsCount(null);
+    setLoading(true);
+    setError(null);
+    setValidationMessage(null);
+    setRaw(null);
+    setPayload(null);
+    setParseFailureDetail(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE_URL}/classify/file`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `Erreur HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        raw?: string;
+        effective_query?: string;
+        items_count?: number;
+      };
+
+      const rawText: string =
+        typeof data.raw === "string" ? data.raw : JSON.stringify(data.raw ?? "");
+      const effectiveQuery =
+        typeof data.effective_query === "string" ? data.effective_query : query.trim();
+      setClassifyQueryForCache(effectiveQuery);
+      if (typeof data.items_count === "number") setFileItemsCount(data.items_count);
+      setRaw(rawText);
+
+      let parsed = tryParseStructuredPayload(rawText);
+      if (!parsed && rawText.trim().startsWith('"')) {
+        try {
+          const once = JSON.parse(rawText.trim()) as unknown;
+          if (typeof once === "string")
+            parsed = tryParseStructuredPayload(once);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!parsed) {
+        try {
+          const maybeJson = JSON.parse(rawText);
+          const obj =
+            typeof maybeJson === "string" ? JSON.parse(maybeJson) : maybeJson;
+          if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+            const hasNarrative = typeof (obj as any).narrative === "string";
+            const hasClassifications = Array.isArray(
+              (obj as any).classifications
+            );
+            const missing = [
+              !hasNarrative ? "narrative" : null,
+              !hasClassifications ? "classifications" : null,
+            ]
+              .filter(Boolean)
+              .join(" + ");
+            setParseFailureDetail(
+              missing
+                ? `Schéma inattendu : champ(s) manquant(s) = ${missing}.`
+                : "Schéma inattendu : réponse non interprétable par l'UI."
+            );
+          } else {
+            setParseFailureDetail(
+              "Réponse JSON reçue mais structure non compatible avec l'UI."
+            );
+          }
+        } catch {
+          setParseFailureDetail("Réponse JSON invalide côté client.");
+        }
+      }
+      setPayload(parsed);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Erreur inconnue côté client";
+      setError(message);
+      setParseFailureDetail(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const retryClassification = async () => {
+    if (selectedFile) {
+      await classifyFromFile(selectedFile);
+      return;
+    }
+    await classifyNow();
+  };
+
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    await classifyNow();
+    if (!query.trim() && !selectedFile) return;
+    if (selectedFile) {
+      await classifyFromFile(selectedFile);
+    } else {
+      await classifyNow();
+    }
   };
 
   const classifications = payload?.classifications ?? [];
@@ -247,7 +358,7 @@ export default function HomePage() {
           origin: item.origin ?? null,
           value: item.value ?? null,
           user_id: userId,
-          query: query || undefined,
+          query: classifyQueryForCache || undefined,
           raw_response: raw || undefined,
         }),
       });
@@ -322,6 +433,53 @@ export default function HomePage() {
             marchandise.
           </p>
           <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="space-y-1">
+              <label
+                htmlFor="uploadFile"
+                className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer touch-manipulation"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                Ou envoyer un fichier (txt, pdf)
+              </label>
+              <input
+                id="uploadFile"
+                type="file"
+                accept=".txt,.pdf,text/plain,application/pdf"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setSelectedFile(f);
+                }}
+                className="mosam-file-input-hidden"
+              />
+              {selectedFile && (
+                <div className="text-xs text-muted-foreground">
+                  {selectedFile.name}{" "}
+                  ({Math.max(1, Math.round(selectedFile.size / 1024))} Ko)
+                  <button
+                    type="button"
+                    className="ml-2 text-xs text-primary underline"
+                    onClick={() => setSelectedFile(null)}
+                  >
+                    retirer
+                  </button>
+                </div>
+              )}
+            </div>
             <textarea
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -378,7 +536,7 @@ export default function HomePage() {
           <div className="flex flex-col sm:flex-row gap-3">
             <button
               type="button"
-              onClick={() => void classifyNow()}
+              onClick={() => void retryClassification()}
               className="mosam-btn-primary min-h-[44px] touch-manipulation"
             >
               Réessayer
@@ -405,6 +563,11 @@ export default function HomePage() {
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
             Proposition indicative, à faire valider par l&apos;autorité douanière.
           </p>
+          {fileItemsCount !== null && (
+            <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
+              {fileItemsCount} produit(s) détecté(s) dans le fichier.
+            </p>
+          )}
           {payload.narrative && (
             <p className="text-sm text-foreground leading-relaxed">
               {payload.narrative}
@@ -417,7 +580,7 @@ export default function HomePage() {
               <div className="mt-3 flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
-                  onClick={() => void classifyNow()}
+                  onClick={() => void retryClassification()}
                   className="mosam-btn-primary min-h-[44px] touch-manipulation"
                 >
                   Réessayer
