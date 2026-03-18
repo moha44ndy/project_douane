@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 import base64
 import json as jsonlib
+import time
+import hmac
+import hashlib
+import threading
 
-from fastapi import FastAPI, HTTPException, Response, Header
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+from fastapi import FastAPI, HTTPException, Response, Header, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -22,6 +31,15 @@ from .cache import (
 from .db import get_db
 from .rag import initialize_chatbot, process_user_input
 from .config.settings import Config
+from .app_logger import get_logger
+
+logger = get_logger(__name__)
+
+# Dependency FastAPI pour endpoints admin.
+# (La fonction `_require_admin` est définie plus bas ; ici on ne fait que
+# déléguer, le nom est résolu au moment de l'appel.)
+def admin_required(authorization: str | None = Header(default=None)) -> str:
+    return _require_admin(authorization)
 
 
 app = FastAPI(
@@ -124,7 +142,6 @@ def _normalize_section_chapter_from_hs(hs_code: str | None) -> dict[str, str]:
         "section": section_roman,
         "section_name": section_name,
         "chapter": f"{ch:02d}",
-        "chapter_name": f"Chapitre {ch:02d}",
     }
 
 
@@ -163,14 +180,16 @@ def _normalize_classifications_response(raw_text: str) -> str:
             continue
         normalized = _normalize_section_chapter_from_hs(str(hs))
         if normalized:
-            if normalized.get("section"):
+            # On corrige/sécurise le numéro de chapitre et la section à partir du code HS.
+            # On NE dérive PAS `chapter_name` ici : le mapping section->titre existe,
+            # mais pas (actuellement) un mapping complet chapitre->intitulé.
+            # Surtout : on évite d'écraser un `chapter_name` fourni par le LLM.
+            if normalized.get("section") and not item.get("section"):
                 item["section"] = normalized["section"]
-            if normalized.get("section_name"):
+            if normalized.get("section_name") and not item.get("section_name"):
                 item["section_name"] = normalized["section_name"]
             if normalized.get("chapter"):
                 item["chapter"] = normalized["chapter"]
-            if normalized.get("chapter_name"):
-                item["chapter_name"] = normalized["chapter_name"]
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -203,10 +222,87 @@ def _extract_classifications(raw_text: str) -> list[dict]:
                 current = json.loads(candidate)
             except Exception:
                 return []
+
         if isinstance(current, dict):
             classifications = current.get("classifications") or []
             return classifications if isinstance(classifications, list) else []
     return []
+
+
+def _ensure_json_raw(raw: Any) -> str:
+    """
+    Force `raw` à être une chaîne JSON valide (contrat backend => frontend).
+
+    IMPORTANT (contrat strict) :
+    - On renvoie *toujours* une string JSON valide, même si le contenu original
+      n'est pas un JSON parsable.
+    """
+    if isinstance(raw, (dict, list)):
+        return json.dumps(raw, ensure_ascii=False)
+
+    s = str(raw).strip()
+    if not s:
+        return json.dumps({"error": "empty_raw"}, ensure_ascii=False)
+
+    # 1) Cas standard : raw est du JSON valide
+    try:
+        obj: object = json.loads(s)
+    except Exception:
+        return json.dumps(
+            {"error": "invalid_json", "raw_preview": s[:200]},
+            ensure_ascii=False,
+        )
+
+    # 3) Cas : `raw` est une string qui contient (encore) du JSON
+    if isinstance(obj, str):
+        inner = obj.strip()
+        try:
+            inner_obj = json.loads(inner)
+            return json.dumps(inner_obj, ensure_ascii=False)
+        except Exception:
+            return json.dumps({"error": "json_string_not_json", "raw": inner[:500]}, ensure_ascii=False)
+
+    # 4) Tout le reste : on encapsule l'objet JSON parsé
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return json.dumps({"error": "json_serialize_failed", "raw_preview": s[:200]}, ensure_ascii=False)
+
+
+def _inspect_raw_json(raw_out: str, request_id: str, when: str) -> None:
+    """
+    Logs de diagnostic : raw_out est censé être une string JSON.
+    Indique si JSON.parse marche + existence/taille de `classifications`.
+    """
+    try:
+        parsed = json.loads(raw_out)
+    except Exception as e:
+        logger.debug(
+            "[classify %s] inspect %s: JSON.parse failed: %s", request_id, when, e
+        )
+        return
+
+    if not isinstance(parsed, dict):
+        logger.debug(
+            "[classify %s] inspect %s: parsed not dict: %s",
+            request_id,
+            when,
+            type(parsed),
+        )
+        return
+
+    narrative_ok = isinstance(parsed.get("narrative"), str) and bool(parsed.get("narrative"))
+    classifications = parsed.get("classifications")
+    cls_ok = isinstance(classifications, list)
+    cls_len = len(classifications) if cls_ok else -1
+    logger.debug(
+        "[classify %s] inspect %s: narrative_ok=%s classifications_ok=%s classifications_len=%s",
+        request_id,
+        when,
+        narrative_ok,
+        cls_ok,
+        cls_len,
+    )
 
 
 class UserCreate(BaseModel):
@@ -265,13 +361,13 @@ class AuditLogItem(BaseModel):
 def update_classification_status(
     classification_id: str,
     payload: ClassificationStatusUpdate,
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
 ) -> dict:
     """
     Met à jour le statut de validation d'une classification (admin uniquement).
     """
 
-    actor_id = _require_admin(authorization)
+    actor_id = admin_id
 
     with get_db() as db:
         row = db.execute(
@@ -344,6 +440,267 @@ def _decode_supabase_jwt(token: str) -> dict | None:
         return None
 
 
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_STATE: dict[str, list[float]] = {}
+
+
+def _rate_limit(request: Request | None, scope: str, limit: int = 20, window_seconds: int = 60) -> None:
+    """
+    Limiteur simple par IP (Upstash Redis en prod, sinon mémoire locale).
+    Empêche le flood sur endpoints sensibles.
+    """
+    ip = "unknown"
+    try:
+        if request and request.client and request.client.host:
+            ip = request.client.host
+    except Exception:
+        pass
+
+    key = f"ratelimit:{scope}:{ip}"
+
+    # 1) Tentative : Upstash Redis (comportement stable multi-process)
+    upstash_url = Config.UPSTASH_REDIS_REST_URL
+    upstash_token = Config.UPSTASH_REDIS_REST_TOKEN
+    if upstash_url and upstash_token:
+        try:
+            resp = requests.post(
+                upstash_url,
+                headers={"Authorization": f"Bearer {upstash_token}"},
+                json=["INCR", key],
+                timeout=5,
+            )
+            if resp.ok:
+                data = resp.json()
+                count = data.get("result")
+                count_i: int | None = None
+                if isinstance(count, (int, float)):
+                    count_i = int(count)
+                elif isinstance(count, str) and count.isdigit():
+                    count_i = int(count)
+
+                if count_i is not None:
+                    if count_i == 1:
+                        # TTL sur la première requête pour initier la fenêtre.
+                        requests.post(
+                            upstash_url,
+                            headers={"Authorization": f"Bearer {upstash_token}"},
+                            json=["EXPIRE", key, window_seconds],
+                            timeout=5,
+                        )
+                    if count_i > limit:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Trop de requêtes. Réessayez plus tard.",
+                        )
+                    return
+        except HTTPException:
+            raise
+        except Exception:
+            # Fallback : si Upstash est indisponible, on passe en mémoire locale.
+            logger.warning("[rate_limit] Upstash indisponible, fallback mémoire locale")
+
+    # 2) Fallback : mémoire locale (dev)
+    now = time.time()
+    with _RATE_LIMIT_LOCK:
+        timestamps = _RATE_LIMIT_STATE.get(key, [])
+        # Nettoyage fenêtre
+        timestamps = [t for t in timestamps if now - t < window_seconds]
+        if len(timestamps) >= limit:
+            raise HTTPException(status_code=429, detail="Trop de requêtes. Réessayez plus tard.")
+        timestamps.append(now)
+        _RATE_LIMIT_STATE[key] = timestamps
+
+
+def _base64url_decode(s: str) -> bytes:
+    padding = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + padding)
+
+
+_JWKS_CACHE_LOCK = threading.Lock()
+_JWKS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "keys": []}
+
+
+def _get_expected_supabase_iss() -> str:
+    # Exemple d'issuer attendu (Supabase) :
+    # https://<ref>.supabase.co/auth/v1
+    return f"{Config.SUPABASE_URL.rstrip('/')}/auth/v1"
+
+
+def _fetch_supabase_jwks() -> list[dict[str, Any]]:
+    """
+    Récupère la JWKS pour vérifier les JWT Supabase asymétriques (ES256/RS256).
+    """
+    jwks_url = f"{Config.SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json"
+    resp = requests.get(jwks_url, timeout=5)
+    if not resp.ok:
+        raise RuntimeError(f"JWKS fetch failed: {resp.status_code}")
+    data = resp.json()
+    keys = data.get("keys")
+    if not isinstance(keys, list):
+        return []
+    return keys
+
+
+def _get_supabase_jwks_keys() -> list[dict[str, Any]]:
+    ttl_seconds = 600.0
+    now = time.time()
+    with _JWKS_CACHE_LOCK:
+        fetched_at = float(_JWKS_CACHE.get("fetched_at") or 0.0)
+        if _JWKS_CACHE.get("keys") and (now - fetched_at) < ttl_seconds:
+            return _JWKS_CACHE["keys"]
+        try:
+            keys = _fetch_supabase_jwks()
+            _JWKS_CACHE["keys"] = keys
+            _JWKS_CACHE["fetched_at"] = now
+            return keys
+        except Exception as exc:
+            logger.warning("[auth] JWKS indisponible, vérification impossible: %s", exc)
+            return []
+
+
+def _b64url_to_int(s: str) -> int:
+    return int.from_bytes(_base64url_decode(s), "big")
+
+
+def _public_key_from_jwk(jwk: dict[str, Any]) -> rsa.RSAPublicKey | ec.EllipticCurvePublicKey | None:
+    kty = jwk.get("kty")
+    if kty == "EC":
+        crv = str(jwk.get("crv") or "")
+        if crv == "P-256":
+            curve = ec.SECP256R1()
+        elif crv == "P-384":
+            curve = ec.SECP384R1()
+        elif crv == "P-521":
+            curve = ec.SECP521R1()
+        else:
+            return None
+
+        x = _b64url_to_int(str(jwk.get("x") or ""))
+        y = _b64url_to_int(str(jwk.get("y") or ""))
+        numbers = ec.EllipticCurvePublicNumbers(x, y, curve)
+        return numbers.public_key()
+
+    if kty == "RSA":
+        n = _b64url_to_int(str(jwk.get("n") or ""))
+        e = _b64url_to_int(str(jwk.get("e") or ""))
+        numbers = rsa.RSAPublicNumbers(e, n)
+        return numbers.public_key()
+
+    return None
+
+
+def _verify_supabase_jwt(token: str) -> dict | None:
+    """
+    Vérifie la signature d'un JWT Supabase.
+
+    - Si `alg` est symétrique (HS256/HS512) => vérifie avec `SUPABASE_JWT_SECRET` (HMAC).
+    - Sinon (ES256/RS256...) => vérifie avec la JWKS Supabase (asymétrique).
+
+    En cas de problème (secret absent, JWKS indisponible, alg inconnu, signature invalide),
+    on refuse => `None`.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+
+        header_b = _base64url_decode(parts[0])
+        payload_b = _base64url_decode(parts[1])
+        sig_b = _base64url_decode(parts[2])
+
+        header = jsonlib.loads(header_b.decode("utf-8"))
+        alg = str(header.get("alg") or "").upper()
+        kid = header.get("kid")
+
+        signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
+
+        secret = Config.SUPABASE_JWT_SECRET
+        if alg in ("HS256", "HS512"):
+            if not secret:
+                logger.warning("[auth] HS secret manquant, refuser JWT (alg=%s)", alg)
+                return None
+            if alg == "HS256":
+                expected = hmac.new(
+                    secret.encode("utf-8"), signing_input, hashlib.sha256
+                ).digest()
+            else:
+                expected = hmac.new(
+                    secret.encode("utf-8"), signing_input, hashlib.sha512
+                ).digest()
+
+            if not hmac.compare_digest(expected, sig_b):
+                logger.warning("[auth] JWT HS signature invalide (alg=%s)", alg)
+                return None
+
+        elif alg == "ES256":
+            if not kid:
+                logger.warning("[auth] JWT ES256 kid manquant")
+                return None
+            # ECDSA signature en JWS est `r||s` (64 bytes pour P-256)
+            if len(sig_b) != 64:
+                logger.warning(
+                    "[auth] JWT ES256 signature invalide longueur=%s",
+                    len(sig_b),
+                )
+                return None
+
+            keys = _get_supabase_jwks_keys()
+            jwk = next((k for k in keys if k.get("kid") == kid), None)
+            if not jwk:
+                logger.warning("[auth] JWKS clé ES256 introuvable (kid=%s)", kid)
+                return None
+            pub = _public_key_from_jwk(jwk)
+            if not pub:
+                logger.warning("[auth] JWKS public key ES256 invalide (kid=%s)", kid)
+                return None
+
+            r = int.from_bytes(sig_b[:32], "big")
+            s = int.from_bytes(sig_b[32:], "big")
+            signature_der = encode_dss_signature(r, s)
+            pub.verify(signature_der, signing_input, ec.ECDSA(hashes.SHA256()))
+
+        elif alg == "RS256":
+            if not kid:
+                logger.warning("[auth] JWT RS256 kid manquant")
+                return None
+            keys = _get_supabase_jwks_keys()
+            jwk = next((k for k in keys if k.get("kid") == kid), None)
+            if not jwk:
+                logger.warning("[auth] JWKS clé RS256 introuvable (kid=%s)", kid)
+                return None
+            pub = _public_key_from_jwk(jwk)
+            if not pub:
+                logger.warning("[auth] JWKS public key RS256 invalide (kid=%s)", kid)
+                return None
+
+            pub.verify(
+                sig_b,
+                signing_input,
+                padding.PKCS1v15(),
+                hashes.SHA256(),
+            )
+
+        else:
+            logger.warning("[auth] JWT alg non supporté: %s", alg)
+            return None
+
+        payload = jsonlib.loads(payload_b.decode("utf-8"))
+
+        expected_iss = _get_expected_supabase_iss()
+        iss = payload.get("iss")
+        if isinstance(iss, str) and iss != expected_iss:
+            logger.warning("[auth] JWT issuer invalide (got=%s expected=%s)", iss, expected_iss)
+            return None
+
+        exp = payload.get("exp")
+        if isinstance(exp, (int, float)) and exp < time.time():
+            return None
+        return payload
+    except Exception:
+        logger.warning("[auth] JWT vérification exception inattendue", exc_info=True)
+        return None
+
+
 def _require_admin(authorization: str | None) -> str:
     """
     Vérifie que le porteur du JWT est bien un admin.
@@ -357,7 +714,7 @@ def _require_admin(authorization: str | None) -> str:
         raise HTTPException(status_code=401, detail="Jeton d'authentification manquant")
 
     token = authorization.split(" ", 1)[1].strip()
-    payload = _decode_supabase_jwt(token)
+    payload = _verify_supabase_jwt(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Jeton d'authentification invalide")
 
@@ -419,7 +776,7 @@ def _create_supabase_auth_user(email: str, password: str) -> str | None:
             detail = resp.json()
         except Exception:
             detail = resp.text
-        print(f"[Supabase Auth] Echec creation user {email}: {detail}")
+        logger.warning("[Supabase Auth] Echec creation user %s: %s", email, detail)
         return None
 
     data = resp.json()
@@ -457,20 +814,28 @@ def _reset_supabase_auth_password(email: str, new_password: str) -> None:
             timeout=10,
         )
     except Exception as exc:  # pragma: no cover - garde-fou réseau
-        print(f"[Supabase Auth] Erreur réseau lors de la recherche user {email}: {exc}")
+        logger.exception(
+            "[Supabase Auth] Erreur réseau lors de la recherche user %s",
+            email,
+        )
         return
 
     if not list_resp.ok:
-        print(
-            f"[Supabase Auth] Echec recherche user {email}: "
-            f"{list_resp.status_code} {list_resp.text}"
+        logger.warning(
+            "[Supabase Auth] Echec recherche user %s: %s %s",
+            email,
+            list_resp.status_code,
+            list_resp.text,
         )
         return
 
     try:
         users = list_resp.json()
     except Exception:
-        print(f"[Supabase Auth] Réponse JSON invalide lors de la recherche user {email}")
+        logger.warning(
+            "[Supabase Auth] Réponse JSON invalide lors de la recherche user %s",
+            email,
+        )
         return
 
     if isinstance(users, dict) and "users" in users:
@@ -479,12 +844,12 @@ def _reset_supabase_auth_password(email: str, new_password: str) -> None:
         users_list = users if isinstance(users, list) else []
 
     if not users_list:
-        print(f"[Supabase Auth] Aucun compte Auth trouvé pour {email}")
+        logger.warning("[Supabase Auth] Aucun compte Auth trouvé pour %s", email)
         return
 
     auth_id = users_list[0].get("id")
     if not auth_id:
-        print(f"[Supabase Auth] Réponse sans id pour {email}")
+        logger.warning("[Supabase Auth] Réponse sans id pour %s", email)
         return
 
     # 2. Mise à jour du mot de passe pour cet id
@@ -496,16 +861,18 @@ def _reset_supabase_auth_password(email: str, new_password: str) -> None:
             timeout=10,
         )
     except Exception as exc:  # pragma: no cover - garde-fou réseau
-        print(
-            f"[Supabase Auth] Erreur réseau lors de la mise à jour du "
-            f"mot de passe pour {email}: {exc}"
+        logger.exception(
+            "[Supabase Auth] Erreur réseau lors de la mise à jour du mot de passe pour %s",
+            email,
         )
         return
 
     if not update_resp.ok:
-        print(
-            f"[Supabase Auth] Echec mise à jour mot de passe pour {email}: "
-            f"{update_resp.status_code} {update_resp.text}"
+        logger.warning(
+            "[Supabase Auth] Echec mise à jour mot de passe pour %s: %s %s",
+            email,
+            update_resp.status_code,
+            update_resp.text,
         )
 
 
@@ -571,7 +938,13 @@ def _insert_audit_log(
             )
             db.commit()
     except Exception as exc:  # pragma: no cover - garde-fou
-        print(f"[AUDIT] Echec insertion log {action} sur {entity_type}:{entity_id}: {exc}")
+        logger.warning(
+            "[AUDIT] Echec insertion log %s sur %s:%s: %s",
+            action,
+            entity_type,
+            entity_id,
+            exc,
+        )
 
 
 def _delete_supabase_auth_user(email: str) -> None:
@@ -603,20 +976,28 @@ def _delete_supabase_auth_user(email: str) -> None:
             timeout=10,
         )
     except Exception as exc:  # pragma: no cover - garde-fou réseau
-        print(f"[Supabase Auth] Erreur réseau lors de la recherche user {email}: {exc}")
+        logger.exception(
+            "[Supabase Auth] Erreur réseau lors de la recherche user %s",
+            email,
+        )
         return
 
     if not list_resp.ok:
-        print(
-            f"[Supabase Auth] Echec recherche user {email} avant suppression: "
-            f"{list_resp.status_code} {list_resp.text}"
+        logger.warning(
+            "[Supabase Auth] Echec recherche user %s avant suppression: %s %s",
+            email,
+            list_resp.status_code,
+            list_resp.text,
         )
         return
 
     try:
         users = list_resp.json()
     except Exception:
-        print(f"[Supabase Auth] Réponse JSON invalide lors de la recherche user {email}")
+        logger.warning(
+            "[Supabase Auth] Réponse JSON invalide lors de la recherche user %s",
+            email,
+        )
         return
 
     if isinstance(users, dict) and "users" in users:
@@ -625,12 +1006,18 @@ def _delete_supabase_auth_user(email: str) -> None:
         users_list = users if isinstance(users, list) else []
 
     if not users_list:
-        print(f"[Supabase Auth] Aucun compte Auth trouvé pour {email} à supprimer")
+        logger.warning(
+            "[Supabase Auth] Aucun compte Auth trouvé pour %s à supprimer",
+            email,
+        )
         return
 
     auth_id = users_list[0].get("id")
     if not auth_id:
-        print(f"[Supabase Auth] Réponse sans id pour {email} à la suppression")
+        logger.warning(
+            "[Supabase Auth] Réponse sans id pour %s à la suppression",
+            email,
+        )
         return
 
     try:
@@ -640,16 +1027,18 @@ def _delete_supabase_auth_user(email: str) -> None:
             timeout=10,
         )
     except Exception as exc:  # pragma: no cover - garde-fou réseau
-        print(
-            f"[Supabase Auth] Erreur réseau lors de la suppression du "
-            f"compte Auth pour {email}: {exc}"
+        logger.exception(
+            "[Supabase Auth] Erreur réseau lors de la suppression du compte Auth pour %s",
+            email,
         )
         return
 
     if not delete_resp.ok:
-        print(
-            f"[Supabase Auth] Echec suppression compte Auth pour {email}: "
-            f"{delete_resp.status_code} {delete_resp.text}"
+        logger.warning(
+            "[Supabase Auth] Echec suppression compte Auth pour %s: %s %s",
+            email,
+            delete_resp.status_code,
+            delete_resp.text,
         )
 
 
@@ -682,35 +1071,34 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     - Le résultat n'est mis en cache que lorsqu'une classification est validée (voir POST /classifications/validate).
     """
 
+    request_id = uuid.uuid4().hex[:8]
+
     # Vérifier si une réponse a déjà été mise en cache (sauf si le cache est désactivé)
     cache_key = f"classify:{payload.query.strip().lower()}"
-    if not cache_classify_is_disabled():
+    cache_disabled = cache_classify_is_disabled()
+    preview = (payload.query or "").strip().replace("\n", " ")
+    preview = preview[:60] + ("…" if len(preview) > 60 else "")
+    logger.debug(
+        "[classify %s] cache_disabled=%s key=%s query_preview=%r",
+        request_id,
+        cache_disabled,
+        cache_key,
+        preview,
+    )
+
+    if not cache_disabled:
         cached_raw = cache_get(cache_key)
         if cached_raw is not None:
-            if isinstance(cached_raw, dict) and "value" in cached_raw:
-                cached_value = cached_raw["value"]
-            else:
-                cached_value = cached_raw
-            # Toujours renvoyer du JSON que le frontend peut parser en une fois
-            if isinstance(cached_value, (dict, list)):
-                raw_out = json.dumps(cached_value, ensure_ascii=False)
-            elif isinstance(cached_value, str):
-                # Si la chaîne est du JSON encodé (ex: "{\"narrative\":...}"), décoder une fois
-                s = cached_value.strip()
-                if s.startswith('"') and s.endswith('"') and len(s) >= 2:
-                    try:
-                        decoded = json.loads(s)
-                        if isinstance(decoded, str):
-                            raw_out = decoded
-                        else:
-                            raw_out = json.dumps(decoded, ensure_ascii=False)
-                    except Exception:
-                        raw_out = cached_value
-                else:
-                    raw_out = cached_value
-            else:
-                raw_out = str(cached_value)
+            raw_out = _ensure_json_raw(cached_raw)
+            logger.debug(
+                "[classify %s] cache HIT raw_len=%s raw_preview=%r",
+                request_id,
+                len(raw_out),
+                raw_out[:80],
+            )
+            _inspect_raw_json(raw_out, request_id, "HIT")
             return ClassifyResponse(raw=raw_out)
+        logger.debug("[classify %s] cache MISS", request_id)
 
     try:
         chunks = app.state.chunks
@@ -723,31 +1111,47 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     except Exception as exc:  # pragma: no cover - garde-fou
         import traceback
 
-        print(traceback.format_exc())
+        logger.exception("[classify %s] process_user_input failed", request_id)
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
         raise HTTPException(status_code=500, detail=detail) from exc
 
     # Corriger section/chapitre à partir du code SH pour chaque classification
     result = _normalize_classifications_response(result)
+    raw_out = _ensure_json_raw(result)
 
     # Ne pas mettre en cache ici : le cache est alimenté uniquement lors d'une validation
     # (POST /classifications/validate avec query + raw_response), pour ne pas retenir
     # les réponses non validées.
 
-    return ClassifyResponse(raw=result)
+    logger.debug(
+        "[classify %s] fresh generation done raw_len=%s raw_preview=%r",
+        request_id,
+        len(raw_out),
+        raw_out[:80],
+    )
+    _inspect_raw_json(raw_out, request_id, "FRESH")
+    return ClassifyResponse(raw=raw_out)
 
 
 @app.post(
     "/classifications/validate",
     tags=["classification"],
 )
-def validate_classification(payload: ValidateClassificationRequest) -> dict:
+def validate_classification(
+    payload: ValidateClassificationRequest,
+    request: Request,
+    admin_id: str = Depends(admin_required),
+) -> dict:
     """
     Enregistre en base UNE classification choisie par un agent.
 
     Cette route est appelée depuis le frontend quand l'utilisateur
     clique sur "Valider cette classification" pour une ligne donnée.
     """
+    # Sécurité : endpoint admin uniquement (et limité en débit)
+    _rate_limit(request, "classification.validate")
+    # admin_id validé via `admin_required`
+
     now = datetime.now(timezone.utc)
 
     # On stocke déjà section et chapitre sous forme "numéro - libellé" côté frontend
@@ -830,12 +1234,25 @@ def validate_classification(payload: ValidateClassificationRequest) -> dict:
     result = dict(row)
 
     # Mise en cache uniquement lorsqu'une classification est validée (et si le cache est activé)
-    if not cache_classify_is_disabled() and payload.query and payload.raw_response:
-        cache_key = f"classify:{payload.query.strip().lower()}"
-        cache_set(cache_key, payload.raw_response, ex=3600)
+    if payload.query and payload.raw_response:
+        cache_disabled = cache_classify_is_disabled()
+        if not cache_disabled:
+            cache_key = f"classify:{payload.query.strip().lower()}"
+            # Contrat strict : on s'assure que le contenu mis en cache est
+            # une string JSON valide côté frontend.
+            raw_str = _ensure_json_raw(payload.raw_response)
+            logger.debug(
+                "[validate cache] cache_disabled=%s key=%s raw_len=%s raw_preview=%r",
+                cache_disabled,
+                cache_key,
+                len(raw_str),
+                raw_str[:80],
+            )
+            cache_set(cache_key, raw_str, ex=3600)
 
     # Audit best-effort : validation d'une nouvelle classification
-    user_id_for_audit = payload.user_id or "anonymous"
+    # On journalise l'acteur admin (pas l'utilisateur dont la classification vient)
+    user_id_for_audit = admin_id
     _insert_audit_log(
         actor_id=user_id_for_audit,
         action="classification.validate",
@@ -854,10 +1271,12 @@ def validate_classification(payload: ValidateClassificationRequest) -> dict:
 
 @app.get("/admin/cache/classify/status", tags=["admin"])
 def get_classify_cache_status(
-    authorization: str | None = Header(default=None),
+    request: Request,
+    admin_id: str = Depends(admin_required),
 ) -> dict:
     """Retourne l'état du cache des classifications (activé / désactivé). Réservé aux admins."""
-    _require_admin(authorization)
+    _rate_limit(request, "admin.cache.classify.status.get")
+    _ = admin_id
     return {"disabled": cache_classify_is_disabled()}
 
 
@@ -868,11 +1287,13 @@ class CacheStatusUpdate(BaseModel):
 
 @app.patch("/admin/cache/classify/status", tags=["admin"])
 def update_classify_cache_status(
-    authorization: str | None = Header(default=None),
+    request: Request,
     payload: CacheStatusUpdate | None = None,
+    admin_id: str = Depends(admin_required),
 ) -> dict:
     """Active ou désactive le cache des classifications. Réservé aux admins."""
-    _require_admin(authorization)
+    _rate_limit(request, "admin.cache.classify.status.patch")
+    _ = admin_id
     disabled = payload.disabled if payload else False
     if not cache_classify_set_disabled(disabled):
         raise HTTPException(
@@ -884,13 +1305,15 @@ def update_classify_cache_status(
 
 @app.delete("/admin/cache/classify", tags=["admin"])
 def clear_classify_cache(
-    authorization: str | None = Header(default=None),
+    request: Request,
+    admin_id: str = Depends(admin_required),
 ) -> dict:
     """
     Vide le cache des réponses de classification (clés classify:*).
     Réservé aux administrateurs. Utile après mise à jour du prompt ou des documents RAG.
     """
-    _require_admin(authorization)
+    _rate_limit(request, "admin.cache.classify.delete")
+    _ = admin_id
     deleted = cache_clear_classify()
     return {"cleared": True, "keys_deleted": deleted}
 
@@ -989,7 +1412,7 @@ def export_history_csv(user_id: str | None = None) -> Response:
 
 @app.get("/users", tags=["users"])
 def get_users(
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
     search: str | None = None,
     statut: str | None = None,
     is_admin: bool | None = None,
@@ -1003,7 +1426,7 @@ def get_users(
     - is_admin : true / false
     """
 
-    _require_admin(authorization)
+    _ = admin_id
 
     base_sql = """
         select
@@ -1048,7 +1471,7 @@ def get_users(
 
 @app.get("/users.csv", tags=["users"])
 def export_users_csv(
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
     search: str | None = None,
     statut: str | None = None,
     is_admin: bool | None = None,
@@ -1059,7 +1482,7 @@ def export_users_csv(
     """
 
     rows = get_users(
-        authorization=authorization,
+        admin_id=admin_id,
         search=search,
         statut=statut,
         is_admin=is_admin,
@@ -1095,7 +1518,7 @@ def export_users_csv(
 
 @app.get("/audit-logs", tags=["audit"])
 def get_audit_logs(
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
     actor_id: str | None = None,
     entity_type: str | None = None,
     action: str | None = None,
@@ -1108,7 +1531,7 @@ def get_audit_logs(
     Retourne les entrées d'audit (admin uniquement), avec filtres simples.
     """
 
-    _require_admin(authorization)
+    _ = admin_id
 
     base_sql = """
         select
@@ -1164,7 +1587,7 @@ def get_audit_logs(
 
 @app.get("/audit-logs.csv", tags=["audit"])
 def export_audit_logs_csv(
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
     actor_id: str | None = None,
     entity_type: str | None = None,
     action: str | None = None,
@@ -1178,7 +1601,7 @@ def export_audit_logs_csv(
     """
 
     rows = get_audit_logs(
-        authorization=authorization,
+        admin_id=admin_id,
         actor_id=actor_id,
         entity_type=entity_type,
         action=action,
@@ -1235,13 +1658,13 @@ def export_audit_logs_csv(
 def update_user(
     user_id: str,
     payload: UserUpdate,
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
 ) -> dict:
     """
     Met à jour les informations d'un utilisateur (nom, email, identifiant, rôle, statut).
     """
 
-    admin_id = _require_admin(authorization)
+    # admin_id validé via `admin_required`
 
     # Normalisation des champs fournis
     fields_to_update: dict[str, Any] = {}
@@ -1366,14 +1789,12 @@ def update_user(
 @app.delete("/users/{user_id}", tags=["users"])
 def delete_user(
     user_id: str,
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
 ) -> dict:
     """
     Supprime complètement un utilisateur (table public.users) après avoir tenté
     de supprimer son compte dans Supabase Auth.
     """
-
-    admin_id = _require_admin(authorization)
 
     if user_id == admin_id:
         raise HTTPException(
@@ -1435,7 +1856,7 @@ def delete_user(
 @app.post("/users/{user_id}/reset-password", tags=["users"])
 def reset_user_password(
     user_id: str,
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
 ) -> ResetPasswordResponse:
     """
     Réinitialise le mot de passe d'un utilisateur.
@@ -1447,8 +1868,6 @@ def reset_user_password(
 
     import secrets
     import string
-
-    admin_id = _require_admin(authorization)
 
     # Génération d'un mot de passe robuste et lisible (6 caractères, lettres, chiffres, symboles)
     alphabet = string.ascii_letters + string.digits + "@#$%&*?!"
@@ -1500,11 +1919,9 @@ def reset_user_password(
 @app.post("/users", tags=["users"])
 def create_user(
     payload: UserCreate,
-    authorization: str | None = Header(default=None),
+    admin_id: str = Depends(admin_required),
 ) -> dict:
     """Crée un nouvel utilisateur dans la base Supabase."""
-
-    admin_id = _require_admin(authorization)
 
     # Validation / normalisation basique des champs
     nom_user = (payload.nom_user or "").strip()

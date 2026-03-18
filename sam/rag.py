@@ -6,6 +6,7 @@ import requests
 import os
 import re
 from .config.settings import Config
+from .app_logger import get_logger
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
@@ -19,6 +20,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Nouveau client OpenAI (SDK >= 1.x)
 client = OpenAI(api_key=Config.OPENAI_API_KEY)
+
+logger = get_logger(__name__)
 
 # Configuration embeddings / modèles
 # Par défaut: "small" (moins cher + rapide). Tu peux override via Config.EMBEDDING_MODEL
@@ -60,13 +63,13 @@ def load_documents_and_create_chunks():
     chunks_filepath = os.path.join(rag_dir, "chunks.json")
     
     if os.path.exists(chunks_filepath):
-        print("Chargement des chunks à partir du fichier.")
+        logger.info("Chargement des chunks à partir du fichier.")
         chunks = load_chunks(chunks_filepath)
-        print(f"[OK] {len(chunks)} chunks charges depuis le fichier")
+        logger.info("%s chunks charges depuis le fichier", len(chunks))
         return chunks
 
     documents = []
-    print("start load doc in document")
+    logger.debug("start load doc in document")
     
     contrat_dir = os.path.join(rag_dir, "contrat")
     
@@ -79,26 +82,26 @@ def load_documents_and_create_chunks():
     if not pdf_files:
         raise FileNotFoundError("Aucun fichier PDF trouve dans le dossier 'contrat'!")
     
-    print(f"[OK] {len(pdf_files)} fichiers PDF trouves")
+    logger.info("%s fichiers PDF trouves", len(pdf_files))
     
     for file in pdf_files:
         try:
-            print(f"  Chargement de {file}...")
+            logger.debug("Chargement de %s...", file)
             loader = PyPDFLoader(file)
             documents += loader.load()
         except Exception as e:
-            print(f"[ERREUR] Fichier '{file}': {e}")
+            logger.error("Erreur lors du chargement du fichier '%s': %s", file, e)
     
     if not documents:
         raise ValueError("Aucun document n'a pu etre charge!")
     
-    print(f"[OK] {len(documents)} documents charges")
-    print("finish load doc in document")
-    print("start the translate")
-    print("finish the translate")   
+    logger.info("%s documents charges", len(documents))
+    logger.debug("finish load doc in document")
+    logger.debug("start the translate")
+    logger.debug("finish the translate")
     
     # Diviser les documents en chunks
-    print("start the splitting of the text")
+    logger.debug("start the splitting of the text")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=600, 
         chunk_overlap=120, 
@@ -110,8 +113,8 @@ def load_documents_and_create_chunks():
     if not chunks:
         raise ValueError("Aucun chunk cree apres le splitting!")
     
-    print(f"[OK] {len(chunks)} chunks crees")
-    print("finish the splitting of the text")
+    logger.info("%s chunks crees", len(chunks))
+    logger.debug("finish the splitting of the text")
     
     save_chunks(chunks, chunks_filepath)
     return chunks
@@ -123,14 +126,14 @@ def initialize_chatbot():
     index_path = os.path.join(rag_dir, "indexFaiss", "local_index.faiss")
     
     # Toujours créer les chunks
-    print("start loading document and create chunks")
+    logger.debug("start loading document and create chunks")
     chunks = load_documents_and_create_chunks()
     
     if not chunks:
         raise ValueError("Aucun chunk disponible!")
     
-    print(f"[OK] {len(chunks)} chunks disponibles")
-    print("finish loading document and create chunks")
+    logger.info("%s chunks disponibles", len(chunks))
+    logger.debug("finish loading document and create chunks")
 
     index: faiss.Index
     expected_dim = _embedding_dim_probe()
@@ -138,21 +141,27 @@ def initialize_chatbot():
     if os.path.exists(index_path):
         # Charger l'index directement depuis le fichier FAISS (chemin pre-bâti)
         index = faiss.read_index(index_path)
-        print(f"[OK] Index charge depuis le fichier existant ({index.ntotal} vecteurs, dim={index.d})")
+        logger.info(
+            "Index charge depuis le fichier existant (%s vecteurs, dim=%s)",
+            index.ntotal,
+            index.d,
+        )
 
         # Si l'index a été créé avec un autre modèle (HF vs OpenAI), on le reconstruit.
         if index.d != expected_dim or int(index.ntotal) != len(chunks):
-            print(
-                "[WARN] Index FAISS incompatible avec le modèle d'embeddings courant "
-                f"(index.d={index.d}, expected_dim={expected_dim}, ntotal={index.ntotal}, chunks={len(chunks)}). "
-                "Reconstruction..."
+            logger.warning(
+                "Index FAISS incompatible avec le modèle d'embeddings courant (index.d=%s expected_dim=%s ntotal=%s chunks=%s). Reconstruction...",
+                index.d,
+                expected_dim,
+                index.ntotal,
+                len(chunks),
             )
             index = create_faiss_index(chunks, expected_dim=expected_dim)
     else:
         # Créer un nouvel index en utilisant les embeddings OpenAI
-        print("start the creation of the faiss index (OpenAI embeddings)")
+        logger.debug("start the creation of the faiss index (OpenAI embeddings)")
         index = create_faiss_index(chunks, expected_dim=expected_dim)
-        print("finish the creation of the faiss index")
+        logger.debug("finish the creation of the faiss index")
 
     return chunks, index
 
@@ -164,7 +173,7 @@ def create_faiss_index(chunks, *, expected_dim: int | None = None):
     if not chunks:
         raise ValueError("Liste de chunks vide!")
     
-    print(f"Generation des embeddings OpenAI pour {len(chunks)} chunks...")
+    logger.info("Generation des embeddings OpenAI pour %s chunks...", len(chunks))
     
     # Extraire le texte des chunks
     chunk_texts = [chunk.page_content for chunk in chunks]
@@ -173,22 +182,25 @@ def create_faiss_index(chunks, *, expected_dim: int | None = None):
     if not chunk_texts or not chunk_texts[0]:
         raise ValueError("Les chunks ne contiennent pas de texte!")
     
-    print(f"Premier chunk (100 premiers caracteres): {chunk_texts[0][:100]}...")
+    logger.debug(
+        "Premier chunk (100 premiers caracteres): %s...",
+        chunk_texts[0][:100],
+    )
     
     # Générer les embeddings via l'API OpenAI (batch)
     try:
         chunk_vectors = _embed_texts_openai(chunk_texts)
     except Exception as e:
-        print(f"[ERREUR] Generation des embeddings OpenAI: {e}")
+        logger.exception("Generation des embeddings OpenAI a échoué")
         raise
     
     # Vérifier que les embeddings ont été générés
     if not chunk_vectors or len(chunk_vectors) == 0:
         raise ValueError("Aucun embedding genere!")
     
-    print(f"[OK] {len(chunk_vectors)} embeddings generes")
+    logger.info("%s embeddings generes", len(chunk_vectors))
     dim = len(chunk_vectors[0])
-    print(f"[OK] Dimension des embeddings: {dim}")
+    logger.info("Dimension des embeddings: %s", dim)
     if expected_dim is not None and dim != expected_dim:
         raise ValueError(f"Dimension embeddings inattendue: {dim} (attendu {expected_dim})")
     
@@ -200,7 +212,7 @@ def create_faiss_index(chunks, *, expected_dim: int | None = None):
     index = faiss.IndexFlatL2(dimension)
     index.add(chunk_vectors_array)
     
-    print(f"[OK] Index FAISS cree avec {index.ntotal} vecteurs")
+    logger.info("Index FAISS cree avec %s vecteurs", index.ntotal)
     
     # Obtenir le répertoire du fichier rag.py
     rag_dir = os.path.dirname(os.path.abspath(__file__))
@@ -212,23 +224,23 @@ def create_faiss_index(chunks, *, expected_dim: int | None = None):
     # Sauvegarder l'index
     index_path = os.path.join(index_dir, "local_index.faiss")
     faiss.write_index(index, index_path)
-    print(f"[OK] Index sauvegarde dans '{index_path}'")
+    logger.info("Index sauvegarde dans '%s'", index_path)
     
     return index
 
 
 def search_faiss_index(query, index, k=5):
-    print("start vectorisation de la requete (OpenAI embeddings)")
+    logger.debug("start vectorisation de la requete (OpenAI embeddings)")
     try:
         query_vec = _embed_texts_openai([query], batch_size=1)[0]
         query_vector = np.array(query_vec).astype("float32")
     except Exception as e:
-        print(f"[ERREUR] Embedding de la requete: {e}")
+        logger.exception("Embedding de la requete a échoué")
         raise
-    print("finish vectorisation de la requete")
-    print("start research of index by similarity")
+    logger.debug("finish vectorisation de la requete")
+    logger.debug("start research of index by similarity")
     distances, indices = index.search(np.array([query_vector]), k)
-    print("finish research of index by similarity")
+    logger.debug("finish research of index by similarity")
     return indices, distances
 
 # Use the LLM API
@@ -328,7 +340,7 @@ def process_user_input(user_input, chunks, index):
         "la position tarifaire, le taux d'imposition et les détails pertinents.\n\n"
         f"{combined_context}\n\nDemande initiale du douanier:\n{user_input}"
     )
-    print("start the send of the question")
+    logger.debug("start the send of the question")
     response = use_llm(enriched_prompt)
-    print("finish the send of the question")
+    logger.debug("finish the send of the question")
     return response

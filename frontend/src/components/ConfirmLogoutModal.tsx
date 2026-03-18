@@ -1,16 +1,82 @@
 'use client';
 
+import { useEffect, useId, useRef } from "react";
+
 type Props = {
   open: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 };
 
+const FOCUSABLE_SELECTOR =
+  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 export function ConfirmLogoutModal({ open, onConfirm, onCancel }: Props) {
-  if (!open) return null;
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const cancelBtnRef = useRef<HTMLButtonElement | null>(null);
+
+  const titleId = useId();
+  const messageId = useId();
+  const focusableSelector = FOCUSABLE_SELECTOR;
+
+  useEffect(() => {
+    if (!open) return;
+
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+
+    const t = window.setTimeout(() => cancelBtnRef.current?.focus(), 0);
+
+    const getFocusable = () => {
+      const root = dialogRef.current;
+      if (!root) return [];
+      return Array.from(root.querySelectorAll<HTMLElement>(focusableSelector)).filter(
+        (el) =>
+          !el.hasAttribute("disabled") &&
+          el.tabIndex !== -1 &&
+          el.offsetParent !== null
+      );
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+        return;
+      }
+      if (e.key !== "Tab") return;
+
+      const focusable = getFocusable();
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (!active) return;
+
+      if (e.shiftKey) {
+        if (active === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener("keydown", onKeyDown);
+      previouslyFocused?.focus?.();
+    };
+  }, [onCancel, focusableSelector]);
 
   return (
     <div
+      hidden={!open}
       style={{
         position: "fixed",
         inset: 0,
@@ -19,6 +85,13 @@ export function ConfirmLogoutModal({ open, onConfirm, onCancel }: Props) {
       }}
       role="dialog"
       aria-modal="true"
+      aria-hidden={!open}
+      aria-labelledby={titleId}
+      aria-describedby={messageId}
+      onMouseDown={(e) => {
+        if (!open) return;
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
       <div
         className="rounded-3xl bg-card border border-border shadow-xl text-center space-y-4"
@@ -31,12 +104,14 @@ export function ConfirmLogoutModal({ open, onConfirm, onCancel }: Props) {
           maxWidth: 360,
           padding: 24,
         }}
+        ref={dialogRef}
+        tabIndex={-1}
       >
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold text-primary">
+          <h2 id={titleId} className="text-lg font-semibold text-primary">
             Confirmer la déconnexion
           </h2>
-          <p className="text-sm text-muted-foreground">
+          <p id={messageId} className="text-sm text-muted-foreground">
             Vous allez être déconnecté de Mosam. Voulez-vous continuer ?
           </p>
         </div>
@@ -44,6 +119,7 @@ export function ConfirmLogoutModal({ open, onConfirm, onCancel }: Props) {
           <button
             type="button"
             onClick={onCancel}
+            ref={cancelBtnRef}
             className="flex-1 rounded-full border border-border bg-background px-4 py-1.5"
           >
             Annuler

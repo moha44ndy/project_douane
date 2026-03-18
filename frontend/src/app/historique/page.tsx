@@ -381,42 +381,8 @@ export default function HistoriquePage() {
 
         {!loading && !error && (
           <>
-            {/* Vue cartes (mobile / tablette) */}
-            <div className="md:hidden space-y-4">
-              {filtered.length === 0 ? (
-                <p className="px-3 py-4 text-center text-sm text-muted-foreground">
-                  Aucune classification ne correspond aux filtres.
-                </p>
-              ) : (
-                paginated.map((item, idx) => (
-                  <div
-                    key={`${currentPage}-${idx}`}
-                    className="rounded-2xl border border-border bg-background p-4 space-y-2"
-                  >
-                    <div className="font-semibold text-foreground line-clamp-2">
-                      {item.description}
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      <span className="font-mono rounded bg-muted/60 px-2 py-0.5">
-                        {item.code}
-                      </span>
-                      <span className="rounded-full bg-primary/10 px-2 py-0.5 font-semibold text-primary">
-                        {item.confidence.toFixed(1)}%
-                      </span>
-                      <span>{item.status}</span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {item.section} · {item.chapter} · {item.dateLabel}
-                    </div>
-                    <div className="text-xs">
-                      D.D. {item.ddRate} · R.S. {item.rsRate}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-            {/* Vue tableau (desktop) */}
-            <div className="hidden md:block overflow-x-auto rounded-2xl border border-border bg-background">
+            {/* Table partout (mobile + desktop) */}
+            <div className="overflow-x-auto rounded-2xl border border-border bg-background">
               <table className="min-w-full text-sm">
                 <thead className="bg-primary text-primary-foreground">
                   <tr>

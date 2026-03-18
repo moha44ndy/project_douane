@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { log } from "../lib/logger";
 import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
 
 type ClassificationItem = {
@@ -81,7 +82,9 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState<string | null>(null);
   const [payload, setPayload] = useState<ApiPayload | null>(null);
+  const [parseFailureDetail, setParseFailureDetail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
@@ -98,20 +101,36 @@ export default function HomePage() {
         return;
       }
       setUserId(session.user.id ?? null);
+      setAccessToken(session.access_token ?? null);
       setCheckingSession(false);
     };
     void checkSession();
   }, [router]);
 
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault();
+  useEffect(() => {
+    // Debug: confirmer que React rend bien les classifications après setPayload
+    if (!payload) {
+      log.debug("[frontend render] payload=null");
+      return;
+    }
+    log.debug(
+      "[frontend render] payload hasNarrative=",
+      !!payload.narrative,
+      "classifications_len=",
+      payload.classifications?.length ?? 0
+    );
+  }, [payload]);
+
+  const classifyNow = async () => {
     if (!query.trim()) return;
 
+    log.debug("[frontend submit] start query_preview=", query.slice(0, 60));
     setLoading(true);
     setError(null);
     setValidationMessage(null);
     setRaw(null);
     setPayload(null);
+    setParseFailureDetail(null);
 
     try {
       const response = await fetch(`${API_BASE_URL}/classify`, {
@@ -129,16 +148,49 @@ export default function HomePage() {
 
       const data = await response.json();
       const rawText: string =
-        typeof data.raw === "string" ? data.raw : JSON.stringify(data.raw ?? "");
+        typeof data.raw === "string"
+          ? data.raw
+          : JSON.stringify(data.raw ?? "");
       setRaw(rawText);
 
       let parsed = tryParseStructuredPayload(rawText);
       if (!parsed && rawText.trim().startsWith('"')) {
         try {
           const once = JSON.parse(rawText.trim()) as unknown;
-          if (typeof once === "string") parsed = tryParseStructuredPayload(once);
+          if (typeof once === "string")
+            parsed = tryParseStructuredPayload(once);
         } catch {
           /* ignore */
+        }
+      }
+      if (!parsed) {
+        try {
+          const maybeJson = JSON.parse(rawText);
+          const obj =
+            typeof maybeJson === "string" ? JSON.parse(maybeJson) : maybeJson;
+          if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+            const hasNarrative = typeof (obj as any).narrative === "string";
+            const hasClassifications = Array.isArray(
+              (obj as any).classifications
+            );
+            const missing = [
+              !hasNarrative ? "narrative" : null,
+              !hasClassifications ? "classifications" : null,
+            ]
+              .filter(Boolean)
+              .join(" + ");
+            setParseFailureDetail(
+              missing
+                ? `Schéma inattendu : champ(s) manquant(s) = ${missing}.`
+                : "Schéma inattendu : réponse non interprétable par l'UI."
+            );
+          } else {
+            setParseFailureDetail(
+              "Réponse JSON reçue mais structure non compatible avec l'UI."
+            );
+          }
+        } catch {
+          setParseFailureDetail("Réponse JSON invalide côté client.");
         }
       }
       setPayload(parsed);
@@ -146,9 +198,15 @@ export default function HomePage() {
       const message =
         err instanceof Error ? err.message : "Erreur inconnue côté client";
       setError(message);
+      setParseFailureDetail(null);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    await classifyNow();
   };
 
   const classifications = payload?.classifications ?? [];
@@ -170,6 +228,7 @@ export default function HomePage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         body: JSON.stringify({
           description: item.description ?? "",
@@ -298,6 +357,7 @@ export default function HomePage() {
               {validationMessage}
             </div>
           )}
+
         </div>
       </section>
 
@@ -307,8 +367,29 @@ export default function HomePage() {
             Réponse reçue mais format inattendu
           </h2>
           <p className="text-sm text-amber-700">
-            La réponse du serveur n&apos;a pas pu être affichée sous forme de tableau. Vous pouvez réessayer ou vider le cache (admin).
+            La réponse du serveur est valide en JSON, mais le schéma ne correspond pas à ce que l&apos;interface attend.
+            {parseFailureDetail && (
+              <span className="block mt-1">{parseFailureDetail}</span>
+            )}
+            <span className="block mt-1">
+              Essayez de réessayer, ou videz le cache côté admin puis réessayez.
+            </span>
           </p>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={() => void classifyNow()}
+              className="mosam-btn-primary min-h-[44px] touch-manipulation"
+            >
+              Réessayer
+            </button>
+            <Link
+              href="/admin/historique"
+              className="mosam-btn-secondary min-h-[44px] touch-manipulation text-center"
+            >
+              Vider le cache (admin)
+            </Link>
+          </div>
           <pre className="text-xs overflow-auto max-h-48 p-3 rounded-xl bg-white border border-amber-200 text-left">
             {raw.slice(0, 2000)}
             {raw.length > 2000 ? "…" : ""}
@@ -330,57 +411,31 @@ export default function HomePage() {
             </p>
           )}
 
+          {classifications.length === 0 && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Réponse reçue, mais aucune classification détectée.
+              <div className="mt-3 flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={() => void classifyNow()}
+                  className="mosam-btn-primary min-h-[44px] touch-manipulation"
+                >
+                  Réessayer
+                </button>
+                <Link
+                  href="/admin/historique"
+                  className="mosam-btn-secondary min-h-[44px] touch-manipulation text-center"
+                >
+                  Vider le cache (admin)
+                </Link>
+              </div>
+            </div>
+          )}
+
           {classifications.length > 0 && (
             <>
-              {/* Vue cartes (mobile / tablette) */}
-              <div className="md:hidden space-y-4">
-                {classifications.map((item, index) => (
-                  <div
-                    key={index}
-                    className="rounded-2xl border border-border bg-background p-4 space-y-3"
-                  >
-                    <div className="font-semibold text-foreground">
-                      {item.description || "Marchandise"}
-                    </div>
-                    {item.origin && (
-                      <div className="text-xs text-muted-foreground">
-                        Origine : {item.origin}
-                      </div>
-                    )}
-                    {item.value && (
-                      <div className="text-xs text-muted-foreground">
-                        Valeur : {item.value}
-                      </div>
-                    )}
-                    <div className="flex flex-wrap gap-2 text-sm">
-                      <span className="font-mono rounded bg-muted/60 px-2 py-1">
-                        {item.hs_code || "N/R"}
-                      </span>
-                      <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
-                        {typeof item.confidence === "number"
-                          ? `${item.confidence}%`
-                          : "N/R"}
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Section {item.section || "N/A"} · Chapitre {item.chapter || "N/A"}
-                      {item.chapter_name && ` – ${item.chapter_name}`}
-                    </div>
-                    <div className="text-xs">
-                      D.D. {item.dd_rate || "N/R"} · R.S. {item.rs_rate || "N/R"}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleValidate(item)}
-                      className="w-full min-h-[44px] inline-flex items-center justify-center rounded-full border border-primary px-4 py-3 text-sm font-semibold text-primary hover:bg-primary/10 touch-manipulation"
-                    >
-                      Valider cette classification
-                    </button>
-                  </div>
-                ))}
-              </div>
-              {/* Vue tableau (desktop) */}
-              <div className="hidden md:block overflow-x-auto rounded-2xl border border-border bg-background">
+              {/* Table partout (mobile + desktop) */}
+              <div className="overflow-x-auto rounded-2xl border border-border bg-background">
                 <table className="min-w-full text-sm">
                   <thead className="bg-primary text-primary-foreground">
                     <tr>

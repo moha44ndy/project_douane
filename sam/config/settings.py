@@ -7,6 +7,15 @@ from dotenv import load_dotenv
 # Charge les variables d'environnement depuis le fichier .env à la racine du projet.
 load_dotenv()
 
+# Dans ce projet, certaines variables (dont `SUPABASE_JWT_SECRET`) peuvent être
+# définies dans `frontend/.env.local`. Pour que le backend puisse aussi faire
+# sa vérification JWT en prod, on les charge aussi si elles manquent.
+if not os.getenv("SUPABASE_JWT_SECRET"):
+    frontend_env_local = os.path.join(
+        os.path.dirname(__file__), "..", "..", "frontend", ".env.local"
+    )
+    load_dotenv(frontend_env_local, override=False)
+
 
 class Config:
     """Configuration centralisée de l'application."""

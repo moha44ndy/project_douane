@@ -565,6 +565,8 @@ export default function AdminPage() {
                   type="text"
                   value={editNom}
                   onChange={(e) => setEditNom(e.target.value)}
+                  title="Nom complet"
+                  placeholder="Ex: Jean Dupont"
                   className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm"
                 />
               </div>
@@ -576,6 +578,8 @@ export default function AdminPage() {
                   type="text"
                   value={editIdentifiant}
                   onChange={(e) => setEditIdentifiant(e.target.value)}
+                  title="Identifiant"
+                  placeholder="Ex: jean.dupont"
                   className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm"
                 />
               </div>
@@ -587,6 +591,8 @@ export default function AdminPage() {
                   type="email"
                   value={editEmail}
                   onChange={(e) => setEditEmail(e.target.value)}
+                  title="Email"
+                  placeholder="prenom.nom@douane.ci"
                   className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm"
                 />
               </div>

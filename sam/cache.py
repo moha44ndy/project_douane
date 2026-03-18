@@ -6,6 +6,9 @@ from typing import Any, Optional
 import requests
 
 from .config.settings import Config
+from .app_logger import get_logger
+
+logger = get_logger(__name__)
 
 _URL = Config.UPSTASH_REDIS_REST_URL
 _TOKEN = Config.UPSTASH_REDIS_REST_TOKEN
@@ -68,17 +71,19 @@ def cache_get(key: str) -> Optional[Any]:
         raw = data.get("result")
         if raw is None:
             return None
-        # Valeur stockée comme chaîne : si c'est du JSON (objet ou chaîne encadrée), décoder
-        if not isinstance(raw, str):
+        # Contrat : on renvoie la valeur brute sous forme de string.
+        # Cela évite les double-encodages et rend le parsing front déterministe.
+        if isinstance(raw, str):
+            # Compat rétroactive : ancien format possible en wrapper {"value": "..."}
+            try:
+                decoded = json.loads(raw)
+                if isinstance(decoded, dict) and "value" in decoded:
+                    return decoded["value"]
+            except json.JSONDecodeError:
+                pass
             return raw
-        try:
-            decoded = json.loads(raw)
-        except json.JSONDecodeError:
-            return raw
-        # Si on avait stocké un objet (ancien format), renvoyer l'objet ou la clé "value"
-        if isinstance(decoded, dict) and "value" in decoded:
-            return decoded["value"]
-        return decoded
+        # Si Upstash renvoie autre chose qu'une string, on laisse tel quel.
+        return raw
     except Exception:
         return None
 
@@ -89,7 +94,7 @@ def cache_classify_is_disabled() -> bool:
     Retourne False si Redis est indisponible ou si le cache est activé.
     """
     if not _enabled():
-        print("[cache] classify_is_disabled: Redis non configuré (URL ou TOKEN manquant)")
+        logger.debug("[cache] classify_is_disabled: Redis non configuré (URL ou TOKEN manquant)")
         return False
     try:
         resp = requests.post(
@@ -101,15 +106,21 @@ def cache_classify_is_disabled() -> bool:
         data = resp.json() if resp.content else {}
         raw = data.get("result")
         out = raw == "1"
-        print(f"[cache] GET {CLASSIFY_CACHE_DISABLED_KEY} -> status={resp.status_code}, result={raw!r}, disabled={out}")
+        logger.debug(
+            "[cache] GET %s -> status=%s, result=%r, disabled=%s",
+            CLASSIFY_CACHE_DISABLED_KEY,
+            resp.status_code,
+            raw,
+            out,
+        )
         if resp.status_code != 200:
             return False
         if "error" in data:
-            print(f"[cache] GET Redis error: {data.get('error')}")
+            logger.warning("[cache] GET Redis error: %s", data.get("error"))
             return False
         return out
     except Exception as e:
-        print(f"[cache] GET {CLASSIFY_CACHE_DISABLED_KEY} failed: {e}")
+        logger.exception("[cache] GET %s failed", CLASSIFY_CACHE_DISABLED_KEY)
         return False
 
 
@@ -119,7 +130,7 @@ def cache_classify_set_disabled(disabled: bool) -> bool:
     Retourne True si l'écriture Redis a réussi, False sinon.
     """
     if not _enabled():
-        print("[cache] classify_set_disabled: Redis non configuré")
+        logger.debug("[cache] classify_set_disabled: Redis non configuré")
         return False
     value = "1" if disabled else "0"
     try:
@@ -132,16 +143,23 @@ def cache_classify_set_disabled(disabled: bool) -> bool:
         data = resp.json() if resp.content else {}
         result = data.get("result")
         ok = result == "OK"
-        print(f"[cache] SET {CLASSIFY_CACHE_DISABLED_KEY}={value} -> status={resp.status_code}, result={result!r}, ok={ok}")
+        logger.debug(
+            "[cache] SET %s=%s -> status=%s, result=%r, ok=%s",
+            CLASSIFY_CACHE_DISABLED_KEY,
+            value,
+            resp.status_code,
+            result,
+            ok,
+        )
         if resp.status_code != 200:
-            print(f"[cache] SET failed: status={resp.status_code}, body={data}")
+            logger.warning("[cache] SET failed: status=%s, body=%s", resp.status_code, data)
             return False
         if "error" in data:
-            print(f"[cache] SET Redis error: {data.get('error')}")
+            logger.warning("[cache] SET Redis error: %s", data.get("error"))
             return False
         return ok
     except Exception as e:
-        print(f"[cache] SET {CLASSIFY_CACHE_DISABLED_KEY}={value} failed: {e}")
+        logger.exception("[cache] SET %s=%s failed", CLASSIFY_CACHE_DISABLED_KEY, value)
         return False
 
 
