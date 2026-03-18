@@ -88,6 +88,8 @@ export default function HomePage() {
   // Utilisé ensuite pour `POST /classifications/validate` (cache).
   const [classifyQueryForCache, setClassifyQueryForCache] = useState<string | null>(null);
   const [fileItemsCount, setFileItemsCount] = useState<number | null>(null);
+  // Pour éviter de valider deux fois la même ligne.
+  const [validatedKeys, setValidatedKeys] = useState<Record<string, true>>({});
   const [userId, setUserId] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
@@ -132,6 +134,7 @@ export default function HomePage() {
     log.debug("[frontend submit] start query_preview=", query.slice(0, 60));
     setClassifyQueryForCache(query.trim());
     setFileItemsCount(null);
+    setValidatedKeys({});
     setLoading(true);
     setError(null);
     setValidationMessage(null);
@@ -216,6 +219,7 @@ export default function HomePage() {
 
     log.debug("[frontend submit] start file name=", file.name);
     setFileItemsCount(null);
+    setValidatedKeys({});
     setLoading(true);
     setError(null);
     setValidationMessage(null);
@@ -328,11 +332,16 @@ export default function HomePage() {
     );
   }
 
+  const getValidatedKey = (item: ClassificationItem) =>
+    `${item.hs_code ?? ""}||${item.description ?? ""}`;
+
   const handleValidate = async (item: ClassificationItem) => {
     if (!userId) {
       setError("Utilisateur non authentifié, impossible de valider.");
       return;
     }
+
+    const validatedKey = getValidatedKey(item);
     try {
       setValidationMessage(null);
       const res = await fetch(`${API_BASE_URL}/classifications/validate`, {
@@ -367,10 +376,7 @@ export default function HomePage() {
         throw new Error(text || `Erreur HTTP ${res.status}`);
       }
       setValidationMessage("Classification validée et enregistrée.");
-      // Une fois qu'une proposition est validée, on masque les autres
-      // pour éviter toute confusion : on vide le résultat courant.
-      setPayload(null);
-      setRaw(null);
+      setValidatedKeys((prev) => ({ ...prev, [validatedKey]: true }));
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur lors de la validation";
@@ -685,8 +691,9 @@ export default function HomePage() {
                             type="button"
                             onClick={() => handleValidate(item)}
                             className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
+                            disabled={!!validatedKeys[getValidatedKey(item)]}
                           >
-                            Valider
+                            {validatedKeys[getValidatedKey(item)] ? "Validé" : "Valider"}
                           </button>
                         </td>
                       </tr>
