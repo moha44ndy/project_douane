@@ -24,6 +24,7 @@ import requests
 import io
 import csv
 import re
+import unicodedata
 from pypdf import PdfReader
 
 from .cache import (
@@ -40,6 +41,83 @@ from .app_logger import get_logger
 
 logger = get_logger(__name__)
 
+_ALIAS_CACHE_LOCK = threading.Lock()
+_ALIAS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "aliases": {}}
+_ALIAS_CACHE_TTL_SECONDS = 60.0
+_CLASSIFY_CACHE_SCHEMA_VERSION = "v2"
+
+
+def _default_aliases_map() -> dict[str, str]:
+    return {
+        "ordi": "ordinateur",
+        "ordianteur": "ordinateur",
+        "gsm": "telephone",
+        "tel": "telephone",
+        "pc": "ordinateur",
+        "boutaille": "bouteille",
+        "boutailles": "bouteille",
+        "chevaux": "cheval",
+        "travaux": "travail",
+        "bijoux": "bijou",
+    }
+
+
+def _ensure_normalization_aliases_table() -> None:
+    try:
+        with get_db() as db:
+            db.execute(
+                text(
+                    """
+                    create table if not exists public.normalization_aliases (
+                      id uuid primary key default gen_random_uuid(),
+                      alias text not null unique,
+                      canonical text not null,
+                      is_active boolean not null default true,
+                      created_at timestamptz not null default now(),
+                      updated_at timestamptz not null default now()
+                    )
+                    """
+                )
+            )
+            db.commit()
+    except Exception:
+        logger.warning("[alias] table normalization_aliases indisponible", exc_info=True)
+
+
+def _load_aliases_map(refresh: bool = False) -> dict[str, str]:
+    now = time.time()
+    with _ALIAS_CACHE_LOCK:
+        if not refresh:
+            fetched_at = float(_ALIAS_CACHE.get("fetched_at") or 0.0)
+            if _ALIAS_CACHE.get("aliases") and (now - fetched_at) < _ALIAS_CACHE_TTL_SECONDS:
+                return dict(_ALIAS_CACHE["aliases"])
+
+    aliases = _default_aliases_map()
+    try:
+        _ensure_normalization_aliases_table()
+        with get_db() as db:
+            rows = db.execute(
+                text(
+                    """
+                    select alias, canonical
+                    from public.normalization_aliases
+                    where is_active = true
+                    """
+                )
+            ).mappings().all()
+            for row in rows:
+                a = str(row.get("alias") or "").strip().lower()
+                c = str(row.get("canonical") or "").strip().lower()
+                if a and c:
+                    aliases[a] = c
+    except Exception:
+        logger.warning("[alias] impossible de charger les alias BDD", exc_info=True)
+
+    with _ALIAS_CACHE_LOCK:
+        _ALIAS_CACHE["aliases"] = aliases
+        _ALIAS_CACHE["fetched_at"] = now
+    return dict(aliases)
+
 def _classify_cache_key(query: str) -> str:
     """
     Génère une clé Redis courte et stable pour la classification.
@@ -47,7 +125,9 @@ def _classify_cache_key(query: str) -> str:
     """
     q = (query or "").strip().lower()
     digest = hashlib.sha256(q.encode("utf-8")).hexdigest()
-    return f"classify:{digest}"
+    # Versionne la clé pour invalider les anciens résultats quand la logique
+    # d'agrégation/normalisation évolue.
+    return f"classify:{_CLASSIFY_CACHE_SCHEMA_VERSION}:{digest}"
 
 # Dependency FastAPI pour endpoints admin.
 # (La fonction `_require_admin` est définie plus bas ; ici on ne fait que
@@ -116,6 +196,7 @@ class ValidateClassificationRequest(BaseModel):
     origin: str | None = None
     value: str | None = None
     user_id: str | None = None
+    quantity: int | None = None
     # Optionnel : si fournis, la réponse complète est mise en cache pour cette requête
     # (cache utilisé uniquement lorsqu'au moins une classification est validée)
     query: str | None = None
@@ -368,6 +449,25 @@ class ClassificationStatusUpdate(BaseModel):
     statut_validation: Literal["validé", "invalidé", "archivé"]
 
 
+class ClassificationQuantityUpdate(BaseModel):
+    """
+    Données envoyées lorsqu'un admin corrige la quantité d'une classification.
+    """
+
+    quantity: int
+
+
+class NormalizationAliasCreate(BaseModel):
+    alias: str
+    canonical: str
+    is_active: bool = True
+
+
+class NormalizationAliasUpdate(BaseModel):
+    canonical: str | None = None
+    is_active: bool | None = None
+
+
 class AuditLogItem(BaseModel):
     id: str
     created_at: datetime
@@ -407,6 +507,7 @@ def update_classification_status(
                   chapitre_produit,
                   code_tarifaire,
                   classification_confidence,
+                  quantity,
                   dd_rate,
                   rs_rate,
                   other_taxes,
@@ -438,6 +539,70 @@ def update_classification_status(
         details={
             "new_statut_validation": payload.statut_validation,
         },
+    )
+
+    return result
+
+
+@app.patch(
+    "/classifications/{classification_id}/quantity",
+    tags=["classification"],
+)
+def update_classification_quantity(
+    classification_id: str,
+    payload: ClassificationQuantityUpdate,
+    admin_id: str = Depends(admin_required),
+) -> dict:
+    """
+    Met à jour la quantité d'une classification (admin uniquement).
+    """
+    if payload.quantity < 1:
+        raise HTTPException(status_code=400, detail="La quantité doit être >= 1.")
+
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                update public.classifications
+                set quantity = :quantity
+                where id::text = :classification_id
+                returning
+                  id,
+                  description_produit,
+                  section_produit,
+                  chapitre_produit,
+                  code_tarifaire,
+                  classification_confidence,
+                  quantity,
+                  dd_rate,
+                  rs_rate,
+                  other_taxes,
+                  us_unit,
+                  origin,
+                  value,
+                  user_id,
+                  statut_validation,
+                  created_at as date_classification
+                """
+            ),
+            {
+                "classification_id": classification_id,
+                "quantity": payload.quantity,
+            },
+        ).mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Classification introuvable.")
+
+        db.commit()
+        result = dict(row)
+
+    _insert_audit_log(
+        actor_id=admin_id,
+        action="classification.update_quantity",
+        entity_type="classification",
+        entity_id=str(classification_id),
+        details={"new_quantity": payload.quantity},
     )
 
     return result
@@ -1097,9 +1262,27 @@ def _filter_candidate_lines(lines: list[str], max_items: int) -> list[str]:
     L'objectif est d'obtenir des descriptions produit plausibles.
     """
     cleaned: list[str] = []
+    stop_terms = {
+        "produit",
+        "marchandise",
+        "qte",
+        "qty",
+        "quantite",
+        "quantites",
+        "valeur",
+        "origine",
+    }
     for line in lines:
         line = _clean_text_line(line)
         if not line:
+            continue
+        line_norm = unicodedata.normalize("NFKD", line).encode("ascii", "ignore").decode("ascii").lower()
+        line_norm = re.sub(r"\s+", " ", line_norm).strip()
+        # Ignore les lignes purement numériques (prix/quantité isolés)
+        if re.fullmatch(r"[\d\s,.\-/%]+", line_norm):
+            continue
+        # Ignore les libellés d'en-tête génériques isolés
+        if line_norm in stop_terms:
             continue
         # Élimine les lignes trop courtes (souvent du bruit).
         if len(line) < 2:
@@ -1120,6 +1303,12 @@ def _extract_items_from_txt(text_content: str, max_items: int) -> tuple[str, lis
     raw = (text_content or "").replace("\r", "\n").strip()
     if not raw:
         return "", []
+
+    # 0) Parsing "tableau texte" (Produit | Qté | Valeur, etc.).
+    # IMPORTANT: on combine maintenant le résultat du tableau avec le reste
+    # des lignes non-tabulaires (au lieu de retourner immédiatement).
+    table_items, table_consumed_indexes = _extract_items_from_table_text(raw, max_items=max_items)
+    table_items = table_items[:max_items]
 
     # 1) Priorité: découpage par blocs (souvent séparés par lignes vides)
     blocks = [b.strip() for b in re.split(r"\n\s*\n+", raw) if b.strip()]
@@ -1159,10 +1348,25 @@ def _extract_items_from_txt(text_content: str, max_items: int) -> tuple[str, lis
         if len(items) >= max_items:
             break
 
-    # Fallback: ancien mode "ligne par ligne"
-    if not items:
-        lines = [ln for ln in raw.splitlines()]
-        items = _filter_candidate_lines(lines, max_items=max_items)
+    # Fallback/complément: ligne par ligne sur les lignes NON consommées par le parsing tabulaire.
+    # Ainsi, un fichier mixte (tableau + lignes libres) est traité en entier.
+    remaining_lines = [
+        ln for i, ln in enumerate(raw.splitlines()) if i not in table_consumed_indexes
+    ]
+    line_items = _filter_candidate_lines(remaining_lines, max_items=max_items)
+
+    merged_items: list[str] = []
+    for it in table_items:
+        if len(merged_items) >= max_items:
+            break
+        merged_items.append(it)
+    if len(merged_items) < max_items:
+        for it in line_items:
+            if len(merged_items) >= max_items:
+                break
+            merged_items.append(it)
+
+    items = merged_items if merged_items else items
 
     if not items:
         truncated = raw[:20000]
@@ -1171,6 +1375,719 @@ def _extract_items_from_txt(text_content: str, max_items: int) -> tuple[str, lis
     # Préfixe utile pour que split_user_queries renvoie une requête par ligne.
     effective_query = "\n".join([f"- {it}" for it in items])
     return effective_query, items
+
+
+def _extract_items_from_table_text(raw_text: str, max_items: int) -> tuple[list[str], set[int]]:
+    """
+    Extrait des items depuis un texte à structure tabulaire.
+    Exemples visés:
+    - "Produit | Qté | Valeur"
+    - "Ordinateur | 12 | 500000"
+    """
+    raw_lines = (raw_text or "").splitlines()
+    if not raw_lines:
+        return [], set()
+
+    def _split_row(line: str) -> tuple[list[str], str] | None:
+        for delim in ("|", ";", "\t"):
+            if delim in line:
+                parts = [p.strip() for p in line.split(delim)]
+                if len(parts) >= 2:
+                    return parts, delim
+        # Fallback PDF: colonnes séparées par 2+ espaces
+        parts_ws = [p.strip() for p in re.split(r"\s{2,}", line) if p.strip()]
+        if len(parts_ws) >= 2:
+            return parts_ws, "ws2+"
+        return None
+
+    items: list[str] = []
+    consumed_line_indexes: set[int] = set()
+    header_desc_idx: int | None = None
+    header_qty_idx: int | None = None
+    active_delim: str | None = None
+    pending_desc: str | None = None
+
+    for idx, raw_line in enumerate(raw_lines):
+        line = (raw_line or "").strip()
+        if not line:
+            # Séparation de sections tabulaires (important pour PDF/fichiers mixtes)
+            active_delim = None
+            header_desc_idx = None
+            header_qty_idx = None
+            pending_desc = None
+            continue
+
+        parsed = _split_row(line)
+        if not parsed:
+            continue
+        cells, delim = parsed
+
+        cells_norm = [unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode("ascii").lower() for c in cells]
+        looks_header = any(
+            re.search(r"\b(produit|marchandise|description|libelle|article)\b", c)
+            for c in cells_norm
+        ) and any(re.search(r"\b(qte|qte\.|quantite|quantites|qty|quant)\b", c) for c in cells_norm)
+
+        # Si on change de délimiteur mais qu'un nouvel en-tête est détecté,
+        # on autorise le switch (ex: tableau '|' puis tableau ';').
+        if active_delim and delim != active_delim and not looks_header:
+            continue
+        if not active_delim or delim != active_delim:
+            active_delim = delim
+
+        if looks_header:
+            consumed_line_indexes.add(idx)
+            for col_idx, c in enumerate(cells_norm):
+                if header_desc_idx is None and re.search(r"\b(produit|marchandise|description|libelle|article)\b", c):
+                    header_desc_idx = col_idx
+                if header_qty_idx is None and re.search(r"\b(qte|qte\.|quantite|quantites|qty|quant)\b", c):
+                    header_qty_idx = col_idx
+            continue
+
+        desc = ""
+        qty = 1
+        qty_found = False
+        desc_found = False
+
+        # Si les colonnes sont inversées ou sans en-tête, on essaie de détecter
+        # la cellule "description" comme la cellule la plus textuelle.
+        def _is_mostly_numeric(s: str) -> bool:
+            t = (s or "").strip()
+            if not t:
+                return False
+            return bool(re.fullmatch(r"[\d\s,.\-/%]+", t))
+
+        if header_desc_idx is not None and header_desc_idx < len(cells):
+            desc = _clean_text_line(cells[header_desc_idx])
+            desc_found = bool(desc)
+        else:
+            non_numeric_indices = [i for i, c in enumerate(cells) if not _is_mostly_numeric(c)]
+            chosen_desc_idx = non_numeric_indices[0] if non_numeric_indices else 0
+            desc = _clean_text_line(cells[chosen_desc_idx])
+            desc_found = bool(desc)
+
+        if header_qty_idx is not None and header_qty_idx < len(cells):
+            qmatch = re.search(r"\d+", cells[header_qty_idx])
+            if qmatch:
+                try:
+                    qty = max(1, int(qmatch.group(0)))
+                    qty_found = True
+                except Exception:
+                    qty = 1
+        else:
+            # fallback: prend la première cellule strictement numérique
+            for c in cells:
+                qmatch = re.search(r"^\s*\d+\s*$", c)
+                if qmatch:
+                    try:
+                        qty = max(1, int(c.strip()))
+                        qty_found = True
+                        break
+                    except Exception:
+                        qty = 1
+
+        # Heuristique ligne cassée (facture/proforma):
+        # - ligne 1 contient description seule
+        # - ligne 2 contient quantité / colonnes numériques
+        if desc_found and not qty_found and len(cells) == 1:
+            pending_desc = desc
+            consumed_line_indexes.add(idx)
+            continue
+
+        if pending_desc and qty_found and not desc_found:
+            desc = pending_desc
+            desc_found = True
+            pending_desc = None
+            consumed_line_indexes.add(idx)
+
+        # Pattern type "Produit: xxx Quantite: y"
+        if not desc_found:
+            joined = " ".join(cells)
+            m_prod = re.search(r"(?i)\b(?:produit|marchandise|article)\s*[:=]\s*([^|;]+)", joined)
+            if m_prod:
+                desc = _clean_text_line(m_prod.group(1))
+                desc_found = bool(desc)
+            m_qty = re.search(r"(?i)\b(?:qte|quantite|qty)\s*[:=]?\s*(\d+)\b", joined)
+            if m_qty:
+                try:
+                    qty = max(1, int(m_qty.group(1)))
+                    qty_found = True
+                except Exception:
+                    qty = 1
+
+        if desc_found and desc:
+            items.append(f"{qty} {desc}" if qty > 1 else desc)
+            consumed_line_indexes.add(idx)
+        if len(items) >= max_items:
+            break
+
+    return items, consumed_line_indexes
+
+
+def _split_leading_quantity(item: str) -> tuple[int, str, str, str, int]:
+    """
+    Extrait une quantité d'une ligne produit et renvoie (quantity, description).
+
+    Cas gérés:
+    - "15 ordinateurs"
+    - "ordinateur de quantité 26"
+    - "ordinateur quantite: 26"
+    - "ordinateur qte 26"
+
+    Si aucun motif trouvé, renvoie (1, ligne complète nettoyée, source, raw, confidence).
+    """
+    if not item:
+        return 1, "", "explicit", "", 60
+    s = item.strip()
+    if not s:
+        return 1, "", "explicit", "", 60
+
+    def _invalid_quantity() -> tuple[int, str, str, str, int]:
+        return 0, "", "invalid", "", 0
+
+    # 0) Formats de lot PRIORITAIRES (avant "nombre en tête")
+    # Ex: "2 cartons de 12 ordinateurs" => 24
+    m_lot_head = re.match(
+        r"^\s*([+-]?\d+)\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?)\s*(?:de|x|\*)\s*([+-]?\d+)\s+(.+)$",
+        s,
+        re.IGNORECASE,
+    )
+    if m_lot_head:
+        try:
+            a = int(m_lot_head.group(1))
+            b = int(m_lot_head.group(2))
+            qty = a * b
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        text = (m_lot_head.group(3) or "").strip()
+        return qty, text, "lot", f"{m_lot_head.group(1)}x{m_lot_head.group(2)}", 95
+
+    m_lot_inline = re.search(
+        r"(?i)\b([+-]?\d+)\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?)\s*(?:de|x|\*)\s*([+-]?\d+)\b",
+        s,
+    )
+    if m_lot_inline:
+        try:
+            a = int(m_lot_inline.group(1))
+            b = int(m_lot_inline.group(2))
+            qty = a * b
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        text = re.sub(
+            r"(?i)\b[+-]?\d+\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?)\s*(?:de|x|\*)\s*[+-]?\d+\b",
+            "",
+            s,
+        )
+        text = re.sub(r"\s+", " ", text).strip(" ,;:-")
+        return qty, text, "lot", f"{m_lot_inline.group(1)}x{m_lot_inline.group(2)}", 95
+
+    # 1) Quantité en tête: "15 ordinateurs"
+    m_head = re.match(r"^\s*([+-]?\d+)\s+(.+)$", s)
+    if m_head:
+        try:
+            qty = int(m_head.group(1))
+        except Exception:
+            qty = 1
+        text = (m_head.group(2) or "").strip()
+        if qty < 1:
+            return _invalid_quantity()
+        return qty, text, "explicit", m_head.group(1) or "", 95
+
+    # 2) Formats multiplicatifs en tête:
+    # "x3 ordinateur", "3x ordinateur"
+    m_mult_head = re.match(r"^\s*(?:x\s*(\d+)|(\d+)\s*x)\s+(.+)$", s, re.IGNORECASE)
+    if m_mult_head:
+        num = m_mult_head.group(1) or m_mult_head.group(2)
+        try:
+            qty = int(num) if num else 1
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        text = (m_mult_head.group(3) or "").strip()
+        return qty, text, "explicit", num or "", 95
+
+    # 3) Quantité approximative/range en tête:
+    # "~20 ordinateurs", "environ 20 ordinateurs", "20-25 ordinateurs"
+    m_approx_head = re.match(
+        r"^\s*(?:~|environ|approx(?:\.|imativement)?)\s*(\d+)\s+(.+)$",
+        s,
+        re.IGNORECASE,
+    )
+    if m_approx_head:
+        try:
+            qty = int(m_approx_head.group(1))
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        text = (m_approx_head.group(2) or "").strip()
+        return qty, text, "explicit", m_approx_head.group(1) or "", 80
+
+    m_range_head = re.match(r"^\s*(\d+)\s*[-/]\s*(\d+)\s+(.+)$", s)
+    if m_range_head:
+        try:
+            a = int(m_range_head.group(1))
+            b = int(m_range_head.group(2))
+            # Choix prudent: borne haute du range.
+            qty = max(a, b)
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        text = (m_range_head.group(3) or "").strip()
+        return qty, text, "range_upper", f"{m_range_head.group(1)}-{m_range_head.group(2)}", 70
+
+    # 4) Nombres en lettres (fr), ex: "vingt ordinateurs"
+    number_words: dict[str, int] = {
+        "zero": 0,
+        "un": 1,
+        "une": 1,
+        "deux": 2,
+        "trois": 3,
+        "quatre": 4,
+        "cinq": 5,
+        "six": 6,
+        "sept": 7,
+        "huit": 8,
+        "neuf": 9,
+        "dix": 10,
+        "onze": 11,
+        "douze": 12,
+        "treize": 13,
+        "quatorze": 14,
+        "quinze": 15,
+        "seize": 16,
+        "dixsept": 17,
+        "dixhuit": 18,
+        "dixneuf": 19,
+        "vingt": 20,
+        "trente": 30,
+        "quarante": 40,
+        "cinquante": 50,
+        "soixante": 60,
+        "cent": 100,
+        "mille": 1000,
+    }
+
+    normalized_for_words = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    normalized_for_words = re.sub(r"[-_]", " ", normalized_for_words.lower()).strip()
+    tokens = [tok for tok in normalized_for_words.split() if tok]
+    compact = " ".join(tokens)
+    compact = compact.replace("dix sept", "dixsept").replace("dix huit", "dixhuit").replace("dix neuf", "dixneuf")
+    compact = compact.replace("quatre vingts", "quatrevingts").replace("quatre vingt", "quatrevingt")
+    compact = compact.replace("soixante dix", "soixantedix").replace("soixante onze", "soixanteonze")
+    compact = compact.replace("soixante douze", "soixantedouze").replace("soixante treize", "soixantetreize")
+    compact = compact.replace("soixante quatorze", "soixantequatorze").replace("soixante quinze", "soixantequinze")
+    compact = compact.replace("soixante seize", "soixanteseize")
+    compact = compact.replace("quatre vingt dix", "quatrevingtdix")
+    compact = compact.replace("quatre vingt onze", "quatrevingtonze")
+    compact = compact.replace("quatre vingt douze", "quatrevingtdouze")
+    compact = compact.replace("quatre vingt treize", "quatrevingttreize")
+    compact = compact.replace("quatre vingt quatorze", "quatrevingtquatorze")
+    compact = compact.replace("quatre vingt quinze", "quatrevingtquinze")
+    compact = compact.replace("quatre vingt seize", "quatrevingtseize")
+    tokens = [tok for tok in compact.split() if tok]
+    special_words: dict[str, int] = {
+        "soixantedix": 70,
+        "soixanteonze": 71,
+        "soixantedouze": 72,
+        "soixantetreize": 73,
+        "soixantequatorze": 74,
+        "soixantequinze": 75,
+        "soixanteseize": 76,
+        "quatrevingt": 80,
+        "quatrevingts": 80,
+        "quatrevingtdix": 90,
+        "quatrevingtonze": 91,
+        "quatrevingtdouze": 92,
+        "quatrevingttreize": 93,
+        "quatrevingtquatorze": 94,
+        "quatrevingtquinze": 95,
+        "quatrevingtseize": 96,
+    }
+    if tokens:
+        word_qty = 0
+        consumed = 0
+        # Gère patterns simples: "vingt", "cinquante", "vingt deux", "cent vingt"
+        while consumed < len(tokens):
+            tkn = tokens[consumed]
+            if tkn in ("et", "de", "d"):
+                consumed += 1
+                continue
+            val = special_words.get(tkn)
+            if val is None:
+                val = number_words.get(tkn)
+            if val is None:
+                break
+            if val == 1000:
+                if word_qty == 0:
+                    word_qty = 1000
+                else:
+                    word_qty *= 1000
+            elif val == 100:
+                if word_qty == 0:
+                    word_qty = 100
+                else:
+                    word_qty *= 100
+            else:
+                word_qty += val
+            consumed += 1
+            # On limite la lecture à 3 tokens numériques max pour éviter des faux positifs.
+            if consumed >= 3:
+                break
+        if word_qty > 0 and consumed > 0:
+            # Reconstruit la description en retirant le préfixe consommé.
+            original_tokens = [tok for tok in re.split(r"\s+", s.strip()) if tok]
+            desc_tokens = original_tokens[consumed:] if consumed < len(original_tokens) else []
+            text = " ".join(desc_tokens).strip()
+            if text:
+                return word_qty, text, "word_number", " ".join(tokens[:consumed]).strip(), 78
+
+    # 5) Quantité exprimée dans la phrase.
+    # Ex: "ordinateur de quantité 26", "quantite: 26", "qte 26", "qté 26"
+    m_inline = re.search(
+        r"(?i)\b(?:de\s+)?(?:quantit[eé]|qte|qt[eé])\s*[:=]?\s*(\d+)\b",
+        s,
+    )
+    if m_inline:
+        try:
+            qty = int(m_inline.group(1))
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        # Retire le segment "de quantité 26" / "quantite: 26" de la description.
+        text = re.sub(
+            r"(?i)\b(?:de\s+)?(?:quantit[eé]|qte|qt[eé])\s*[:=]?\s*\d+\b",
+            "",
+            s,
+        )
+        text = re.sub(r"\s+", " ", text).strip(" ,;:-")
+        return qty, text, "explicit", m_inline.group(1) or "", 95
+
+    # 6) Formulations avec unités/exemplaires:
+    # Ex: "ordinateur comptant 50 exemplaires", "ordinateur 50 exemplaires",
+    #     "ordinateur 50 unités", "ordinateur 50 unites", "ordinateur 50 pcs"
+    m_units = re.search(
+        r"(?i)\b(?:comptant\s+)?(\d+)\s*(?:exemplaires?|unit[eé]s?|unites?|pcs?|pi[eè]ces?)\b",
+        s,
+    )
+    if m_units:
+        try:
+            qty = int(m_units.group(1))
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        text = re.sub(
+            r"(?i)\b(?:comptant\s+)?\d+\s*(?:exemplaires?|unit[eé]s?|unites?|pcs?|pi[eè]ces?)\b",
+            "",
+            s,
+        )
+        text = re.sub(r"\s+", " ", text).strip(" ,;:-")
+        return qty, text, "explicit", m_units.group(1) or "", 92
+
+    # 7) Multiplicatif en fin de ligne:
+    # "ordinateur * 3", "ordinateur x3", "ordinateur x 3"
+    m_mult_tail = re.match(r"^\s*(.+?)\s*(?:\*|x)\s*(\d+)\s*$", s, re.IGNORECASE)
+    if m_mult_tail:
+        try:
+            qty = int(m_mult_tail.group(2))
+        except Exception:
+            qty = 1
+        if qty < 1:
+            return _invalid_quantity()
+        text = (m_mult_tail.group(1) or "").strip()
+        return qty, text, "explicit", m_mult_tail.group(2) or "", 95
+
+    return 1, s, "explicit", "", 60
+
+
+def _strip_inline_metadata(text: str) -> str:
+    """
+    Retire des méta-informations qui ne font pas partie du nom produit.
+    Ex: "ordinateur, origine Chine, valeur 500000"
+    """
+    s = (text or "").strip()
+    if not s:
+        return ""
+    # Enlève le conditionnement laissé par certains formats de lot
+    # pour fusionner sur l'article principal.
+    s = re.sub(
+        r"(?i)\b(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?)\s*(?:de|x|\*)?\s*[+-]?\d*\b",
+        "",
+        s,
+    )
+    s = re.sub(r"(?i)\borigine\s*[:=]?\s*[^,;|]+", "", s)
+    s = re.sub(r"(?i)\b(?:valeur|prix|price)\s*[:=]?\s*[^,;|]+", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" ,;:-")
+    return s
+
+
+def _split_multi_article_entry(text: str) -> list[str]:
+    """
+    Découpe une ligne contenant plusieurs articles.
+    Ex: "ordinateur + telephone", "ordinateur et telephone".
+    """
+    s = (text or "").strip()
+    if not s:
+        return []
+    parts = re.split(r"\s*(?:\+|;|\bet\b)\s*", s, flags=re.IGNORECASE)
+    cleaned = [_clean_text_line(p) for p in parts if _clean_text_line(p)]
+    return cleaned if cleaned else [s]
+
+
+def _normalize_item_key(text: str) -> str:
+    """
+    Normalisation légère pour agréger les variantes proches d'un même libellé.
+    Exemples visés: "ordinateur" / "ordinateurs", "taxi" / "taxis".
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return ""
+    # Normalise les accents + casse pour fusionner "téléphone" et "telephone".
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
+    # Nettoyage de ponctuation simple.
+    t = re.sub(r"[^\w\s-]", " ", t)
+    # Répare quelques contractions mal saisies fréquentes
+    # ex: "deau" -> "d eau", "duhuille" -> "d huile" (approximation prudente)
+    t = re.sub(r"\bde([aeiouy])", r"d \1", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return ""
+    if re.fullmatch(r"[\d\s,.\-/%]+", t):
+        return ""
+
+    token_aliases = _load_aliases_map()
+
+    def _singularize_french_word(w: str) -> str:
+        if len(w) < 4:
+            return w
+        # Ex: "animaux" -> "animal" (simple heuristique)
+        if w.endswith("aux") and not w.endswith("eaux"):
+            return w[:-3] + "al"
+        # Exclusions simples
+        if w.endswith("ss") or w.endswith("us"):
+            return w
+        if w.endswith("s"):
+            return w[:-1]
+        if w.endswith("x") and not w.endswith("eaux") and not w.endswith("aux"):
+            return w[:-1]
+        return w
+
+    words = t.split(" ")
+    normalized_words: list[str] = []
+    ignored_single_tokens = {
+        "produit",
+        "marchandise",
+        "qte",
+        "qty",
+        "quantite",
+        "quantites",
+        "valeur",
+        "origine",
+    }
+    for w in words:
+        w = token_aliases.get(w, w)
+        w = _singularize_french_word(w)
+        normalized_words.append(w)
+    normalized = " ".join(normalized_words).strip()
+    # Canonisation générique sans produit en dur:
+    # - normalise "A de B" -> "A B"
+    # - normalise "B en A" -> "A B"
+    # Objectif: fusionner des variantes de formulation, sans lister de produits.
+    normalized = re.sub(
+        r"\b([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+d\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b",
+        r"\1 \2",
+        normalized,
+    )
+    normalized = re.sub(
+        r"\b([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\s+en\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,2})\b",
+        r"\2 \1",
+        normalized,
+    )
+
+    # Nettoyage générique des mots de liaison et déduplication de tokens adjacents.
+    tokens = [tok for tok in normalized.split(" ") if tok]
+    linkers = {"d", "de", "du", "des", "en", "a", "au", "aux", "la", "le", "les"}
+    compact: list[str] = []
+    for tok in tokens:
+        if tok in linkers:
+            continue
+        if compact and compact[-1] == tok:
+            continue
+        compact.append(tok)
+    normalized = " ".join(compact[:6]).strip()
+    if normalized in ignored_single_tokens:
+        return ""
+    return normalized
+
+
+def _is_noise_item_text(text: str) -> bool:
+    """
+    Détecte les entrées qui ne sont pas des marchandises exploitables.
+    Ex: nombres isolés, pays isolés, mots génériques.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return True
+
+    # Nombres/valeurs isolés
+    if re.fullmatch(r"[\d\s,.\-/%]+", t):
+        return True
+
+    generic = {
+        "produit",
+        "marchandise",
+        "qte",
+        "qty",
+        "quantite",
+        "quantites",
+        "valeur",
+        "origine",
+    }
+    if t in generic:
+        return True
+
+    # Pays isolés (fréquent dans les lignes "origine XXX")
+    countries = {
+        "chine",
+        "allemagne",
+        "turquie",
+        "france",
+        "italie",
+        "japon",
+        "vietnam",
+        "usa",
+        "etats unis",
+        "cote divoire",
+    }
+    if t in countries:
+        return True
+
+    return False
+
+
+def _aggregate_items_with_quantities(
+    items: list[str], max_items: int
+) -> tuple[list[str], dict[str, int], int, dict[str, dict[str, Any]]]:
+    """
+    Agrège une liste d'items en:
+    - descriptions distinctes (représentation canonique)
+    - quantité totale par description
+    - quantité totale globale
+    """
+    # key normalisée -> description canonique (première rencontrée)
+    key_to_display: dict[str, str] = {}
+    # description canonique -> quantité totale
+    item_counts: dict[str, int] = {}
+    # description canonique -> méta quantité
+    item_meta: dict[str, dict[str, Any]] = {}
+
+    for raw_item in items:
+        # 1) split multi-articles dans la ligne
+        sub_items = _split_multi_article_entry(raw_item)
+        if not sub_items:
+            continue
+        for sub in sub_items:
+            # 2) extraction quantité
+            qty, text, source, raw_qty, qty_conf = _split_leading_quantity(sub)
+            if qty < 1 or source == "invalid" or not text:
+                continue
+            # 3) nettoyage méta-infos (origine/valeur/etc.)
+            text = _strip_inline_metadata(text)
+            if not text:
+                continue
+            if _is_noise_item_text(text):
+                continue
+            # 4) normalisation de clé
+            norm_key = _normalize_item_key(text)
+            if not norm_key:
+                continue
+            if norm_key not in key_to_display:
+                key_to_display[norm_key] = text.strip()
+            display_text = key_to_display[norm_key]
+            item_counts[display_text] = int(item_counts.get(display_text, 0)) + int(qty)
+            meta = item_meta.get(display_text) or {
+                "line_count": 0,
+                "explicit_count": 0,
+                "range_upper_count": 0,
+                "word_number_count": 0,
+                "lot_count": 0,
+                "quantity_raw_samples": [],
+                "confidence_weighted_sum": 0.0,
+                "confidence_weight_sum": 0,
+            }
+            meta["line_count"] += 1
+            if source == "explicit":
+                meta["explicit_count"] += 1
+            elif source == "range_upper":
+                meta["range_upper_count"] += 1
+            elif source == "word_number":
+                meta["word_number_count"] += 1
+            elif source == "lot":
+                meta["lot_count"] += 1
+            if raw_qty and len(meta["quantity_raw_samples"]) < 3:
+                meta["quantity_raw_samples"].append(raw_qty)
+            meta["confidence_weighted_sum"] += float(qty_conf) * int(qty)
+            meta["confidence_weight_sum"] += int(qty)
+            item_meta[display_text] = meta
+
+    unique_items = list(item_counts.keys())
+    if len(unique_items) > max_items:
+        unique_items = unique_items[:max_items]
+        item_counts = {k: item_counts[k] for k in unique_items}
+        item_meta = {k: item_meta[k] for k in unique_items if k in item_meta}
+
+    total_quantity = sum(item_counts.values())
+    for label in unique_items:
+        meta = item_meta.get(label, {})
+        line_count = int(meta.get("line_count", 0))
+        explicit_count = int(meta.get("explicit_count", 0))
+        lot_count = int(meta.get("lot_count", 0))
+        range_count = int(meta.get("range_upper_count", 0))
+        word_count = int(meta.get("word_number_count", 0))
+        source_kinds = 0
+        if explicit_count > 0:
+            source_kinds += 1
+        if lot_count > 0:
+            source_kinds += 1
+        if range_count > 0:
+            source_kinds += 1
+        if word_count > 0:
+            source_kinds += 1
+
+        if source_kinds >= 2:
+            qsource = "mixte"
+        elif lot_count > 0:
+            qsource = "lot"
+        elif range_count > 0:
+            qsource = "range_upper"
+        elif word_count > 0:
+            qsource = "word_number"
+        elif line_count > 1 and explicit_count == 0:
+            qsource = "repeat"
+        else:
+            qsource = "explicit"
+        conf_sum = float(meta.get("confidence_weighted_sum", 0.0))
+        conf_w = int(meta.get("confidence_weight_sum", 0))
+        qconf = int(round(conf_sum / conf_w)) if conf_w > 0 else 60
+        qconf = max(0, min(100, qconf))
+        meta["quantity_source"] = qsource
+        meta["quantity_raw"] = ", ".join(meta.get("quantity_raw_samples", []))
+        meta["quantity_confidence"] = qconf
+        item_meta[label] = meta
+
+    return unique_items, item_counts, total_quantity, item_meta
 
 
 def _extract_items_from_pdf(pdf_bytes: bytes, max_items: int, max_chars: int) -> tuple[str, list[str]]:
@@ -1435,94 +2352,16 @@ async def classify_file(
         ext,
     )
 
-    # Pour les fichiers .txt, on veut le même comportement que le copier/coller :
-    # on envoie le texte complet tel quel au moteur de classification, sans
-    # découpage ligne par ligne, et on considère items_count = nb de classifications
-    # effectivement retournées par le LLM.
-    if ext in {"txt", "text"}:
-        text_content = raw_bytes.decode("utf-8", errors="ignore")
-        # On tronque éventuellement pour éviter les entrées démesurées.
-        effective_query = (text_content or "")[:max_chars].strip()
-        if not effective_query:
-            raise HTTPException(
-                status_code=400,
-                detail="Impossible d'extraire des marchandises du fichier. Vérifie le format.",
-            )
-
-        cache_key = _classify_cache_key(effective_query)
-        cache_disabled = cache_classify_is_disabled() or len(effective_query) > 12000
-        preview = effective_query.replace("\n", " ")
-        preview = preview[:80] + ("…" if len(preview) > 80 else "")
-
-        logger.debug(
-            "[classify-file %s] TXT mode (full text) cache_disabled=%s key=%s preview=%r",
-            request_id,
-            cache_disabled,
-            cache_key,
-            preview,
-        )
-
-        if not cache_disabled:
-            cached_raw = cache_get(cache_key)
-            if cached_raw is not None:
-                raw_out = _ensure_json_raw(cached_raw)
-                _inspect_raw_json(raw_out, request_id, "HIT_FILE_TXT")
-                # items_count = nombre de classifications effectivement présentes
-                classifications = _extract_classifications(raw_out)
-                return ClassifyFileResponse(
-                    raw=raw_out,
-                    effective_query=effective_query,
-                    items_count=len(classifications),
-                )
-
-        try:
-            chunks = app.state.chunks
-            index = app.state.index
-        except AttributeError as exc:
-            raise HTTPException(status_code=503, detail="Moteur RAG non initialisé") from exc
-
-        try:
-            result = process_user_input(effective_query, chunks, index)
-        except Exception as exc:  # pragma: no cover - garde-fou
-            logger.exception("[classify-file %s] process_user_input TXT failed", request_id)
-            detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
-            raise HTTPException(status_code=500, detail=detail) from exc
-
-        # Normalisation identique à /classify
-        result = _normalize_classifications_response(result)
-        raw_out = _ensure_json_raw(result)
-        _inspect_raw_json(raw_out, request_id, "FRESH_FILE_TXT")
-
-        # items_count = nombre de classifications retournées
-        classifications = _extract_classifications(raw_out)
-        items_count = len(classifications)
-
-        # Mise en cache éventuelle de la réponse brute, comme pour /classify
-        if not cache_disabled:
-            try:
-                cache_set(cache_key, raw_out, ex=3600)
-            except Exception:
-                logger.warning("[classify-file %s] impossible de mettre en cache la réponse TXT", request_id)
-
-        logger.debug(
-            "[classify-file %s] TXT full-text done raw_len=%s raw_preview=%r items_count=%s",
-            request_id,
-            len(raw_out),
-            raw_out[:80],
-            items_count,
-        )
-
-        return ClassifyFileResponse(
-            raw=raw_out,
-            effective_query=effective_query,
-            items_count=items_count,
-        )
-
-    # Pour les autres types (PDF), on garde le comportement batché existant.
+    # Extraction d'items à partir du fichier (TXT ou PDF).
+    # On garde une liste d'items "bruts", puis on va les dédupliquer
+    # pour compter les quantités par produit.
     effective_query = ""
     items: list[str] = []
     try:
-        if ext in {"pdf"}:
+        if ext in {"txt", "text"}:
+            text_content = raw_bytes.decode("utf-8", errors="ignore")
+            effective_query, items = _extract_items_from_txt(text_content, max_items=max_items)
+        elif ext in {"pdf"}:
             effective_query, items = _extract_items_from_pdf(
                 raw_bytes, max_items=max_items, max_chars=max_chars
             )
@@ -1538,11 +2377,23 @@ async def classify_file(
         raise HTTPException(status_code=500, detail=f"Extraction fichier échouée: {type(exc).__name__}") from exc
 
     effective_query = (effective_query or "").strip()
-    if not effective_query:
+    if not effective_query or not items:
         raise HTTPException(
             status_code=400,
             detail="Impossible d'extraire des marchandises du fichier. Vérifie le format.",
         )
+
+    # Comptage des quantités par description normalisée.
+    unique_items, item_counts, total_quantity, item_meta = _aggregate_items_with_quantities(
+        items, max_items=max_items
+    )
+    if not unique_items:
+        raise HTTPException(
+            status_code=400,
+            detail="Impossible d'interpréter les marchandises du fichier (aucun item valide).",
+        )
+    # Re-calcul de la requête effective basée sur les items distincts.
+    effective_query = "\n".join([f"- {it}" for it in unique_items])
 
     cache_key = _classify_cache_key(effective_query)
     cache_disabled = cache_classify_is_disabled() or len(effective_query) > 12000
@@ -1550,12 +2401,13 @@ async def classify_file(
     preview = preview[:80] + ("…" if len(preview) > 80 else "")
 
     logger.debug(
-        "[classify-file %s] cache_disabled=%s key=%s preview=%r items=%s",
+        "[classify-file %s] cache_disabled=%s key=%s preview=%r items_distinct=%s quantity_total=%s",
         request_id,
         cache_disabled,
         cache_key,
         preview,
-        len(items),
+        len(unique_items),
+        total_quantity,
     )
 
     if not cache_disabled:
@@ -1563,8 +2415,23 @@ async def classify_file(
         if cached_raw is not None:
             raw_out = _ensure_json_raw(cached_raw)
             _inspect_raw_json(raw_out, request_id, "HIT")
+            # Si la réponse en cache contient déjà des quantités, on les additionne,
+            # sinon on considère 1 par ligne.
+            classifications = _extract_classifications(raw_out)
+            qty_from_raw = 0
+            for cls in classifications:
+                if isinstance(cls, dict):
+                    q = cls.get("quantity")
+                    if isinstance(q, (int, float)) and q > 0:
+                        qty_from_raw += int(q)
+                    else:
+                        qty_from_raw += 1
+                else:
+                    qty_from_raw += 1
             return ClassifyFileResponse(
-                raw=raw_out, effective_query=effective_query, items_count=len(items)
+                raw=raw_out,
+                effective_query=effective_query,
+                items_count=qty_from_raw or total_quantity,
             )
 
     try:
@@ -1577,7 +2444,7 @@ async def classify_file(
         # Traitement en batches pour pouvoir classifier un fichier contenant
         # beaucoup plus de produits qu'un seul appel LLM ne peut gérer.
         batches: list[list[str]] = [
-            items[i : i + batch_size] for i in range(0, len(items), batch_size)
+            unique_items[i : i + batch_size] for i in range(0, len(unique_items), batch_size)
         ]
 
         narrative: str | None = None
@@ -1734,6 +2601,24 @@ async def classify_file(
                 else:
                     merged_classifications.extend(batch_classes)
 
+        # À ce stade, `merged_classifications` est aligné sur `unique_items` :
+        # une classification par description distincte. On ajoute donc un champ
+        # `quantity` en fonction du nombre d'occurrences dans le fichier.
+        for idx, cls in enumerate(merged_classifications):
+            if not isinstance(cls, dict):
+                continue
+            if idx >= len(unique_items):
+                continue
+            src_text = unique_items[idx]
+            qty = int(item_counts.get(src_text, 1))
+            if qty < 1:
+                qty = 1
+            cls.setdefault("quantity", qty)
+            meta = item_meta.get(src_text, {})
+            cls.setdefault("quantity_source", meta.get("quantity_source", "explicit"))
+            cls.setdefault("quantity_raw", meta.get("quantity_raw", ""))
+            cls.setdefault("quantity_confidence", meta.get("quantity_confidence", 60))
+
         merged = {
             "narrative": narrative or "Proposition indicative, à faire valider par l'autorité douanière.",
             "classifications": merged_classifications,
@@ -1750,16 +2635,17 @@ async def classify_file(
     _inspect_raw_json(raw_out, request_id, "FRESH_MERGED")
 
     logger.debug(
-        "[classify-file %s] fresh merged done raw_len=%s raw_preview=%r batches=%s items=%s",
+        "[classify-file %s] fresh merged done raw_len=%s raw_preview=%r batches=%s items_distinct=%s quantity_total=%s",
         request_id,
         len(raw_out),
         raw_out[:80],
-        (len(items) + batch_size - 1) // batch_size,
-        len(items),
+        (len(unique_items) + batch_size - 1) // batch_size,
+        len(unique_items),
+        total_quantity,
     )
 
     return ClassifyFileResponse(
-        raw=raw_out, effective_query=effective_query, items_count=len(items)
+        raw=raw_out, effective_query=effective_query, items_count=total_quantity
     )
 
 
@@ -1808,8 +2694,31 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     except AttributeError as exc:
         raise HTTPException(status_code=503, detail="Moteur RAG non initialisé") from exc
 
+    # Aligne le comportement "copier-coller" avec celui des fichiers :
+    # - extraction de produits ligne par ligne
+    # - déduplication des produits identiques
+    # - ajout d'une quantité par classification
+    classify_input = payload.query
+    unique_items: list[str] = []
+    item_counts: dict[str, int] = {}
+    item_meta: dict[str, dict[str, Any]] = {}
     try:
-        result = process_user_input(payload.query, chunks, index)
+        _, extracted_items = _extract_items_from_txt(payload.query, max_items=500)
+        if extracted_items:
+            unique_items, item_counts, _, item_meta = _aggregate_items_with_quantities(
+                extracted_items, max_items=500
+            )
+            if unique_items:
+                classify_input = "\n".join([f"- {it}" for it in unique_items])
+    except Exception:
+        # Garde-fou : en cas d'erreur d'extraction, on retombe sur le texte brut.
+        classify_input = payload.query
+        unique_items = []
+        item_counts = {}
+        item_meta = {}
+
+    try:
+        result = process_user_input(classify_input, chunks, index)
     except Exception as exc:  # pragma: no cover - garde-fou
         import traceback
 
@@ -1820,6 +2729,32 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     # Corriger section/chapitre à partir du code SH pour chaque classification
     result = _normalize_classifications_response(result)
     raw_out = _ensure_json_raw(result)
+
+    # Injecte une quantité par classification quand on a pu extraire des items.
+    if unique_items and item_counts:
+        try:
+            parsed = json.loads(raw_out)
+            if isinstance(parsed, dict):
+                cls = parsed.get("classifications")
+                if isinstance(cls, list):
+                    for idx, item in enumerate(cls):
+                        if not isinstance(item, dict):
+                            continue
+                        if idx >= len(unique_items):
+                            break
+                        src = unique_items[idx]
+                        qty = int(item_counts.get(src, 1))
+                        if qty < 1:
+                            qty = 1
+                        item.setdefault("quantity", qty)
+                        meta = item_meta.get(src, {})
+                        item.setdefault("quantity_source", meta.get("quantity_source", "explicit"))
+                        item.setdefault("quantity_raw", meta.get("quantity_raw", ""))
+                        item.setdefault("quantity_confidence", meta.get("quantity_confidence", 60))
+                    raw_out = _ensure_json_raw(parsed)
+        except Exception:
+            # Si on ne peut pas enrichir la réponse, on conserve `raw_out` tel quel.
+            pass
 
     # Ne pas mettre en cache ici : le cache est alimenté uniquement lors d'une validation
     # (POST /classifications/validate avec query + raw_response), pour ne pas retenir
@@ -1871,6 +2806,7 @@ def validate_classification(
                  chapitre_produit,
                  code_tarifaire,
                  classification_confidence,
+                 quantity,
                  dd_rate,
                  rs_rate,
                  other_taxes,
@@ -1886,6 +2822,7 @@ def validate_classification(
                   :chapitre,
                   :code,
                   :confidence,
+                  :quantity,
                   :dd_rate,
                   :rs_rate,
                   :other_taxes,
@@ -1903,6 +2840,7 @@ def validate_classification(
                   chapitre_produit,
                   code_tarifaire,
                   classification_confidence,
+                  quantity,
                   dd_rate,
                   rs_rate,
                   other_taxes,
@@ -1920,6 +2858,7 @@ def validate_classification(
                 "chapitre": chapter_label,
                 "code": payload.hs_code,
                 "confidence": payload.confidence,
+                "quantity": payload.quantity if payload.quantity is not None else 1,
                 "dd_rate": payload.dd_rate,
                 "rs_rate": payload.rs_rate,
                 "other_taxes": payload.other_taxes,
@@ -2020,6 +2959,137 @@ def clear_classify_cache(
     return {"cleared": True, "keys_deleted": deleted}
 
 
+@app.get("/admin/normalization-aliases", tags=["admin"])
+def list_normalization_aliases(
+    request: Request,
+    admin_id: str = Depends(admin_required),
+) -> list[dict]:
+    """Liste les alias de normalisation configurables (admin)."""
+    _rate_limit(request, "admin.normalization_aliases.get")
+    _ = admin_id
+    _ensure_normalization_aliases_table()
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                select id::text as id, alias, canonical, is_active, created_at, updated_at
+                from public.normalization_aliases
+                order by alias asc
+                """
+            )
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+@app.post("/admin/normalization-aliases", tags=["admin"])
+def create_normalization_alias(
+    payload: NormalizationAliasCreate,
+    request: Request,
+    admin_id: str = Depends(admin_required),
+) -> dict:
+    """Crée (ou met à jour) un alias de normalisation (admin)."""
+    _rate_limit(request, "admin.normalization_aliases.post")
+    _ = admin_id
+    alias = (payload.alias or "").strip().lower()
+    canonical = (payload.canonical or "").strip().lower()
+    if not alias or not canonical:
+        raise HTTPException(status_code=400, detail="alias et canonical sont requis.")
+    _ensure_normalization_aliases_table()
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                insert into public.normalization_aliases (alias, canonical, is_active)
+                values (:alias, :canonical, :is_active)
+                on conflict (alias) do update
+                  set canonical = excluded.canonical,
+                      is_active = excluded.is_active,
+                      updated_at = now()
+                returning id::text as id, alias, canonical, is_active, created_at, updated_at
+                """
+            ),
+            {
+                "alias": alias,
+                "canonical": canonical,
+                "is_active": payload.is_active,
+            },
+        ).mappings().one()
+        db.commit()
+    _load_aliases_map(refresh=True)
+    return dict(row)
+
+
+@app.patch("/admin/normalization-aliases/{alias_id}", tags=["admin"])
+def update_normalization_alias(
+    alias_id: str,
+    payload: NormalizationAliasUpdate,
+    request: Request,
+    admin_id: str = Depends(admin_required),
+) -> dict:
+    """Met à jour un alias de normalisation (admin)."""
+    _rate_limit(request, "admin.normalization_aliases.patch")
+    _ = admin_id
+    updates: list[str] = []
+    params: dict[str, Any] = {"alias_id": alias_id}
+    if payload.canonical is not None:
+        canonical = payload.canonical.strip().lower()
+        if not canonical:
+            raise HTTPException(status_code=400, detail="canonical invalide.")
+        updates.append("canonical = :canonical")
+        params["canonical"] = canonical
+    if payload.is_active is not None:
+        updates.append("is_active = :is_active")
+        params["is_active"] = payload.is_active
+    if not updates:
+        raise HTTPException(status_code=400, detail="Aucune donnée à mettre à jour.")
+    _ensure_normalization_aliases_table()
+    with get_db() as db:
+        row = db.execute(
+            text(
+                f"""
+                update public.normalization_aliases
+                set {", ".join(updates)}, updated_at = now()
+                where id::text = :alias_id
+                returning id::text as id, alias, canonical, is_active, created_at, updated_at
+                """
+            ),
+            params,
+        ).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Alias introuvable.")
+        db.commit()
+    _load_aliases_map(refresh=True)
+    return dict(row)
+
+
+@app.delete("/admin/normalization-aliases/{alias_id}", tags=["admin"])
+def delete_normalization_alias(
+    alias_id: str,
+    request: Request,
+    admin_id: str = Depends(admin_required),
+) -> dict:
+    """Supprime un alias de normalisation (admin)."""
+    _rate_limit(request, "admin.normalization_aliases.delete")
+    _ = admin_id
+    _ensure_normalization_aliases_table()
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                delete from public.normalization_aliases
+                where id::text = :alias_id
+                returning id::text as id
+                """
+            ),
+            {"alias_id": alias_id},
+        ).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Alias introuvable.")
+        db.commit()
+    _load_aliases_map(refresh=True)
+    return {"deleted": True, "id": row.get("id")}
+
+
 @app.get("/history", tags=["history"])
 def get_history(user_id: str | None = None) -> list[dict]:
     """
@@ -2037,6 +3107,7 @@ def get_history(user_id: str | None = None) -> list[dict]:
           c.chapitre_produit,
           c.code_tarifaire,
           c.classification_confidence,
+          c.quantity,
           c.dd_rate,
           c.rs_rate,
           c.other_taxes,
@@ -2088,6 +3159,7 @@ def export_history_csv(
           c.chapitre_produit,
           c.code_tarifaire,
           c.classification_confidence,
+          c.quantity,
           c.dd_rate,
           c.rs_rate,
           c.other_taxes,
@@ -2140,6 +3212,7 @@ def export_history_csv(
         "chapitre_produit",
         "code_tarifaire",
         "classification_confidence",
+        "quantity",
         "dd_rate",
         "rs_rate",
         "other_taxes",
@@ -2199,6 +3272,7 @@ def export_admin_history_csv(
           c.chapitre_produit,
           c.code_tarifaire,
           c.classification_confidence,
+          c.quantity,
           c.dd_rate,
           c.rs_rate,
           c.other_taxes,
@@ -2265,6 +3339,7 @@ def export_admin_history_csv(
         "chapitre_produit",
         "code_tarifaire",
         "classification_confidence",
+        "quantity",
         "dd_rate",
         "rs_rate",
         "other_taxes",

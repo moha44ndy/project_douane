@@ -1,106 +1,88 @@
+15 ordinateurs
+18 ordinateurs
 ordinateur
-telephone
-taxi
-sac a main
 ordinateur
+ordinateur de quantité 26
+ordinateur quantite: 12
+ordinateur qte 7
+ordinateur qté 9
+ordinateur comptant 50 exemplaires
+ordinateur 30 unités
+ordinateur 20 unites
+ordinateur 10 pcs
+ordinateur 8 pieces
+ordinateur * 3
+ordinateur x3
+3x ordinateur
+x4 ordinateur
+~20 ordinateurs
+environ 14 ordinateurs
+approx 11 ordinateurs
+20-25 ordinateurs
+vingt ordinateurs
+cinquante unites ordinateur
+2 cartons de 12 ordinateurs
+3 lots x 5 ordinateurs
+4 packs * 6 ordinateurs
+
+téléphone
 telephone
+gsm
+tel
+5 telephones
+telephone de quantité 8
+telephone + smartphone
+smartphone et telephone
+telephone, quantite 6, origine chine, valeur 300000
+
 taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-sac a main
-ordinateur
-telephone
-taxi
-chaussure basique pointure 45
-chaussure luxueuse pointure 47 
-ordinateur i7 dune valeur de 1 million 500 milles francs cfa
-ordinateur i5 dune valeur de 800 milles francs cfa
-telephone
 taxis
+2 taxis
+taxi x2
+taxi de quantité 3
+taxi + moto
+
+sac a main
+sac à main
+12 sac a main
 sac a mains
+sacs a main
+sac a main comptant 10 exemplaires
+sac a main, origine france, valeur 120000
+
+Produit | Qté | Valeur | Origine
+ordinateur portable i7 | 5 | 1500000 | chine
+telephone android 5g | 12 | 350000 | vietnam
+sac a main cuir | 7 | 80000 | italie
+taxi hybride | 2 | 12000000 | japon
+
+Marchandise;Qte;Valeur;Origine
+barres acier laminé;30;500000;turquie
+toles acier galvanise;18;420000;chine
+compresseur air electrique;4;950000;allemagne
+
+ordinateur, quantité 26, origine Chine
+ordinateur, origine chine, valeur 500000
+ordinateur + téléphone + taxi + sac a main
+ordinateur; telephone; taxi
+pc gamer, qte 2, origine usa, valeur 2200000
+ordianteur de quantite 5
+ordi de quantité 4
+
+1 ordinateur
+0 ordinateur
+-5 ordinateurs
+un ordinateur
+deux ordinateurs
+cent ordinateurs
+
+2 packs de 12 bouteilles d'eau
+3 cartons de 6 bouteilles d''eau
+4 lots x 5 bouteilles deau
+5 packs * 4 boutailles deau
+1 bouteille d'eau
+2 bouteilles d'eau
+3 bouteilles d''eau
+4 bouteilles deau
+5 boutailles deau
+6 boutaille deau

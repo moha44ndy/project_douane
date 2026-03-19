@@ -9,6 +9,10 @@ import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
 
 type ClassificationItem = {
   description?: string;
+  quantity?: number;
+  quantity_source?: string;
+  quantity_raw?: string;
+  quantity_confidence?: number;
   hs_code?: string;
   section?: string;
   section_name?: string;
@@ -90,6 +94,8 @@ export default function HomePage() {
   const [fileItemsCount, setFileItemsCount] = useState<number | null>(null);
   // Pour éviter de valider deux fois la même ligne.
   const [validatedKeys, setValidatedKeys] = useState<Record<string, true>>({});
+  // Fallback manuel: quantité corrigée par ligne (clé de ligne -> qty).
+  const [quantityOverrides, setQuantityOverrides] = useState<Record<string, number>>({});
   const [userId, setUserId] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
@@ -135,6 +141,7 @@ export default function HomePage() {
     setClassifyQueryForCache(query.trim());
     setFileItemsCount(null);
     setValidatedKeys({});
+    setQuantityOverrides({});
     setLoading(true);
     setError(null);
     setValidationMessage(null);
@@ -220,6 +227,7 @@ export default function HomePage() {
     log.debug("[frontend submit] start file name=", file.name);
     setFileItemsCount(null);
     setValidatedKeys({});
+    setQuantityOverrides({});
     setLoading(true);
     setError(null);
     setValidationMessage(null);
@@ -325,6 +333,38 @@ export default function HomePage() {
   };
 
   const classifications = payload?.classifications ?? [];
+  const getRowKey = (item: ClassificationItem, index: number) =>
+    `${index}||${item.hs_code ?? ""}||${item.description ?? ""}`;
+
+  const getItemQuantity = (item: ClassificationItem, index: number) => {
+    const rowKey = getRowKey(item, index);
+    const overridden = quantityOverrides[rowKey];
+    if (typeof overridden === "number" && overridden > 0) return Math.floor(overridden);
+    return typeof item.quantity === "number" && item.quantity > 0 ? Math.floor(item.quantity) : 1;
+  };
+
+  const getQuantitySourceLabel = (source?: string) => {
+    switch (source) {
+      case "mixte":
+        return "Mixte";
+      case "repeat":
+        return "Répétitions";
+      case "range_upper":
+        return "Plage (borne haute)";
+      case "word_number":
+        return "Nombre en lettres";
+      case "lot":
+        return "Format de lot";
+      case "explicit":
+      default:
+        return "Valeur explicite";
+    }
+  };
+
+  const totalClassifiedQuantity = classifications.reduce((sum, item, index) => {
+    const qty = getItemQuantity(item, index);
+    return sum + qty;
+  }, 0);
 
   if (checkingSession) {
     return (
@@ -332,16 +372,14 @@ export default function HomePage() {
     );
   }
 
-  const getValidatedKey = (item: ClassificationItem) =>
-    `${item.hs_code ?? ""}||${item.description ?? ""}`;
-
-  const handleValidate = async (item: ClassificationItem) => {
+  const handleValidate = async (item: ClassificationItem, index: number) => {
     if (!userId) {
       setError("Utilisateur non authentifié, impossible de valider.");
       return;
     }
 
-    const validatedKey = getValidatedKey(item);
+    const rowKey = getRowKey(item, index);
+    const quantityToSend = getItemQuantity(item, index);
     try {
       setValidationMessage(null);
       const res = await fetch(`${API_BASE_URL}/classifications/validate`, {
@@ -360,6 +398,7 @@ export default function HomePage() {
             : item.chapter ?? "N/A",
           hs_code: item.hs_code ?? "",
           confidence: item.confidence ?? null,
+          quantity: quantityToSend,
           dd_rate: item.dd_rate ?? null,
           rs_rate: item.rs_rate ?? null,
           other_taxes: item.other_taxes ?? null,
@@ -376,7 +415,7 @@ export default function HomePage() {
         throw new Error(text || `Erreur HTTP ${res.status}`);
       }
       setValidationMessage("Classification validée et enregistrée.");
-      setValidatedKeys((prev) => ({ ...prev, [validatedKey]: true }));
+      setValidatedKeys((prev) => ({ ...prev, [rowKey]: true }));
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur lors de la validation";
@@ -391,6 +430,7 @@ export default function HomePage() {
     setFileItemsCount(null);
     setValidationMessage(null);
     setValidatedKeys({});
+    setQuantityOverrides({});
   };
 
   return (
@@ -610,6 +650,9 @@ export default function HomePage() {
           <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
             {classifications.length} classification(s) reçue(s) (dans l'UI).
           </p>
+          <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
+            {totalClassifiedQuantity} unité(s) classifiée(s) (quantité cumulée).
+          </p>
           {payload.narrative && (
             <p className="text-sm text-foreground leading-relaxed">
               {payload.narrative}
@@ -648,6 +691,9 @@ export default function HomePage() {
                         Marchandise
                       </th>
                       <th className="px-3 py-2 text-left font-semibold">
+                        Qté
+                      </th>
+                      <th className="px-3 py-2 text-left font-semibold">
                         Code TEC/SH
                       </th>
                       <th className="px-3 py-2 text-left font-semibold">
@@ -667,7 +713,7 @@ export default function HomePage() {
                   <tbody>
                     {classifications.map((item, index) => (
                       <tr
-                        key={index}
+                        key={getRowKey(item, index)}
                         className={index % 2 === 0 ? "bg-muted/40" : "bg-background"}
                       >
                         <td className="px-3 py-2 align-top">
@@ -684,6 +730,41 @@ export default function HomePage() {
                               Valeur : {item.value}
                             </div>
                           )}
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            inputMode="numeric"
+                            value={getItemQuantity(item, index)}
+                            onChange={(e) => {
+                              const next = Number(e.target.value);
+                              if (!Number.isFinite(next)) return;
+                              const safe = Math.max(1, Math.floor(next));
+                              const rowKey = getRowKey(item, index);
+                              setQuantityOverrides((prev) => ({ ...prev, [rowKey]: safe }));
+                            }}
+                            className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm"
+                            aria-label={`Quantité pour ${item.description || "Marchandise"}`}
+                          />
+                          <div className="mt-2 text-xs text-muted-foreground leading-snug">
+                            <div className="font-semibold text-foreground/80">Detail calcul quantite</div>
+                            <div>
+                              Qte retenue:{" "}
+                              <span className="font-semibold">{getItemQuantity(item, index)}</span>
+                            </div>
+                            <div>
+                              Source: {getQuantitySourceLabel(item.quantity_source)}
+                              {item.quantity_raw ? ` (brut: ${item.quantity_raw})` : ""}
+                            </div>
+                            <div>
+                              Confiance extraction:{" "}
+                              {typeof item.quantity_confidence === "number"
+                                ? `${item.quantity_confidence}%`
+                                : "N/R"}
+                            </div>
+                          </div>
                         </td>
                         <td className="px-3 py-2 align-top">
                           <div className="font-mono">
@@ -725,11 +806,11 @@ export default function HomePage() {
                         <td className="px-3 py-2 align-top">
                           <button
                             type="button"
-                            onClick={() => handleValidate(item)}
+                            onClick={() => handleValidate(item, index)}
                             className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
-                            disabled={!!validatedKeys[getValidatedKey(item)]}
+                            disabled={!!validatedKeys[getRowKey(item, index)]}
                           >
-                            {validatedKeys[getValidatedKey(item)] ? "Validé" : "Valider"}
+                            {validatedKeys[getRowKey(item, index)] ? "Validé" : "Valider"}
                           </button>
                         </td>
                       </tr>

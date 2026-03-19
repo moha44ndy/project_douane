@@ -84,6 +84,9 @@ function normalizeHistoryItem(item: HistoryItem) {
   const usUnit = (item.us_unit ?? "N/R") as string;
   const origin = (item.origin ?? "N/A") as string;
   const value = (item.value ?? "N/A") as string;
+  const quantityRaw = item.quantity ?? 1;
+  const quantity =
+    typeof quantityRaw === "number" ? quantityRaw : Number(quantityRaw) || 1;
 
   const status = (item.statut_validation ?? item.statut ?? "N/A") as string;
 
@@ -105,6 +108,7 @@ function normalizeHistoryItem(item: HistoryItem) {
     usUnit,
     origin,
     value,
+    quantity: Math.max(1, Math.floor(quantity)),
     status,
     dateRaw,
     dateLabel,
@@ -139,6 +143,7 @@ export default function AdminHistoriquePage() {
     success?: string;
     error?: string;
   } | null>(null);
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<string, number>>({});
 
   const fetchCacheStatus = async (token?: string) => {
     try {
@@ -385,6 +390,41 @@ export default function AdminHistoriquePage() {
         err instanceof Error
           ? err.message
           : "Erreur lors de la mise à jour du statut.";
+      setError(msg);
+    }
+  };
+
+  const updateQuantity = async (itemId: number | undefined, quantity: number) => {
+    if (!itemId) return;
+    try {
+      setError(null);
+      setActionMessage(null);
+      const accessToken = await withAdminToken();
+      const res = await fetch(
+        `${API_BASE_URL}/classifications/${itemId}/quantity`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ quantity }),
+        }
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Erreur HTTP ${res.status}`);
+      }
+      const updated = await res.json();
+      setData((prev) =>
+        prev.map((row) => (row.id === updated.id ? { ...row, ...updated } : row))
+      );
+      setActionMessage(`Quantité mise à jour à ${quantity}.`);
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Erreur lors de la mise à jour de la quantité.";
       setError(msg);
     }
   };
@@ -681,6 +721,7 @@ export default function AdminHistoriquePage() {
                   <th className="px-3 py-2 text-left font-semibold">
                     Code tarifaire
                   </th>
+                  <th className="px-3 py-2 text-left font-semibold">Qté</th>
                   <th className="px-3 py-2 text-left font-semibold">D.D.</th>
                   <th className="px-3 py-2 text-left font-semibold">R.S.</th>
                   <th className="px-3 py-2 text-left font-semibold">
@@ -709,6 +750,39 @@ export default function AdminHistoriquePage() {
                     <td className="px-3 py-2">{item.section}</td>
                     <td className="px-3 py-2">{item.chapter}</td>
                     <td className="px-3 py-2 font-mono">{item.code}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={quantityDrafts[String(item.id)] ?? item.quantity}
+                          onChange={(e) => {
+                            const next = Number(e.target.value);
+                            if (!Number.isFinite(next)) return;
+                            const safe = Math.max(1, Math.floor(next));
+                            setQuantityDrafts((prev) => ({
+                              ...prev,
+                              [String(item.id)]: safe,
+                            }));
+                          }}
+                          className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm"
+                          aria-label={`Quantité pour ${item.description}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateQuantity(
+                              item.id,
+                              quantityDrafts[String(item.id)] ?? item.quantity
+                            )
+                          }
+                          className="px-2 py-1 rounded-full border border-primary bg-primary/5 text-xs text-primary"
+                        >
+                          OK
+                        </button>
+                      </div>
+                    </td>
                     <td className="px-3 py-2">{item.ddRate}</td>
                     <td className="px-3 py-2">{item.rsRate}</td>
                     <td className="px-3 py-2">{item.otherTaxes}</td>
@@ -760,7 +834,7 @@ export default function AdminHistoriquePage() {
                 {filtered.length === 0 && (
                   <tr>
                     <td
-                      colSpan={16}
+                      colSpan={17}
                       className="px-3 py-4 text-center text-sm text-muted-foreground"
                     >
                       Aucune classification ne correspond aux filtres.

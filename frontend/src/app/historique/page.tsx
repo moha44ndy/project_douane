@@ -88,6 +88,9 @@ function normalizeHistoryItem(item: HistoryItem) {
   const usUnit = (item.us_unit ?? "N/R") as string;
   const origin = (item.origin ?? "N/A") as string;
   const value = (item.value ?? "N/A") as string;
+  const quantityRaw = item.quantity ?? 1;
+  const quantity =
+    typeof quantityRaw === "number" ? quantityRaw : Number(quantityRaw) || 1;
 
   // Statut
   const status = (item.statut_validation ?? item.statut ?? "N/A") as string;
@@ -109,6 +112,7 @@ function normalizeHistoryItem(item: HistoryItem) {
     usUnit,
     origin,
     value,
+    quantity: Math.max(1, Math.floor(quantity)),
     status,
     dateRaw,
     dateLabel,
@@ -420,6 +424,7 @@ export default function HistoriquePage() {
                     <th className="px-3 py-2 text-left font-semibold">
                       Code tarifaire
                     </th>
+                    <th className="px-3 py-2 text-left font-semibold">Qté</th>
                     <th className="px-3 py-2 text-left font-semibold">D.D.</th>
                     <th className="px-3 py-2 text-left font-semibold">R.S.</th>
                     <th className="px-3 py-2 text-left font-semibold">
@@ -445,6 +450,7 @@ export default function HistoriquePage() {
                       <td className="px-3 py-2">{item.section}</td>
                       <td className="px-3 py-2">{item.chapter}</td>
                       <td className="px-3 py-2 font-mono">{item.code}</td>
+                      <td className="px-3 py-2">{item.quantity}</td>
                       <td className="px-3 py-2">{item.ddRate}</td>
                       <td className="px-3 py-2">{item.rsRate}</td>
                       <td className="px-3 py-2">{item.otherTaxes}</td>
@@ -465,7 +471,7 @@ export default function HistoriquePage() {
                   {filtered.length === 0 && (
                     <tr>
                       <td
-                        colSpan={13}
+                        colSpan={14}
                         className="px-3 py-4 text-center text-sm text-muted-foreground"
                       >
                         Aucune classification ne correspond aux filtres.
