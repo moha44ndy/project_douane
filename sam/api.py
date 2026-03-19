@@ -40,6 +40,15 @@ from .app_logger import get_logger
 
 logger = get_logger(__name__)
 
+def _classify_cache_key(query: str) -> str:
+    """
+    Génère une clé Redis courte et stable pour la classification.
+    Evite les clés très longues (utile quand on classe depuis un fichier).
+    """
+    q = (query or "").strip().lower()
+    digest = hashlib.sha256(q.encode("utf-8")).hexdigest()
+    return f"classify:{digest}"
+
 # Dependency FastAPI pour endpoints admin.
 # (La fonction `_require_admin` est définie plus bas ; ici on ne fait que
 # déléguer, le nom est résolu au moment de l'appel.)
@@ -1186,45 +1195,11 @@ def _extract_items_from_pdf(pdf_bytes: bytes, max_items: int, max_chars: int) ->
     if not raw_text:
         return "", []
 
-    # Découpage blocs (PDF -> souvent sans vraies lignes vides, mais on tente quand même)
-    blocks = [b.strip() for b in re.split(r"\n\s*\n+", raw_text) if b.strip()]
-    chunks: list[str] = []
-    marker_re = re.compile(
-        r"(?im)\b(?:produit|marchandise|item)\s*(\d+)?\s*[\:\-]\s*"
-    )
-    for b in blocks:
-        matches = list(marker_re.finditer(b))
-        if len(matches) >= 2:
-            for i, m in enumerate(matches):
-                start = m.start()
-                end = matches[i + 1].start() if i + 1 < len(matches) else len(b)
-                sub = b[start:end].strip()
-                sub = marker_re.sub("", sub, count=1).strip()
-                if sub:
-                    chunks.append(sub)
-        else:
-            chunks.append(b)
-
-    items: list[str] = []
-    for ch in chunks:
-        ch = re.sub(r"\s+", " ", ch.strip())
-        if not re.search(r"[A-Za-zÀ-ÿ0-9]", ch):
-            continue
-        if len(ch) < 2:
-            continue
-        if len(ch) > 1200:
-            ch = ch[:1200].strip()
-        items.append(ch)
-        if len(items) >= max_items:
-            break
-
-    # Fallback: lignes
-    if not items:
-        lines = raw_text.splitlines()
-        items = _filter_candidate_lines(lines, max_items=max_items)
-
-    effective_query = "\n".join([f"- {it}" for it in items]) if items else raw_text[:max_chars].strip()
-    return (effective_query, items)
+    # Pour améliorer la cohérence entre TXT et PDF et bénéficier de la même
+    # logique de segmentation (blocs, "Produit 1:", fallback ligne par ligne),
+    # on réutilise directement le helper TXT sur le texte extrait du PDF.
+    effective_query, items = _extract_items_from_txt(raw_text, max_items=max_items)
+    return effective_query, items
 
 
 def _sniff_csv_dialect(sample: str) -> csv.Dialect:
@@ -1412,7 +1387,8 @@ def _extract_items_from_json(json_text: str, max_items: int) -> tuple[str, list[
 )
 async def classify_file(
     file: UploadFile = File(...),
-    max_items: int = 30,
+    max_items: int = 500,
+    batch_size: int = 25,
     max_chars: int = 20000,
 ) -> ClassifyFileResponse:
     """
@@ -1423,8 +1399,12 @@ async def classify_file(
     """
     request_id = uuid.uuid4().hex[:8]
 
-    if max_items < 1 or max_items > 80:
-        raise HTTPException(status_code=400, detail="max_items doit être entre 1 et 80")
+    if max_items < 1 or max_items > 500:
+        raise HTTPException(status_code=400, detail="max_items doit être entre 1 et 500")
+    if batch_size < 1 or batch_size > 50:
+        raise HTTPException(status_code=400, detail="batch_size doit être entre 1 et 50")
+    if batch_size > max_items:
+        batch_size = max_items
     if max_chars < 1000 or max_chars > 200000:
         raise HTTPException(status_code=400, detail="max_chars invalide")
 
@@ -1455,13 +1435,94 @@ async def classify_file(
         ext,
     )
 
+    # Pour les fichiers .txt, on veut le même comportement que le copier/coller :
+    # on envoie le texte complet tel quel au moteur de classification, sans
+    # découpage ligne par ligne, et on considère items_count = nb de classifications
+    # effectivement retournées par le LLM.
+    if ext in {"txt", "text"}:
+        text_content = raw_bytes.decode("utf-8", errors="ignore")
+        # On tronque éventuellement pour éviter les entrées démesurées.
+        effective_query = (text_content or "")[:max_chars].strip()
+        if not effective_query:
+            raise HTTPException(
+                status_code=400,
+                detail="Impossible d'extraire des marchandises du fichier. Vérifie le format.",
+            )
+
+        cache_key = _classify_cache_key(effective_query)
+        cache_disabled = cache_classify_is_disabled() or len(effective_query) > 12000
+        preview = effective_query.replace("\n", " ")
+        preview = preview[:80] + ("…" if len(preview) > 80 else "")
+
+        logger.debug(
+            "[classify-file %s] TXT mode (full text) cache_disabled=%s key=%s preview=%r",
+            request_id,
+            cache_disabled,
+            cache_key,
+            preview,
+        )
+
+        if not cache_disabled:
+            cached_raw = cache_get(cache_key)
+            if cached_raw is not None:
+                raw_out = _ensure_json_raw(cached_raw)
+                _inspect_raw_json(raw_out, request_id, "HIT_FILE_TXT")
+                # items_count = nombre de classifications effectivement présentes
+                classifications = _extract_classifications(raw_out)
+                return ClassifyFileResponse(
+                    raw=raw_out,
+                    effective_query=effective_query,
+                    items_count=len(classifications),
+                )
+
+        try:
+            chunks = app.state.chunks
+            index = app.state.index
+        except AttributeError as exc:
+            raise HTTPException(status_code=503, detail="Moteur RAG non initialisé") from exc
+
+        try:
+            result = process_user_input(effective_query, chunks, index)
+        except Exception as exc:  # pragma: no cover - garde-fou
+            logger.exception("[classify-file %s] process_user_input TXT failed", request_id)
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
+            raise HTTPException(status_code=500, detail=detail) from exc
+
+        # Normalisation identique à /classify
+        result = _normalize_classifications_response(result)
+        raw_out = _ensure_json_raw(result)
+        _inspect_raw_json(raw_out, request_id, "FRESH_FILE_TXT")
+
+        # items_count = nombre de classifications retournées
+        classifications = _extract_classifications(raw_out)
+        items_count = len(classifications)
+
+        # Mise en cache éventuelle de la réponse brute, comme pour /classify
+        if not cache_disabled:
+            try:
+                cache_set(cache_key, raw_out, ex=3600)
+            except Exception:
+                logger.warning("[classify-file %s] impossible de mettre en cache la réponse TXT", request_id)
+
+        logger.debug(
+            "[classify-file %s] TXT full-text done raw_len=%s raw_preview=%r items_count=%s",
+            request_id,
+            len(raw_out),
+            raw_out[:80],
+            items_count,
+        )
+
+        return ClassifyFileResponse(
+            raw=raw_out,
+            effective_query=effective_query,
+            items_count=items_count,
+        )
+
+    # Pour les autres types (PDF), on garde le comportement batché existant.
     effective_query = ""
     items: list[str] = []
     try:
-        if ext in {"txt", "text"}:
-            text_content = raw_bytes.decode("utf-8", errors="ignore")
-            effective_query, items = _extract_items_from_txt(text_content, max_items=max_items)
-        elif ext in {"pdf"}:
+        if ext in {"pdf"}:
             effective_query, items = _extract_items_from_pdf(
                 raw_bytes, max_items=max_items, max_chars=max_chars
             )
@@ -1483,8 +1544,8 @@ async def classify_file(
             detail="Impossible d'extraire des marchandises du fichier. Vérifie le format.",
         )
 
-    cache_key = f"classify:{effective_query.lower()}"
-    cache_disabled = cache_classify_is_disabled() or len(effective_query) > 4000
+    cache_key = _classify_cache_key(effective_query)
+    cache_disabled = cache_classify_is_disabled() or len(effective_query) > 12000
     preview = effective_query.replace("\n", " ")
     preview = preview[:80] + ("…" if len(preview) > 80 else "")
 
@@ -1513,21 +1574,188 @@ async def classify_file(
         raise HTTPException(status_code=503, detail="Moteur RAG non initialisé") from exc
 
     try:
-        result = process_user_input(effective_query, chunks, index)
+        # Traitement en batches pour pouvoir classifier un fichier contenant
+        # beaucoup plus de produits qu'un seul appel LLM ne peut gérer.
+        batches: list[list[str]] = [
+            items[i : i + batch_size] for i in range(0, len(items), batch_size)
+        ]
+
+        narrative: str | None = None
+        merged_classifications: list[dict[str, Any]] = []
+
+        # Cache in-memory pour éviter de refaire le LLM plusieurs fois
+        # sur des items identiques dans le même upload (important pour les gros fichiers).
+        # Key = sha256(item_text), value = premier élément de `classifications`.
+        single_item_cache: dict[str, dict[str, Any]] = {}
+
+        for batch_idx, batch_items in enumerate(batches, start=1):
+            batch_input = "\n".join([f"- {it}" for it in batch_items])
+            logger.debug(
+                "[classify-file %s] batch %s/%s size=%s",
+                request_id,
+                batch_idx,
+                len(batches),
+                len(batch_items),
+            )
+
+            batch_raw = process_user_input(batch_input, chunks, index)
+            normalized_batch = _normalize_classifications_response(batch_raw)
+            batch_raw_out = _ensure_json_raw(normalized_batch)
+            _inspect_raw_json(batch_raw_out, request_id, f"FRESH_BATCH_{batch_idx}")
+
+            try:
+                parsed_batch = json.loads(batch_raw_out)
+            except Exception:
+                parsed_batch = None
+
+            if not isinstance(parsed_batch, dict):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Réponse LLM invalide pour le batch {batch_idx}",
+                )
+
+            if isinstance(parsed_batch.get("narrative"), str) and not narrative:
+                narrative = parsed_batch["narrative"]
+
+            batch_classes = parsed_batch.get("classifications") or []
+            if isinstance(batch_classes, list):
+                returned_n = len(batch_classes)
+                expected_n = len(batch_items)
+                logger.debug(
+                    "[classify-file %s] batch %s returned %s/%s classifications",
+                    request_id,
+                    batch_idx,
+                    returned_n,
+                    expected_n,
+                )
+
+                # Si le modèle ne renvoie pas tout le batch,
+                # on refait une passe produit par produit pour compléter.
+                if returned_n != expected_n:
+                    logger.warning(
+                        "[classify-file %s] batch %s incomplete (%s/%s). Fallback per-item.",
+                        request_id,
+                        batch_idx,
+                        returned_n,
+                        expected_n,
+                    )
+                    merged_classifications.extend([])
+                    for it_idx, it in enumerate(batch_items, start=1):
+                        item_hash = hashlib.sha256(
+                            (it or "").encode("utf-8", errors="ignore")
+                        ).hexdigest()
+                        cached_single = single_item_cache.get(item_hash)
+                        if cached_single:
+                            merged_classifications.append(cached_single)
+                            continue
+
+                        single_input = f"- {it}"
+                        single_raw = process_user_input(single_input, chunks, index)
+                        normalized_single = _normalize_classifications_response(single_raw)
+                        single_raw_out = _ensure_json_raw(normalized_single)
+                        _inspect_raw_json(
+                            single_raw_out,
+                            request_id,
+                            f"FALLBACK_BATCH_{batch_idx}_ITEM_{it_idx}",
+                        )
+                        try:
+                            decoded_single = json.loads(single_raw_out)
+                        except Exception:
+                            decoded_single = None
+
+                        if isinstance(decoded_single, dict):
+                            single_classes = decoded_single.get("classifications") or []
+                            if isinstance(single_classes, list) and single_classes:
+                                first = single_classes[0]
+                                if isinstance(first, dict):
+                                    single_item_cache[item_hash] = first
+                                    merged_classifications.append(first)
+                                else:
+                                    merged_classifications.append(
+                                        {
+                                            "description": it[:200],
+                                            "hs_code": "Non renseigné",
+                                            "section": "N/A",
+                                            "section_name": "",
+                                            "chapter": "N/A",
+                                            "chapter_name": "",
+                                            "dd_rate": "N/R",
+                                            "rs_rate": "N/R",
+                                            "us_unit": "",
+                                            "other_taxes": "",
+                                            "justification": "fallback: format classification inattendu",
+                                            "excerpt": "",
+                                            "origin": "Non renseigné",
+                                            "value": "Non renseigné",
+                                            "confidence": 0,
+                                        }
+                                    )
+                            else:
+                                # fallback vide : on pousse quand même un objet placeholder
+                                merged_classifications.append(
+                                    {
+                                        "description": it[:200],
+                                        "hs_code": "Non renseigné",
+                                        "section": "N/A",
+                                        "section_name": "",
+                                        "chapter": "N/A",
+                                        "chapter_name": "",
+                                        "dd_rate": "N/R",
+                                        "rs_rate": "N/R",
+                                        "us_unit": "",
+                                        "other_taxes": "",
+                                        "justification": "fallback: modèle n'a pas renvoyé de classification",
+                                        "excerpt": "",
+                                        "origin": "Non renseigné",
+                                        "value": "Non renseigné",
+                                        "confidence": 0,
+                                    }
+                                )
+                        else:
+                            merged_classifications.append(
+                                {
+                                    "description": it[:200],
+                                    "hs_code": "Non renseigné",
+                                    "section": "N/A",
+                                    "section_name": "",
+                                    "chapter": "N/A",
+                                    "chapter_name": "",
+                                    "dd_rate": "N/R",
+                                    "rs_rate": "N/R",
+                                    "us_unit": "",
+                                    "other_taxes": "",
+                                    "justification": "fallback: réponse non parsable",
+                                    "excerpt": "",
+                                    "origin": "Non renseigné",
+                                    "value": "Non renseigné",
+                                    "confidence": 0,
+                                }
+                            )
+                else:
+                    merged_classifications.extend(batch_classes)
+
+        merged = {
+            "narrative": narrative or "Proposition indicative, à faire valider par l'autorité douanière.",
+            "classifications": merged_classifications,
+        }
+        raw_out = _ensure_json_raw(merged)
+
+    except HTTPException:
+        raise
     except Exception as exc:  # pragma: no cover
-        logger.exception("[classify-file %s] process_user_input failed", request_id)
+        logger.exception("[classify-file %s] batch classification failed", request_id)
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
         raise HTTPException(status_code=500, detail=detail) from exc
 
-    result = _normalize_classifications_response(result)
-    raw_out = _ensure_json_raw(result)
-    _inspect_raw_json(raw_out, request_id, "FRESH")
+    _inspect_raw_json(raw_out, request_id, "FRESH_MERGED")
 
     logger.debug(
-        "[classify-file %s] fresh done raw_len=%s raw_preview=%r",
+        "[classify-file %s] fresh merged done raw_len=%s raw_preview=%r batches=%s items=%s",
         request_id,
         len(raw_out),
         raw_out[:80],
+        (len(items) + batch_size - 1) // batch_size,
+        len(items),
     )
 
     return ClassifyFileResponse(
@@ -1548,7 +1776,7 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     request_id = uuid.uuid4().hex[:8]
 
     # Vérifier si une réponse a déjà été mise en cache (sauf si le cache est désactivé)
-    cache_key = f"classify:{payload.query.strip().lower()}"
+    cache_key = _classify_cache_key(payload.query)
     cache_disabled = cache_classify_is_disabled()
     preview = (payload.query or "").strip().replace("\n", " ")
     preview = preview[:60] + ("…" if len(preview) > 60 else "")
@@ -1711,7 +1939,7 @@ def validate_classification(
     if payload.query and payload.raw_response:
         cache_disabled = cache_classify_is_disabled()
         if not cache_disabled:
-            cache_key = f"classify:{payload.query.strip().lower()}"
+            cache_key = _classify_cache_key(payload.query)
             # Contrat strict : on s'assure que le contenu mis en cache est
             # une string JSON valide côté frontend.
             raw_str = _ensure_json_raw(payload.raw_response)

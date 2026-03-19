@@ -607,6 +607,9 @@ export default function HomePage() {
               {fileItemsCount} produit(s) détecté(s) dans le fichier.
             </p>
           )}
+          <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
+            {classifications.length} classification(s) reçue(s) (dans l'UI).
+          </p>
           {payload.narrative && (
             <p className="text-sm text-foreground leading-relaxed">
               {payload.narrative}
