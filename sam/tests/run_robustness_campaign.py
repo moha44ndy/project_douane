@@ -233,6 +233,50 @@ def main() -> None:
     )
     out["cases"]["csv_comma_no_header"] = asdict(_extract_csv_case("csv_comma_no_header", csv_comma_no_header))
 
+    csv_marchandise_header = "\n".join(
+        [
+            "Marchandise;Qte;Valeur;Origine",
+            "ordinateur portable i7;5;1500000;chine",
+            "telephone android 5g;12;350000;vietnam",
+        ]
+    )
+    out["cases"]["csv_marchandise_header_edge"] = asdict(
+        _extract_csv_case("csv_marchandise_header_edge", csv_marchandise_header)
+    )
+
+    csv_tab_delim = "\n".join(
+        [
+            "Produit\tQté\tValeur\tOrigine",
+            "PC gamer\t2\t2200000\tusa",
+            "cannettes d eau\t4\t2400\tchine",
+        ]
+    )
+    out["cases"]["csv_tab_delim_edge"] = asdict(
+        _extract_csv_case("csv_tab_delim_edge", csv_tab_delim)
+    )
+
+    csv_pipe_delim = "\n".join(
+        [
+            "Produit|Qté|Valeur|Origine",
+            "Ordinateur portable i7|5|1500000|chine",
+            "sac a main cuir|7|80000|italie",
+        ]
+    )
+    out["cases"]["csv_pipe_delim_edge"] = asdict(
+        _extract_csv_case("csv_pipe_delim_edge", csv_pipe_delim)
+    )
+
+    csv_extra_cols = "\n".join(
+        [
+            "Produit;Qté;Valeur;Origine;Commentaire",
+            "ordinateur portable i7;5;1500000;chine;note A",
+            "telephone android 5g;12;350000;vietnam;note B",
+        ]
+    )
+    out["cases"]["csv_extra_cols_edge"] = asdict(
+        _extract_csv_case("csv_extra_cols_edge", csv_extra_cols)
+    )
+
     csv_weird_quotes = "\n".join(
         [
             "libellé;quantité;prix;origine",
@@ -247,6 +291,16 @@ def main() -> None:
 
     # PDF edge case: minimal pdf with "ordinateur" in text
     out["cases"]["pdf_minimal_text"] = asdict(_extract_pdf_case("pdf_minimal_text", "ordinateur 2 pcs"))
+    pdf_table_text = "\n".join(
+        [
+            "Produit | Qté | Valeur | Origine",
+            "ordinateur portable i7 | 5 | 1500000 | chine",
+            "bouteilles d'eau | 3 | 1200 | chine",
+        ]
+    )
+    out["cases"]["pdf_table_like_text"] = asdict(
+        _extract_pdf_case("pdf_table_like_text", pdf_table_text)
+    )
 
     # Load/perf stability: re-run a few extraction loops (no LLM)
     load_repeats = int(os.getenv("LOAD_REPEATS", "10"))
