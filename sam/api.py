@@ -232,6 +232,21 @@ class ValidateClassificationRequest(BaseModel):
     raw_response: str | None = None
 
 
+class ValidateClassificationBulkRequest(BaseModel):
+    """
+    Validation de plusieurs classifications en une seule requête.
+
+    Objectif : réduire drastiquement le nombre de calls HTTP (sinon le
+    rate-limit sur `POST /classifications/validate` se déclenche).
+    """
+
+    items: list[ValidateClassificationRequest]
+    # Optionnel : permet d'écrire la cache une seule fois pour toute la requête
+    # même si l'UI ne fournit pas `query/raw_response` par item.
+    query: str | None = None
+    raw_response: str | None = None
+
+
 # Mapping chapitre SH (2 chiffres) -> (section romain, libellé section) pour corriger les réponses LLM
 HS_CHAPTER_TO_SECTION: dict[int, tuple[str, str]] = {
     **{c: ("I", "Animaux vivants et produits du règne animal") for c in range(1, 6)},
@@ -324,6 +339,36 @@ def _normalize_classifications_response(raw_text: str) -> str:
                 item["section_name"] = normalized["section_name"]
             if normalized.get("chapter"):
                 item["chapter"] = normalized["chapter"]
+    # Nettoyage d'affichage : certaines zones peuvent contenir des caractères
+    # non parfaitement supportés par la chaîne UI/copie-collage.
+    # On supprime les accents pour garantir un rendu stable.
+    text_keys = [
+        "narrative",
+        "description",
+        "justification",
+        "excerpt",
+        "section_name",
+        "chapter_name",
+        "origin",
+        "value",
+        "dd_rate",
+        "rs_rate",
+        "us_unit",
+        "other_taxes",
+    ]
+
+    if isinstance(data.get("narrative"), str) and data.get("narrative"):
+        data["narrative"] = _strip_accents_ascii(data["narrative"])
+
+    for item in classifications:
+        if not isinstance(item, dict):
+            continue
+        for k in text_keys:
+            if k == "narrative":
+                continue
+            if isinstance(item.get(k), str) and item.get(k):
+                item[k] = _strip_accents_ascii(item[k])
+
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -3097,10 +3142,36 @@ def validate_classification(
     _rate_limit(request, "classification.validate")
     # admin_id validé via `admin_required`
 
+    cache_query = payload.query
+    cache_raw = payload.raw_response
+
+    result = _validate_classification_one(
+        payload=payload,
+        admin_id=admin_id,
+        cache_query=cache_query,
+        cache_raw=cache_raw,
+        cache_already_set=False,
+        request=request,
+    )
+    return result
+
+
+def _validate_classification_one(
+    payload: ValidateClassificationRequest,
+    admin_id: str,
+    request: Request,
+    cache_query: str | None,
+    cache_raw: str | None,
+    cache_already_set: bool,
+) -> dict:
+    """
+    Implémentation commune : insère une classification validée, alimente le RAG,
+    et (optionnel) met à jour le cache classify (une fois par requête).
+    """
+
     now = datetime.now(timezone.utc)
 
     # On stocke déjà section et chapitre sous forme "numéro - libellé" côté frontend
-    # (si le libellé est connu). On ne ré-interprète donc pas ici.
     section_label = payload.section or "N/A"
     chapter_label = payload.chapter or "N/A"
 
@@ -3183,7 +3254,6 @@ def validate_classification(
     result = dict(row)
 
     # Apprentissage (RAG étendu) :
-    # ajoute automatiquement l'exemple validé à l'index FAISS dédié.
     try:
         add_validated_classification_example_to_index(
             result,
@@ -3196,25 +3266,15 @@ def validate_classification(
             exc_info=True,
         )
 
-    # Mise en cache uniquement lorsqu'une classification est validée (et si le cache est activé)
-    if payload.query and payload.raw_response:
+    # Mise en cache : on l'autorise une fois par requête bulk (ou une fois par call single)
+    if not cache_already_set and cache_query and cache_raw:
         cache_disabled = cache_classify_is_disabled()
         if not cache_disabled:
-            cache_key = _classify_cache_key(payload.query)
-            # Contrat strict : on s'assure que le contenu mis en cache est
-            # une string JSON valide côté frontend.
-            raw_str = _ensure_json_raw(payload.raw_response)
-            logger.debug(
-                "[validate cache] cache_disabled=%s key=%s raw_len=%s raw_preview=%r",
-                cache_disabled,
-                cache_key,
-                len(raw_str),
-                raw_str[:80],
-            )
+            cache_key = _classify_cache_key(cache_query)
+            raw_str = _ensure_json_raw(cache_raw)
             cache_set(cache_key, raw_str, ex=3600)
 
-    # Audit best-effort : validation d'une nouvelle classification
-    # On journalise l'acteur admin (pas l'utilisateur dont la classification vient)
+    # Audit best-effort
     user_id_for_audit = admin_id
     _insert_audit_log(
         actor_id=user_id_for_audit,
@@ -3231,6 +3291,66 @@ def validate_classification(
 
     return result
 
+
+@app.post(
+    "/classifications/validate/bulk",
+    tags=["classification"],
+)
+def validate_classifications_bulk(
+    payload: ValidateClassificationBulkRequest,
+    request: Request,
+    admin_id: str = Depends(admin_required),
+) -> dict:
+    """
+    Validation multiple en une seule requête.
+    """
+    # Bulk : on autorise plus de requêtes, mais on reste protégé contre le flood.
+    _rate_limit(request, "classification.validate.bulk", limit=200, window_seconds=60)
+
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="items est requis")
+
+    # Cache : on le fait max 1 fois par bulk.
+    cache_query = payload.query
+    cache_raw = payload.raw_response
+
+    results: list[dict] = []
+    errors: list[dict] = []
+    cache_already_set = cache_query is not None and cache_raw is not None
+
+    # Si l'UI n'a pas fourni query/raw_response, on accepte aussi
+    # que le premier item qui les contient déclenche le cache.
+    cache_set_done = False
+
+    for idx, item in enumerate(payload.items):
+        try:
+            # Cache par item (fallback) si non fourni au niveau bulk
+            q = cache_query or item.query
+            raw_resp = cache_raw or item.raw_response
+            already = cache_set_done
+            result = _validate_classification_one(
+                payload=item,
+                admin_id=admin_id,
+                cache_query=q,
+                cache_raw=raw_resp,
+                cache_already_set=already,
+                request=request,
+            )
+            results.append(result)
+            if (q and raw_resp) and not cache_set_done:
+                cache_set_done = True
+        except Exception as e:
+            errors.append({"index": idx, "error": f"{type(e).__name__}: {e}"})
+            continue
+
+    return {
+        "ok": len(errors) == 0,
+        "total": len(payload.items),
+        "validated": len(results),
+        "errors_len": len(errors),
+        "errors": errors,
+        "cache_set": cache_set_done,
+    }
 
 @app.get("/admin/cache/classify/status", tags=["admin"])
 def get_classify_cache_status(

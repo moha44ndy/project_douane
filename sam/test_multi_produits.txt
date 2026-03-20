@@ -1,141 +1,84 @@
-15 ordinateurs
-18 ordinateurs
-ordinateur
-ordinateur
-ordinateur de quantité 26
-ordinateur quantite: 12
-ordinateur qte 7
-ordinateur qté 9
-ordinateur comptant 50 exemplaires
-ordinateur 30 unités
-ordinateur 20 unites
-ordinateur 10 pcs
-ordinateur 8 pieces
-ordinateur * 3
-ordinateur x3
-3x ordinateur
-x4 ordinateur
+1 ordinateur portable i7 origine Chine valeur 1500000
+1 telephone android 5g origine Vietnam valeur 350000
+1 sac a main cuir origine Italie valeur 80000
+1 taxi hybride origine Japon valeur 12000000
+1 bouteilles d'eau origine Chine valeur 2400
+1 canettes d'eau origine Chine valeur 1200
+1 bijoux origine France valeur 90000
+1 chevaux origine Allemagne valeur 500000
+
+2 ordianteurs
+3 ordianteur
+4 bijoux
+1 bijous
+2 bijouxs
+6 cannette deau
+5 cannettes d'eau
+2 canettes d eau
+7 boutaille de eau
+3 boutailles d'eau
+4 bouteilles d eau
+2 canettes d'eau
+1 ordinateur portable i7
+1 telephone android 5g
+1 sac a main cuir
+1 taxi hybride
+2 taxis
+
+5 gsm
+2 tel
+3 ordi
+10 pc gamer
+
+2 ordinateurs + 3 telephones
+1 ordinateur + 1 telephone + 1 taxi
+4 bouteilles d'eau + 2 canettes d'eau
+1 ordinateur portable i7 et telephone android 5g
+1 ordinateur, 1 telephone
+
+6 telephone android 5g origine Chine valeur 300000
+2 ordinateurs origine Chine valeur 500000
+7 sac a main cuir origine Italie valeur 80000
+
+0 ordinateur portable i7
+-5 ordinateurs
+un ordinateur
+un telephone
 ~20 ordinateurs
 environ 14 ordinateurs
 approx 11 ordinateurs
-20-25 ordinateurs
-vingt ordinateurs
-cinquante unites ordinateur
-2 cartons de 12 ordinateurs
-3 lots x 5 ordinateurs
-4 packs * 6 ordinateurs
 
-téléphone
-telephone
-gsm
-tel
-5 telephones
-telephone de quantité 8
-telephone + smartphone
-smartphone et telephone
-telephone, quantite 6, origine chine, valeur 300000
+1 sac
+1 sac de transport
+1 sac à dos
+1 sac en cuir
+1 montre connectée
+1 montre
+1 bracelet
+1 chaussures en cuir
+1 ceinture en cuir
 
-taxi
-taxis
-2 taxis
-taxi x2
-taxi de quantité 3
-taxi + moto
+1 câble USB-C
+1 chargeur secteur
+1 adaptateur secteur
+1 écran LED 24 pouces
+1 tablette tactile
+1 smartphone 5G
+1 casque audio Bluetooth
 
-sac a main
-sac à main
-12 sac a main
-sac a mains
-sacs a main
-sac a main comptant 10 exemplaires
-sac a main, origine france, valeur 120000
+1 t-shirt coton
+1 pull en laine
 
-Produit | Qté | Valeur | Origine
-ordinateur portable i7 | 5 | 1500000 | chine
-telephone android 5g | 12 | 350000 | vietnam
-sac a main cuir | 7 | 80000 | italie
-taxi hybride | 2 | 12000000 | japon
+1 boisson gazeuse
+1 boisson énergisante
 
-Marchandise;Qte;Valeur;Origine
-barres acier laminé;30;500000;turquie
-toles acier galvanise;18;420000;chine
-compresseur air electrique;4;950000;allemagne
+1 bijoux fantaisie
+1 bijoux en argent
+1 diamant brut
 
-ordinateur, quantité 26, origine Chine
-ordinateur, origine chine, valeur 500000
-ordinateur + téléphone + taxi + sac a main
-ordinateur; telephone; taxi
-pc gamer, qte 2, origine usa, valeur 2200000
-ordianteur de quantite 5
-ordi de quantité 4
+1 papier A4
+1 carton d'emballage
 
-1 ordinateur
-0 ordinateur
--5 ordinateurs
-un ordinateur
-deux ordinateurs
-cent ordinateurs
-
-2 packs de 12 bouteilles d'eau
-3 cartons de 6 bouteilles d''eau
-4 lots x 5 bouteilles deau
-5 packs * 4 boutailles deau
-1 bouteille d'eau
-2 bouteilles d'eau
-3 bouteilles d''eau
-4 bouteilles deau
-5 boutailles deau
-6 boutaille deau
-
-2 canettes deau
-3 cannettes d''eau
-4 canettes d'eau
-5 canette de eau
-
-2 canettes de 12 bouteilles d'eau
-3 canettes de 6 bouteilles d''eau
-
-ordinateur vingt-deux unités
-ordinateur quatre-vingts
-ordinateur mille unités
-ordinateur cent trente unités
-
-ordinateur quantite=26
-ordinateur qté: 26
-ordinateur ~ 20 ordinateurs
-environ20 ordinateur
-approx11 ordinateurs
-
-ordinateur, telephone, taxi
-ordinateur + telephone, taxi
-
-Produit | Qté | Origine | Valeur
-bouteilles d'eau | 6 | chine | 2400
-telephone android 5g | 2 | vietnam | 600000
-
-Qté | Produit | Valeur | Origine
-7 | sac a main cuir | 80000 | italie
-
-Produit | Qté | Valeur | Origine
-boissons en conserve;Qte: 3;Valeur: 900 | 3 | 900 | chine
-
-3 ordianteurs
-2 ordianteur
-4 bijoux
-1 bijous
-6 chevaux
-
-5 cannette deau
-2 cannettes d'eau
-7 boutaille de eau
-3 boutailles d'eau
-
-4 ordinateu
-2 bijouxs
-3 cannete de eau
-2 cannettes d eau
-2 bouteilles d eau
-
-500000
-Allemagne
-Origine: Allemagne
+1 produit xzlqv incompris
+1 article divers non specifie
+1 dispositif electronique non specifie

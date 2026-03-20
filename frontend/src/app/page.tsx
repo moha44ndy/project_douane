@@ -436,24 +436,110 @@ export default function HomePage() {
     setValidationMessage(null);
     setValidatingAll(true);
 
-    // Travail en local pour eviter un double clic / double boucle
-    // avant que React n'ait synchronisé `validatedKeys`.
-    const validatedSet = new Set(Object.keys(validatedKeys));
-
     try {
+      // Travail en local pour eviter un double clic / double boucle
+      // avant que React n'ait synchronisé `validatedKeys`.
+      const validatedSet = new Set(Object.keys(validatedKeys));
+
+      const keysToMark: string[] = [];
+      const itemsToValidate: any[] = [];
+
       for (let i = 0; i < payload.classifications.length; i++) {
         const item = payload.classifications[i];
         const rowKey = getRowKey(item, i);
         if (validatedSet.has(rowKey)) continue;
 
-        await handleValidate(item, i);
-        validatedSet.add(rowKey);
+        const quantityToSend = getItemQuantity(item, i);
 
-        // Petite pause pour ne pas saturer le backend.
-        await new Promise((r) => setTimeout(r, 250));
+        const section = item.section_name
+          ? `${item.section ?? "N/A"} - ${item.section_name}`
+          : item.section ?? "N/A";
+        const chapter = item.chapter_name
+          ? `${item.chapter ?? "N/A"} - ${item.chapter_name}`
+          : item.chapter ?? "N/A";
+
+        itemsToValidate.push({
+          description: item.description ?? "",
+          section,
+          chapter,
+          hs_code: item.hs_code ?? "",
+          confidence: item.confidence ?? null,
+          quantity: quantityToSend,
+          dd_rate: item.dd_rate ?? null,
+          rs_rate: item.rs_rate ?? null,
+          other_taxes: item.other_taxes ?? null,
+          us_unit: item.us_unit ?? null,
+          origin: item.origin ?? null,
+          value: item.value ?? null,
+          user_id: userId,
+        });
+
+        keysToMark.push(rowKey);
+      }
+
+      if (!itemsToValidate.length) {
+        setValidationMessage("Aucune classification à valider.");
+        return;
+      }
+
+      const chunkSize = 50;
+      const nextValidated: Record<string, true> = { ...validatedKeys };
+      let validatedTotal = 0;
+      let errorsTotal = 0;
+      let total = keysToMark.length;
+
+      for (let start = 0; start < itemsToValidate.length; start += chunkSize) {
+        const chunkItems = itemsToValidate.slice(start, start + chunkSize);
+        const chunkKeys = keysToMark.slice(start, start + chunkSize);
+        const isFirstChunk = start === 0;
+
+        const res = await fetch(`${API_BASE_URL}/classifications/validate/bulk`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({
+            items: chunkItems,
+            query: isFirstChunk ? classifyQueryForCache || undefined : undefined,
+            raw_response: isFirstChunk ? raw || undefined : undefined,
+          }),
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || `Erreur HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        validatedTotal += data?.validated ?? chunkItems.length;
+        errorsTotal += data?.errors_len ?? 0;
+
+        // Si certains items échouent, on ne les marque pas comme validés côté UI.
+        const errs: any[] = Array.isArray(data?.errors) ? data.errors : [];
+        const errorIdxs = new Set<number>(
+          errs
+            .map((e: any) => e?.index)
+            .filter((x: any) => typeof x === "number" && x >= 0) as number[]
+        );
+        for (let j = 0; j < chunkKeys.length; j++) {
+          if (!errorIdxs.has(j)) nextValidated[chunkKeys[j]] = true;
+        }
+      }
+
+      setValidatedKeys(nextValidated);
+
+      if (errorsTotal > 0) {
+        setValidationMessage(
+          `Validation terminée : ${validatedTotal}/${total} enregistrées, ${errorsTotal} erreurs.`
+        );
+      } else {
+        setValidationMessage(`Tout validé : ${validatedTotal}/${total} enregistrées.`);
       }
     } catch (err) {
-      // `handleValidate` gère déjà les messages d'erreur.
+      const message =
+        err instanceof Error ? err.message : "Erreur lors de la validation";
+      setError(message);
     } finally {
       setValidatingAll(false);
     }

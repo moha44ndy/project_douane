@@ -147,7 +147,7 @@ def main() -> None:
         {
             "name": "multi_lines_basic",
             "endpoint": "/classify",
-            "timeout_s": 180,
+            "timeout_s": 90,
             "payload": {
                 "query": "\n".join(
                     [
@@ -161,7 +161,7 @@ def main() -> None:
         {
             "name": "typos_and_separators",
             "endpoint": "/classify",
-            "timeout_s": 180,
+            "timeout_s": 90,
             "payload": {
                 "query": "\n".join(
                     [
@@ -178,7 +178,7 @@ def main() -> None:
         {
             "name": "txt_file_mixed_noise",
             "endpoint": "/classify/file",
-            "timeout_s": 240,
+            "timeout_s": 120,
             "form_data": {"max_items": 80, "batch_size": 20, "max_chars": 20000},
             "file_content": "\n".join(
                 [
@@ -200,6 +200,11 @@ def main() -> None:
         },
     ]
 
+    scenarios_limit_raw = os.getenv("SCENARIOS_LIMIT", "").strip()
+    scenarios_limit = int(scenarios_limit_raw) if scenarios_limit_raw else 0
+    if scenarios_limit and scenarios_limit > 0:
+        scenarios = scenarios[:scenarios_limit]
+
     report: dict = {
         "api_base_url": API_BASE_URL,
         "runs_per_query": RUNS_PER_QUERY,
@@ -214,22 +219,28 @@ def main() -> None:
         timeout_s = sc.get("timeout_s", 180)
 
         runs: list[CallResult] = []
-        for i in range(RUNS_PER_QUERY):
-            if endpoint == "/classify":
-                payload = sc["payload"]
-                runs.append(_post_json(url, payload, timeout_s=timeout_s))
-            else:
-                runs.append(
-                    _post_file_txt(
-                        url,
-                        content=sc["file_content"],
-                        form_data=sc["form_data"],
-                        timeout_s=timeout_s,
+        scenario_error: str | None = None
+        try:
+            for _i in range(RUNS_PER_QUERY):
+                if endpoint == "/classify":
+                    payload = sc["payload"]
+                    runs.append(_post_json(url, payload, timeout_s=timeout_s))
+                else:
+                    runs.append(
+                        _post_file_txt(
+                            url,
+                            content=sc["file_content"],
+                            form_data=sc["form_data"],
+                            timeout_s=timeout_s,
+                        )
                     )
-                )
+        except Exception as e:
+            scenario_error = str(e)[:300]
 
         successes = sum(1 for r in runs if r.ok)
-        non_zeros = [r.non_renseignes for r in runs if r.ok and r.non_renseignes is not None]
+        non_zeros = [
+            r.non_renseignes for r in runs if r.ok and r.non_renseignes is not None
+        ]
         non_avg = sum(non_zeros) / len(non_zeros) if non_zeros else None
         ms_vals = [r.ms for r in runs if r.ok]
 
@@ -244,6 +255,7 @@ def main() -> None:
             "avg_non_renseignes": non_avg,
             "stability": _stability_score(runs),
             "runs": [asdict(r) for r in runs],
+            "scenario_error": scenario_error,
         }
 
     report["finished_at"] = time.time()
