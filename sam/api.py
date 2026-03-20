@@ -25,6 +25,7 @@ import io
 import csv
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from pypdf import PdfReader
 
 from .cache import (
@@ -46,19 +47,29 @@ _ALIAS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "aliases": {}}
 _ALIAS_CACHE_TTL_SECONDS = 60.0
 _CLASSIFY_CACHE_SCHEMA_VERSION = "v2"
 
+_ALIAS_FUZZY_THRESHOLD = 0.86  # seuil de similarite chaine->chaine (flou)
+
+
+def _strip_accents_ascii(s: str) -> str:
+    """
+    Normalise en ASCII pour eviter les ecarts "téléphone" vs "telephone".
+    """
+    return unicodedata.normalize("NFKD", (s or "")).encode("ascii", "ignore").decode("ascii")
+
 
 def _default_aliases_map() -> dict[str, str]:
     return {
-        "ordi": "ordinateur",
-        "ordianteur": "ordinateur",
+        # Uniquement des abréviations (pas de fautes en dur).
         "gsm": "telephone",
         "tel": "telephone",
         "pc": "ordinateur",
-        "boutaille": "bouteille",
-        "boutailles": "bouteille",
-        "chevaux": "cheval",
-        "travaux": "travail",
-        "bijoux": "bijou",
+        "ordi": "ordinateur",
+        # Canons identite: bootstrap pour le matching flou.
+        # (On n'y met pas de fautes orthographiques spécifiques.)
+        "canette": "canette",
+        "bouteille": "bouteille",
+        "cheval": "cheval",
+        "bijou": "bijou",
     }
 
 
@@ -92,7 +103,14 @@ def _load_aliases_map(refresh: bool = False) -> dict[str, str]:
             if _ALIAS_CACHE.get("aliases") and (now - fetched_at) < _ALIAS_CACHE_TTL_SECONDS:
                 return dict(_ALIAS_CACHE["aliases"])
 
-    aliases = _default_aliases_map()
+    # Toutes les clés/canoniques sont normalisées en minuscules ASCII
+    # pour matcher avec `_normalize_item_key()` qui fait déjà `encode('ascii','ignore')`.
+    aliases: dict[str, str] = {}
+    for a, c in _default_aliases_map().items():
+        a_n = _strip_accents_ascii(a).strip().lower()
+        c_n = _strip_accents_ascii(c).strip().lower()
+        if a_n and c_n:
+            aliases[a_n] = c_n
     try:
         _ensure_normalization_aliases_table()
         with get_db() as db:
@@ -106,14 +124,20 @@ def _load_aliases_map(refresh: bool = False) -> dict[str, str]:
                 )
             ).mappings().all()
             for row in rows:
-                a = str(row.get("alias") or "").strip().lower()
-                c = str(row.get("canonical") or "").strip().lower()
+                a = _strip_accents_ascii(str(row.get("alias") or "")).strip().lower()
+                c = _strip_accents_ascii(str(row.get("canonical") or "")).strip().lower()
                 if a and c:
                     aliases[a] = c
     except Exception:
         logger.warning("[alias] impossible de charger les alias BDD", exc_info=True)
 
     with _ALIAS_CACHE_LOCK:
+        # Ajoute aussi un mapping identité pour chaque canon.
+        # Utile pour que la partie "fuzzy" puisse reconnaître directement "ordinateur" etc.,
+        # même si la canonnique n'est pas une clé d'alias en BDD.
+        for canonical in list(aliases.values()):
+            if canonical and canonical not in aliases:
+                aliases[canonical] = canonical
         _ALIAS_CACHE["aliases"] = aliases
         _ALIAS_CACHE["fetched_at"] = now
     return dict(aliases)
@@ -306,8 +330,12 @@ def _base_description_for_merge(description: str) -> str:
     s = (description or "").strip()
     # Supprime le contenu entre parenthèses (souvent les variantes orthographiques/infos additionnelles).
     s = re.sub(r"\s*\([^)]*\)\s*", " ", s).strip()
-    s = re.sub(r"\s+", " ", s).strip().lower()
-    return s
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # Canonise davantage en réutilisant la normalisation de clé.
+    # Objectif : "canettes" vs "cannettes", accents, casse, petits liens linguistiques.
+    norm = _normalize_item_key(s)
+    return norm or s.lower()
 
 
 def _merge_duplicate_classifications(classifications: list[Any]) -> list[dict[str, Any]]:
@@ -1643,7 +1671,7 @@ def _split_leading_quantity(item: str) -> tuple[int, str, str, str, int]:
     # 0) Formats de lot PRIORITAIRES (avant "nombre en tête")
     # Ex: "2 cartons de 12 ordinateurs" => 24
     m_lot_head = re.match(
-        r"^\s*([+-]?\d+)\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?)\s*(?:de|x|\*)\s*([+-]?\d+)\s+(.+)$",
+        r"^\s*([+-]?\d+)\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?|canettes?|cannettes?)\s*(?:de|x|\*)\s*([+-]?\d+)\s+(.+)$",
         s,
         re.IGNORECASE,
     )
@@ -1660,7 +1688,7 @@ def _split_leading_quantity(item: str) -> tuple[int, str, str, str, int]:
         return qty, text, "lot", f"{m_lot_head.group(1)}x{m_lot_head.group(2)}", 95
 
     m_lot_inline = re.search(
-        r"(?i)\b([+-]?\d+)\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?)\s*(?:de|x|\*)\s*([+-]?\d+)\b",
+        r"(?i)\b([+-]?\d+)\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?|canettes?|cannettes?)\s*(?:de|x|\*)\s*([+-]?\d+)\b",
         s,
     )
     if m_lot_inline:
@@ -1673,7 +1701,7 @@ def _split_leading_quantity(item: str) -> tuple[int, str, str, str, int]:
         if qty < 1:
             return _invalid_quantity()
         text = re.sub(
-            r"(?i)\b[+-]?\d+\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?)\s*(?:de|x|\*)\s*[+-]?\d+\b",
+            r"(?i)\b[+-]?\d+\s*(?:cartons?|bo[iî]tes?|caisses?|lots?|packs?|canettes?|cannettes?)\s*(?:de|x|\*)\s*[+-]?\d+\b",
             "",
             s,
         )
@@ -1843,6 +1871,69 @@ def _split_leading_quantity(item: str) -> tuple[int, str, str, str, int]:
             if text:
                 return word_qty, text, "word_number", " ".join(tokens[:consumed]).strip(), 78
 
+    # 4b) Nombres en lettres en fin de ligne (quantité en suffixe).
+    # Ex: "ordinateur vingt-deux unités", "ordinateur quatre-vingts", "ordinateur mille unités".
+    # Principe : on essaie de parser un nombre "fr" sur les derniers tokens (hors unités optionnelles).
+    unit_suffix_tokens = {
+        "unite",
+        "unites",
+        "unites",  # doublon volontaire (tolerant)
+        "piece",
+        "pieces",
+        "pcs",
+        "exemplaire",
+        "exemplaires",
+        "unites",
+    }
+    # "tokens" et "special_words/number_words" existent encore ici car définis dans le bloc précédent.
+    if tokens:
+        end_idx = len(tokens)
+        while end_idx > 0 and tokens[end_idx - 1] in unit_suffix_tokens:
+            end_idx -= 1
+        # Nécessite au moins un token produit + un token quantité.
+        if end_idx >= 2:
+            max_phrase_tokens = min(3, end_idx)
+            # On privilégie les phrases les plus longues (ex: "vingt-deux" -> 22, pas juste "deux").
+            for n in range(max_phrase_tokens, 0, -1):
+                phrase_tokens = tokens[end_idx - n : end_idx]
+                # Parse phrase_tokens -> word_qty
+                word_qty = 0
+                ok = True
+                j = 0
+                while j < len(phrase_tokens):
+                    tkn = phrase_tokens[j]
+                    if tkn in ("et", "de", "d"):
+                        j += 1
+                        continue
+                    val = special_words.get(tkn)
+                    if val is None:
+                        val = number_words.get(tkn)
+                    if val is None:
+                        ok = False
+                        break
+                    if val == 1000:
+                        if word_qty == 0:
+                            word_qty = 1000
+                        else:
+                            word_qty *= 1000
+                    elif val == 100:
+                        if word_qty == 0:
+                            word_qty = 100
+                        else:
+                            word_qty *= 100
+                    else:
+                        word_qty += val
+                    j += 1
+                if not ok or word_qty < 1:
+                    continue
+                if end_idx - n <= 0:
+                    continue
+                # Utilise la version ascii-normalisée pour reconstruire le texte.
+                # (La normalisation finale côté `_normalize_item_key` gère ensuite les accents.)
+                text = " ".join(tokens[: end_idx - n]).strip()
+                if text:
+                    return word_qty, text, "word_number", " ".join(phrase_tokens).strip(), 70
+
     # 5) Quantité exprimée dans la phrase.
     # Ex: "ordinateur de quantité 26", "quantite: 26", "qte 26", "qté 26"
     m_inline = re.search(
@@ -1932,7 +2023,9 @@ def _split_multi_article_entry(text: str) -> list[str]:
     s = (text or "").strip()
     if not s:
         return []
-    parts = re.split(r"\s*(?:\+|;|\bet\b)\s*", s, flags=re.IGNORECASE)
+    # Ajoute la virgule comme séparateur pour "A, B, C".
+    # (On garde + ; et "et" pour les cas déjà supportés.)
+    parts = re.split(r"\s*(?:\+|;|,|\bet\b)\s*", s, flags=re.IGNORECASE)
     cleaned = [_clean_text_line(p) for p in parts if _clean_text_line(p)]
     return cleaned if cleaned else [s]
 
@@ -1951,6 +2044,7 @@ def _normalize_item_key(text: str) -> str:
     t = re.sub(r"[^\w\s-]", " ", t)
     # Répare quelques contractions mal saisies fréquentes
     # ex: "deau" -> "d eau", "duhuille" -> "d huile" (approximation prudente)
+    t = re.sub(r"\bdeau\b", "d eau", t)
     t = re.sub(r"\bde([aeiouy])", r"d \1", t)
     t = re.sub(r"\s+", " ", t).strip()
     if not t:
@@ -1960,8 +2054,66 @@ def _normalize_item_key(text: str) -> str:
 
     token_aliases = _load_aliases_map()
 
+    def _fuzzy_alias_lookup(token: str, aliases: dict[str, str]) -> str:
+        """
+        Approxime token -> canonical via similarite sur les clés d'alias/canon.
+        Retourne `token` tel quel si aucun match assez bon.
+        """
+        if not token or len(token) < 4:
+            return token
+
+        # Réduction de l'espace de recherche : mêmes premières lettres + longueur proche.
+        tok0 = token[0]
+        candidates = [
+            k
+            for k in aliases.keys()
+            if k
+            and k[0] == tok0
+            and abs(len(k) - len(token)) <= 3
+            and len(k) >= 4
+            and " " not in k
+        ]
+        if not candidates:
+            return token
+
+        best_k: str | None = None
+        best_ratio = 0.0
+        for k in candidates:
+            ratio = SequenceMatcher(None, token, k).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_k = k
+
+        # Seuil plus permissif pour les tokens courts (les fautes ont souvent
+        # un impact proportionnel plus important sur la "ratio" de SequenceMatcher).
+        local_threshold = _ALIAS_FUZZY_THRESHOLD
+        if len(token) <= 8:
+            # Pour les petits tokens, SequenceMatcher est plus instable.
+            # Exemple: "travaux" -> "travail" (~0.714) doit matcher.
+            local_threshold = 0.70
+
+        if best_k and best_ratio >= local_threshold:
+            mapped = aliases.get(best_k, token)
+            # Logging prudent uniquement quand on est "au bord" du seuil,
+            # pour surveiller les cas potentiellement risqués.
+            if best_ratio < (local_threshold + 0.05) and mapped != token:
+                logger.debug(
+                    "[alias fuzzy] token=%r best_key=%r mapped=%r ratio=%.3f threshold=%.3f",
+                    token,
+                    best_k,
+                    mapped,
+                    best_ratio,
+                    local_threshold,
+                )
+            return mapped
+        return token
+
     def _singularize_french_word(w: str) -> str:
         if len(w) < 4:
+            return w
+        # Exceptions : certaines formes au pluriel ne suivent pas
+        # l'heuristique "aux" -> "al".
+        if w == "travaux":
             return w
         # Ex: "animaux" -> "animal" (simple heuristique)
         if w.endswith("aux") and not w.endswith("eaux"):
@@ -1988,8 +2140,14 @@ def _normalize_item_key(text: str) -> str:
         "origine",
     }
     for w in words:
-        w = token_aliases.get(w, w)
+        # Faire une singularisation avant le mapping alias/flou :
+        # ex: "ordianteurs" -> "ordianteur", puis fuzzy peut matcher vers "ordinateur".
         w = _singularize_french_word(w)
+        w_exact = token_aliases.get(w)
+        if w_exact:
+            w = w_exact
+        else:
+            w = _fuzzy_alias_lookup(w, token_aliases)
         normalized_words.append(w)
     normalized = " ".join(normalized_words).strip()
     # Canonisation générique sans produit en dur:

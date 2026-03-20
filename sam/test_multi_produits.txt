@@ -86,3 +86,56 @@ cent ordinateurs
 4 bouteilles deau
 5 boutailles deau
 6 boutaille deau
+
+2 canettes deau
+3 cannettes d''eau
+4 canettes d'eau
+5 canette de eau
+
+2 canettes de 12 bouteilles d'eau
+3 canettes de 6 bouteilles d''eau
+
+ordinateur vingt-deux unités
+ordinateur quatre-vingts
+ordinateur mille unités
+ordinateur cent trente unités
+
+ordinateur quantite=26
+ordinateur qté: 26
+ordinateur ~ 20 ordinateurs
+environ20 ordinateur
+approx11 ordinateurs
+
+ordinateur, telephone, taxi
+ordinateur + telephone, taxi
+
+Produit | Qté | Origine | Valeur
+bouteilles d'eau | 6 | chine | 2400
+telephone android 5g | 2 | vietnam | 600000
+
+Qté | Produit | Valeur | Origine
+7 | sac a main cuir | 80000 | italie
+
+Produit | Qté | Valeur | Origine
+boissons en conserve;Qte: 3;Valeur: 900 | 3 | 900 | chine
+
+3 ordianteurs
+2 ordianteur
+4 bijoux
+1 bijous
+6 chevaux
+
+5 cannette deau
+2 cannettes d'eau
+7 boutaille de eau
+3 boutailles d'eau
+
+4 ordinateu
+2 bijouxs
+3 cannete de eau
+2 cannettes d eau
+2 bouteilles d eau
+
+500000
+Allemagne
+Origine: Allemagne
