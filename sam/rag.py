@@ -282,39 +282,54 @@ def _classification_example_to_text(example: dict[str, object]) -> str:
 def _persist_classifications_index(index: faiss.Index, meta: list[dict[str, object]]) -> None:
     index_path, meta_path = _classifications_index_paths()
     faiss.write_index(index, index_path)
-    with open(meta_path, "w", encoding="utf-8") as f:
-        # Convertit les champs non sérialisables (ex: UUID) en string.
-        def _jsonify(obj: object) -> object:
-            try:
-                import uuid as _uuid
+    tmp_path = meta_path + ".tmp"
 
-                if isinstance(obj, _uuid.UUID):
-                    return str(obj)
-            except Exception:
-                pass
-            try:
-                import decimal as _decimal
+    # Convertit les champs non sérialisables (ex: UUID/Decimal/Datetime) en string.
+    def _jsonify(obj: object) -> object:
+        try:
+            import uuid as _uuid
 
-                if isinstance(obj, _decimal.Decimal):
-                    # On convertit en string pour eviter les erreurs de precision.
-                    return str(obj)
-            except Exception:
-                pass
-            if isinstance(obj, dict):
-                return {k: _jsonify(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_jsonify(v) for v in obj]
-            return obj
+            if isinstance(obj, _uuid.UUID):
+                return str(obj)
+        except Exception:
+            pass
 
+        try:
+            import datetime as _dt
+
+            if isinstance(obj, (_dt.datetime, _dt.date, _dt.time)):
+                return obj.isoformat()
+        except Exception:
+            pass
+
+        try:
+            import decimal as _decimal
+
+            if isinstance(obj, _decimal.Decimal):
+                return str(obj)
+        except Exception:
+            pass
+
+        if isinstance(obj, dict):
+            return {k: _jsonify(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_jsonify(v) for v in obj]
+        return obj
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(_jsonify(meta), f, ensure_ascii=False, indent=2)
+
+    # Remplacement atomique (evite meta JSON partiellement ecrits).
+    os.replace(tmp_path, meta_path)
 
 
 def _load_classifications_index_from_disk() -> tuple[faiss.Index, list[dict[str, object]]]:
     index_path, meta_path = _classifications_index_paths()
     expected_dim = _embedding_dim_probe()
     if not os.path.exists(index_path) or not os.path.exists(meta_path):
-        empty = faiss.IndexFlatL2(expected_dim)
-        return empty, []
+        # Si des fichiers d'apprentissage ont ete supprimes/corrompus, on reconstruit
+        # depuis la DB plutot que repartir a vide.
+        return _rebuild_classifications_index_from_db()
 
     index = faiss.read_index(index_path)
     try:
