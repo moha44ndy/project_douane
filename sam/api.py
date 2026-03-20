@@ -36,7 +36,12 @@ from .cache import (
     cache_set,
 )
 from .db import get_db
-from .rag import initialize_chatbot, process_user_input
+from .rag import (
+    add_validated_classification_example_to_index,
+    initialize_chatbot,
+    initialize_validated_classifications_index,
+    process_user_input,
+)
 from .config.settings import Config
 from .app_logger import get_logger
 
@@ -1000,12 +1005,16 @@ def _verify_supabase_jwt(token: str) -> dict | None:
 
         expected_iss = _get_expected_supabase_iss()
         iss = payload.get("iss")
-        if isinstance(iss, str) and iss != expected_iss:
+        # Certains JWT peuvent avoir un trailing slash dans `iss`.
+        # On normalise pour éviter les rejets "faussement invalides".
+        if isinstance(iss, str) and iss.strip().rstrip("/") != expected_iss.strip().rstrip("/"):
             logger.warning("[auth] JWT issuer invalide (got=%s expected=%s)", iss, expected_iss)
             return None
 
         exp = payload.get("exp")
         if isinstance(exp, (int, float)) and exp < time.time():
+            # Log prudent: ne pas divulguer le token, uniquement les timestamps.
+            logger.warning("[auth] JWT expired exp=%s now=%s", exp, time.time())
             return None
         return payload
     except Exception:
@@ -1026,6 +1035,13 @@ def _require_admin(authorization: str | None) -> str:
         raise HTTPException(status_code=401, detail="Jeton d'authentification manquant")
 
     token = authorization.split(" ", 1)[1].strip()
+    # Log prudent: ne jamais afficher le token complet.
+    # Permet de diagnostiquer si le frontend envoie bien un JWT "header.payload.signature".
+    try:
+        parts = token.count(".") + 1 if token else 0
+        logger.warning("[auth] token received: parts=%s len=%s", parts, len(token) if token else 0)
+    except Exception:
+        pass
     payload = _verify_supabase_jwt(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Jeton d'authentification invalide")
@@ -1364,6 +1380,10 @@ def startup_event() -> None:
     chunks, index = initialize_chatbot()
     app.state.chunks = chunks
     app.state.index = index
+    # Index FAISS dedie aux classifications validées (apprentissage par exemples).
+    classifications_index, classifications_meta = initialize_validated_classifications_index()
+    app.state.classifications_index = classifications_index
+    app.state.classifications_meta = classifications_meta
 
 
 @app.get("/health", tags=["system"])
@@ -2718,7 +2738,13 @@ async def classify_file(
                 len(batch_items),
             )
 
-            batch_raw = process_user_input(batch_input, chunks, index)
+            batch_raw = process_user_input(
+                batch_input,
+                chunks,
+                index,
+                validated_index=getattr(app.state, "classifications_index", None),
+                validated_meta=getattr(app.state, "classifications_meta", None),
+            )
             normalized_batch = _normalize_classifications_response(batch_raw)
             batch_raw_out = _ensure_json_raw(normalized_batch)
             _inspect_raw_json(batch_raw_out, request_id, f"FRESH_BATCH_{batch_idx}")
@@ -2770,7 +2796,13 @@ async def classify_file(
                             continue
 
                         single_input = f"- {it}"
-                        single_raw = process_user_input(single_input, chunks, index)
+                        single_raw = process_user_input(
+                            single_input,
+                            chunks,
+                            index,
+                            validated_index=getattr(app.state, "classifications_index", None),
+                            validated_meta=getattr(app.state, "classifications_meta", None),
+                        )
                         normalized_single = _normalize_classifications_response(single_raw)
                         single_raw_out = _ensure_json_raw(normalized_single)
                         _inspect_raw_json(
@@ -2975,7 +3007,13 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
         item_meta = {}
 
     try:
-        result = process_user_input(classify_input, chunks, index)
+        result = process_user_input(
+            classify_input,
+            chunks,
+            index,
+            validated_index=getattr(app.state, "classifications_index", None),
+            validated_meta=getattr(app.state, "classifications_meta", None),
+        )
     except Exception as exc:  # pragma: no cover - garde-fou
         import traceback
 
@@ -3132,6 +3170,20 @@ def validate_classification(
         db.commit()
 
     result = dict(row)
+
+    # Apprentissage (RAG étendu) :
+    # ajoute automatiquement l'exemple validé à l'index FAISS dédié.
+    try:
+        add_validated_classification_example_to_index(
+            result,
+            index=getattr(app.state, "classifications_index", None),
+            meta=getattr(app.state, "classifications_meta", None),
+        )
+    except Exception:
+        logger.warning(
+            "[learning] impossible d'ajouter l'exemple validé à l'index RAG",
+            exc_info=True,
+        )
 
     # Mise en cache uniquement lorsqu'une classification est validée (et si le cache est activé)
     if payload.query and payload.raw_response:

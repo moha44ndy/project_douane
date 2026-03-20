@@ -8,10 +8,14 @@ import re
 from .config.settings import Config
 from .app_logger import get_logger
 from dotenv import load_dotenv
+import threading
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from langchain_community.document_loaders import PyPDFLoader
 from requests.auth import HTTPBasicAuth
+from sqlalchemy import text as sql_text
+
+from .db import get_db
 import urllib3
 import json
 from openai import OpenAI
@@ -229,6 +233,260 @@ def create_faiss_index(chunks, *, expected_dim: int | None = None):
     return index
 
 
+_CLASSIFICATIONS_INDEX_LOCK = threading.Lock()
+
+
+def _classifications_index_paths() -> tuple[str, str]:
+    rag_dir = os.path.dirname(os.path.abspath(__file__))
+    index_dir = os.path.join(rag_dir, "indexFaiss")
+    os.makedirs(index_dir, exist_ok=True)
+    index_path = os.path.join(index_dir, "validated_classifications.faiss")
+    meta_path = os.path.join(index_dir, "validated_classifications_meta.json")
+    return index_path, meta_path
+
+
+def _classification_example_to_text(example: dict[str, object]) -> str:
+    """
+    Texte concis pour embeddings: on encode surtout les champs "métier"
+    qui relient une description à un HS.
+    """
+    desc = str(example.get("description_produit") or "").strip()
+    code = str(example.get("code_tarifaire") or "").strip()
+    section = str(example.get("section_produit") or "").strip()
+    chapter = str(example.get("chapitre_produit") or "").strip()
+    origin = str(example.get("origin") or "").strip()
+    value = str(example.get("value") or "").strip()
+    dd = str(example.get("dd_rate") or "").strip()
+    rs = str(example.get("rs_rate") or "").strip()
+    other = str(example.get("other_taxes") or "").strip()
+    unit = str(example.get("us_unit") or "").strip()
+    confidence = example.get("classification_confidence")
+
+    parts = [
+        f"description={desc}",
+        f"hs_code={code}",
+        f"section={section}",
+        f"chapter={chapter}",
+        f"origin={origin}",
+        f"value={value}",
+        f"dd={dd}",
+        f"rs={rs}",
+        f"other_taxes={other}",
+        f"unit={unit}",
+    ]
+    if confidence is not None:
+        parts.append(f"confidence={confidence}")
+    return " | ".join([p for p in parts if p])
+
+
+def _persist_classifications_index(index: faiss.Index, meta: list[dict[str, object]]) -> None:
+    index_path, meta_path = _classifications_index_paths()
+    faiss.write_index(index, index_path)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        # Convertit les champs non sérialisables (ex: UUID) en string.
+        def _jsonify(obj: object) -> object:
+            try:
+                import uuid as _uuid
+
+                if isinstance(obj, _uuid.UUID):
+                    return str(obj)
+            except Exception:
+                pass
+            try:
+                import decimal as _decimal
+
+                if isinstance(obj, _decimal.Decimal):
+                    # On convertit en string pour eviter les erreurs de precision.
+                    return str(obj)
+            except Exception:
+                pass
+            if isinstance(obj, dict):
+                return {k: _jsonify(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_jsonify(v) for v in obj]
+            return obj
+
+        json.dump(_jsonify(meta), f, ensure_ascii=False, indent=2)
+
+
+def _load_classifications_index_from_disk() -> tuple[faiss.Index, list[dict[str, object]]]:
+    index_path, meta_path = _classifications_index_paths()
+    expected_dim = _embedding_dim_probe()
+    if not os.path.exists(index_path) or not os.path.exists(meta_path):
+        empty = faiss.IndexFlatL2(expected_dim)
+        return empty, []
+
+    index = faiss.read_index(index_path)
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta: list[dict[str, object]] = json.load(f)
+    except Exception:
+        # Peut arriver si écriture interrompue (ex: erreur de sérialisation précédente).
+        logger.warning(
+            "[validated_classifications] meta json invalide/corrompu, reconstruction depuis DB...",
+            exc_info=True,
+        )
+        return _rebuild_classifications_index_from_db()
+
+    if index.d != expected_dim or int(index.ntotal) != len(meta):
+        logger.warning(
+            "[validated_classifications] index incompatible, reconstruction requise (index.d=%s expected_dim=%s ntotal=%s meta_len=%s)",
+            index.d,
+            expected_dim,
+            index.ntotal,
+            len(meta),
+        )
+        return _rebuild_classifications_index_from_db()
+
+    return index, meta
+
+
+def _rebuild_classifications_index_from_db() -> tuple[faiss.Index, list[dict[str, object]]]:
+    expected_dim = _embedding_dim_probe()
+    index_path, meta_path = _classifications_index_paths()
+
+    with get_db() as db:
+        rows = db.execute(
+            sql_text(
+                """
+                select
+                  id::text as id,
+                  description_produit,
+                  section_produit,
+                  chapitre_produit,
+                  code_tarifaire,
+                  classification_confidence,
+                  quantity,
+                  dd_rate,
+                  rs_rate,
+                  other_taxes,
+                  us_unit,
+                  origin,
+                  value,
+                  statut_validation
+                from public.classifications
+                where statut_validation = 'validé'
+                order by created_at asc
+                """
+            )
+        ).mappings().all()
+
+    if not rows:
+        empty = faiss.IndexFlatL2(expected_dim)
+        _persist_classifications_index(empty, [])
+        return empty, []
+
+    examples: list[dict[str, object]] = [dict(r) for r in rows]
+    texts = [_classification_example_to_text(ex) for ex in examples]
+    vectors = _embed_texts_openai(texts)
+
+    if not vectors:
+        empty = faiss.IndexFlatL2(expected_dim)
+        _persist_classifications_index(empty, [])
+        return empty, []
+
+    dim = len(vectors[0])
+    if dim != expected_dim:
+        # Très rare: embeddings model change. Reconstruction.
+        raise ValueError(f"Dimension embeddings inattendue: {dim} (attendu {expected_dim})")
+
+    vectors_array = np.array(vectors).astype("float32")
+    index = faiss.IndexFlatL2(vectors_array.shape[1])
+    index.add(vectors_array)
+    _persist_classifications_index(index, examples)
+    logger.info(
+        "[validated_classifications] index reconstruit: vecteurs=%s meta_len=%s index_path=%s",
+        index.ntotal,
+        len(examples),
+        index_path,
+    )
+    return index, examples
+
+
+def initialize_validated_classifications_index() -> tuple[faiss.Index, list[dict[str, object]]]:
+    """
+    Charge un index FAISS dédié aux classifications validées.
+    Si l'index n'existe pas ou est incompatible: reconstruction depuis la DB.
+    """
+    return _load_classifications_index_from_disk()
+
+
+def add_validated_classification_example_to_index(
+    classification_row: dict[str, object],
+    *,
+    index: faiss.Index,
+    meta: list[dict[str, object]],
+) -> None:
+    """
+    Ajoute un nouvel exemple validé à l'index (incremental add + persistance).
+    """
+    with _CLASSIFICATIONS_INDEX_LOCK:
+        if classification_row.get("statut_validation") not in (None, "validé"):
+            return
+
+        if index is None:
+            expected_dim = _embedding_dim_probe()
+            index = faiss.IndexFlatL2(expected_dim)
+
+        text = _classification_example_to_text(classification_row)
+        vectors = _embed_texts_openai([text], batch_size=1)
+        if not vectors:
+            return
+
+        vector = np.array([vectors[0]]).astype("float32")
+        index.add(vector)
+        # Stocke un meta minimal (et gardé aligné avec l'ordre des vectors).
+        stored = dict(classification_row)
+        meta.append(stored)
+        _persist_classifications_index(index, meta)
+
+
+def build_validated_examples_context(
+    query: str,
+    validated_index: faiss.Index | None,
+    validated_meta: list[dict[str, object]] | None,
+    *,
+    k: int = 3,
+) -> str:
+    if not validated_index or validated_meta is None or len(validated_meta) == 0:
+        return ""
+    if getattr(validated_index, "ntotal", 0) <= 0:
+        return ""
+
+    k = max(1, int(k))
+    indices, _ = search_faiss_index(query, validated_index, k=k)
+    # `indices` est souvent un tableau numpy 2D (shape: [1, k]) => éviter `if not indices`.
+    if indices is None:
+        return ""
+    if hasattr(indices, "size") and getattr(indices, "size") == 0:
+        return ""
+    if isinstance(indices, (list, tuple)) and len(indices) == 0:
+        return ""
+
+    snippets: list[str] = []
+    for idx in indices[0]:
+        if idx is None or int(idx) < 0:
+            continue
+        if int(idx) >= len(validated_meta):
+            continue
+        ex = validated_meta[int(idx)]
+        desc = str(ex.get("description_produit") or "").strip()
+        code = str(ex.get("code_tarifaire") or "").strip()
+        section = str(ex.get("section_produit") or "").strip()
+        chapter = str(ex.get("chapitre_produit") or "").strip()
+        dd = str(ex.get("dd_rate") or "").strip()
+        rs = str(ex.get("rs_rate") or "").strip()
+        if not code:
+            continue
+        snippets.append(
+            f"- {desc} => {code} ({section} / {chapter}), dd={dd}, rs={rs}"
+        )
+
+    if not snippets:
+        return ""
+    return "Exemples validés similaires:\n" + "\n".join(snippets)
+
+
 def search_faiss_index(query, index, k=5):
     logger.debug("start vectorisation de la requete (OpenAI embeddings)")
     try:
@@ -324,7 +582,13 @@ def build_context_for_query(query, chunks, index):
     return context
 
 
-def process_user_input(user_input, chunks, index):
+def process_user_input(
+    user_input,
+    chunks,
+    index,
+    validated_index: faiss.Index | None = None,
+    validated_meta: list[dict[str, object]] | None = None,
+):
     queries = split_user_queries(user_input)
     if not queries:
         return "Merci de préciser au moins une marchandise à classifier."
@@ -332,8 +596,10 @@ def process_user_input(user_input, chunks, index):
     prompt_sections = []
     for i, query in enumerate(queries, start=1):
         context = build_context_for_query(query, chunks, index)
+        examples_context = build_validated_examples_context(query, validated_index, validated_meta)
+        examples_block = f"\n{examples_context}" if examples_context else ""
         prompt_sections.append(
-            f"[MARCHANDISE {i}]\nDescription: {query}\nContexte documentaire:\n{context}"
+            f"[MARCHANDISE {i}]\nDescription: {query}\nContexte documentaire:\n{context}{examples_block}"
         )
 
     combined_context = "\n\n".join(prompt_sections)

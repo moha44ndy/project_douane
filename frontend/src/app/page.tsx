@@ -99,6 +99,7 @@ export default function HomePage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const [validatingAll, setValidatingAll] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
@@ -420,6 +421,41 @@ export default function HomePage() {
       const message =
         err instanceof Error ? err.message : "Erreur lors de la validation";
       setError(message);
+    }
+  };
+
+  const handleValidateAll = async () => {
+    if (validatingAll) return;
+    if (!payload?.classifications?.length) return;
+    if (!userId) {
+      setError("Utilisateur non authentifié, impossible de valider.");
+      return;
+    }
+
+    setError(null);
+    setValidationMessage(null);
+    setValidatingAll(true);
+
+    // Travail en local pour eviter un double clic / double boucle
+    // avant que React n'ait synchronisé `validatedKeys`.
+    const validatedSet = new Set(Object.keys(validatedKeys));
+
+    try {
+      for (let i = 0; i < payload.classifications.length; i++) {
+        const item = payload.classifications[i];
+        const rowKey = getRowKey(item, i);
+        if (validatedSet.has(rowKey)) continue;
+
+        await handleValidate(item, i);
+        validatedSet.add(rowKey);
+
+        // Petite pause pour ne pas saturer le backend.
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    } catch (err) {
+      // `handleValidate` gère déjà les messages d'erreur.
+    } finally {
+      setValidatingAll(false);
     }
   };
 
@@ -817,6 +853,16 @@ export default function HomePage() {
                     ))}
                   </tbody>
                 </table>
+                <div className="mt-4 flex items-center justify-end">
+                  <button
+                    type="button"
+                    onClick={handleValidateAll}
+                    disabled={validatingAll || !payload?.classifications?.length}
+                    className="inline-flex items-center justify-center min-h-[44px] rounded-full border border-primary px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/10 touch-manipulation disabled:opacity-50"
+                  >
+                    {validatingAll ? "Validation en cours..." : "Tout valider"}
+                  </button>
+                </div>
               </div>
             </>
           )}
