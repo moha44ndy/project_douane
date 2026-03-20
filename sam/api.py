@@ -298,6 +298,101 @@ def _normalize_classifications_response(raw_text: str) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
+def _base_description_for_merge(description: str) -> str:
+    """
+    Canonise une description pour agréger des doublons LLM.
+    Objectif: "X (variante ...)" et "X" doivent tomber sur la même clé.
+    """
+    s = (description or "").strip()
+    # Supprime le contenu entre parenthèses (souvent les variantes orthographiques/infos additionnelles).
+    s = re.sub(r"\s*\([^)]*\)\s*", " ", s).strip()
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
+def _merge_duplicate_classifications(classifications: list[Any]) -> list[dict[str, Any]]:
+    """
+    Fusionne des classifications en doublon renvoyées par le LLM.
+    Règle: même `hs_code` et même description "de base".
+    """
+    merged_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _safe_int(v: Any, default: int) -> int:
+        try:
+            return int(v)
+        except Exception:
+            return default
+
+    for cls in classifications:
+        if not isinstance(cls, dict):
+            continue
+        hs_code = str(cls.get("hs_code") or "").strip()
+        desc = str(cls.get("description") or "").strip()
+        base_desc = _base_description_for_merge(desc)
+        if not hs_code or not base_desc:
+            continue
+
+        key = (hs_code, base_desc)
+        if key not in merged_by_key:
+            # Stocke une copie superficielle pour éviter de muter l'entrée d'origine hors contrôle.
+            merged_by_key[key] = dict(cls)
+            continue
+
+        target = merged_by_key[key]
+        qty_existing = _safe_int(target.get("quantity"), 0)
+        qty_new = _safe_int(cls.get("quantity"), 0)
+        if qty_existing < 1:
+            qty_existing = 0
+        if qty_new < 1:
+            qty_new = 0
+        total_qty = qty_existing + qty_new
+
+        target["quantity"] = total_qty if total_qty > 0 else target.get("quantity")
+
+        # Harmonise la source: si plusieurs sources contribuent -> mixte.
+        src_existing = str(target.get("quantity_source") or "").strip() or "explicit"
+        src_new = str(cls.get("quantity_source") or "").strip() or "explicit"
+        target["quantity_source"] = "mixte" if src_existing != src_new else src_existing
+
+        # Concatène/dédouble les raw samples quand c'est présent.
+        raw_existing = str(target.get("quantity_raw") or "")
+        raw_new = str(cls.get("quantity_raw") or "")
+        if raw_existing or raw_new:
+            samples: list[str] = []
+            for raw in [raw_existing, raw_new]:
+                for part in raw.split(","):
+                    p = part.strip()
+                    if p and p not in samples:
+                        samples.append(p)
+            target["quantity_raw"] = ", ".join(samples[:10])
+
+        # Confidence: moyenne pondérée par quantité.
+        conf_existing = _safe_int(target.get("quantity_confidence"), 0)
+        conf_new = _safe_int(cls.get("quantity_confidence"), 0)
+        if total_qty > 0 and (conf_existing or conf_new):
+            conf_sum = conf_existing * qty_existing + conf_new * qty_new
+            target["quantity_confidence"] = int(round(conf_sum / total_qty))
+
+        # Garde la première justification/sections (souvent similaires) : pas d'assemblage agressif.
+        if (not target.get("excerpt")) and cls.get("excerpt"):
+            target["excerpt"] = cls.get("excerpt")
+        if (not target.get("justification")) and cls.get("justification"):
+            target["justification"] = cls.get("justification")
+
+    # Retourne dans l'ordre d'apparition des premières occurrences.
+    order_keys = []
+    for cls in classifications:
+        if not isinstance(cls, dict):
+            continue
+        hs_code = str(cls.get("hs_code") or "").strip()
+        base_desc = _base_description_for_merge(str(cls.get("description") or "").strip())
+        key = (hs_code, base_desc)
+        if key in merged_by_key and key not in order_keys:
+            order_keys.append(key)
+
+    return [merged_by_key[k] for k in order_keys]
+
+
 def _extract_classifications(raw_text: str) -> list[dict]:
     """
     Essaie d'extraire la liste `classifications` à partir d'une chaîne brute.
@@ -2619,6 +2714,10 @@ async def classify_file(
             cls.setdefault("quantity_raw", meta.get("quantity_raw", ""))
             cls.setdefault("quantity_confidence", meta.get("quantity_confidence", 60))
 
+        # Le LLM peut parfois renvoyer des variantes quasi identiques (doublons).
+        # On fusionne ces doublons pour éviter des lignes "Bouteilles d'eau" en double.
+        merged_classifications = _merge_duplicate_classifications(merged_classifications)
+
         merged = {
             "narrative": narrative or "Proposition indicative, à faire valider par l'autorité douanière.",
             "classifications": merged_classifications,
@@ -2751,6 +2850,8 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
                         item.setdefault("quantity_source", meta.get("quantity_source", "explicit"))
                         item.setdefault("quantity_raw", meta.get("quantity_raw", ""))
                         item.setdefault("quantity_confidence", meta.get("quantity_confidence", 60))
+                    # Fusionne les doublons quasi-identiques renvoyés par le LLM.
+                    parsed["classifications"] = _merge_duplicate_classifications(cls)
                     raw_out = _ensure_json_raw(parsed)
         except Exception:
             # Si on ne peut pas enrichir la réponse, on conserve `raw_out` tel quel.
