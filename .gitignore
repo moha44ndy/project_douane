@@ -12,3 +12,6 @@ next-env.d.ts
 
 # Artefacts RAG (FAISS) générés côté disque
 sam/indexFaiss/validated_classifications*
+
+# Rapports / artefacts locaux de test
+sam/tests/tmp_reports/
