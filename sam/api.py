@@ -1433,6 +1433,14 @@ def _filter_candidate_lines(lines: list[str], max_items: int) -> list[str]:
         # Garde uniquement les lignes qui ressemblent à du contenu (lettres/ chiffres).
         if not re.search(r"[A-Za-zÀ-ÿ0-9]", line):
             continue
+
+        # Enleve le bruit "origine/valeur/price" et decide si ce qui reste est exploitable.
+        # Objectif : eviter d'envoyer des lignes de metadata seules au LLM.
+        stripped = _strip_inline_metadata(line)
+        if not stripped:
+            continue
+        if _is_noise_item_text(stripped):
+            continue
         # Réduit le spam de très longues lignes.
         if len(line) > 1200:
             continue
@@ -2446,12 +2454,15 @@ def _extract_items_from_csv(csv_text: str, max_items: int) -> tuple[str, list[st
         if any(k in h for k in candidate_keys):
             chosen_idx = i
             break
+    header_detected = chosen_idx is not None
     if chosen_idx is None:
         chosen_idx = 0
 
     items: list[str] = []
-    # Par défaut on suppose que la 1ère ligne est un en-tête.
-    for row in rows[1:]:
+    # Si on n'a detecte aucun en-tête (aucune cellule ressemble a "produit/qte/description"),
+    # on traite la 1ère ligne comme une donnée.
+    rows_iter = rows[1:] if header_detected else rows
+    for row in rows_iter:
         if chosen_idx >= len(row):
             continue
         cell = _clean_text_line(row[chosen_idx])
@@ -2475,7 +2486,7 @@ def _extract_items_from_csv(csv_text: str, max_items: int) -> tuple[str, list[st
 
     # Fallback : certains CSV n'ont pas d'en-tête ou ont un en-tête non détecté.
     if not items and len(rows) >= 1:
-        for row in rows:
+        for row in (rows_iter if rows_iter else rows):
             if chosen_idx >= len(row):
                 continue
             cell = _clean_text_line(row[chosen_idx])
