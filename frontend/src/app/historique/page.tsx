@@ -13,6 +13,7 @@ type Filters = {
   search: string;
   section: string;
   status: string;
+  dossier: string;
   agent?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -95,6 +96,8 @@ function normalizeHistoryItem(item: HistoryItem) {
   // Statut
   const status = (item.statut_validation ?? item.statut ?? "N/A") as string;
 
+  const dossierName = (item.dossier_name ?? "") as string;
+
   // Date
   const dateRaw = item.date_classification ?? item.date ?? "";
   const dateLabel = formatDateTime(dateRaw);
@@ -114,6 +117,7 @@ function normalizeHistoryItem(item: HistoryItem) {
     value,
     quantity: Math.max(1, Math.floor(quantity)),
     status,
+    dossierName,
     dateRaw,
     dateLabel,
   };
@@ -128,6 +132,7 @@ export default function HistoriquePage() {
     search: "",
     section: "Toutes",
     status: "Tous",
+    dossier: "Tous",
     agent: "Tous",
     dateFrom: "",
     dateTo: "",
@@ -136,6 +141,11 @@ export default function HistoriquePage() {
   const [page, setPage] = useState(1);
   const pageSize = 25;
   const [checkingSession, setCheckingSession] = useState(true);
+  // Etat d'affichage des dossiers (fermé / ouvert) dans le tableau.
+  // Par défaut: tous les dossiers sont fermés.
+  const [collapsedDossiers, setCollapsedDossiers] = useState<Record<string, boolean>>(
+    {}
+  );
   useEffect(() => {
     const fetchHistory = async () => {
       setLoading(true);
@@ -199,13 +209,32 @@ export default function HistoriquePage() {
     return ["Tous", ...Array.from(set).sort()];
   }, [normalized]);
 
+  const dossierOptions = useMemo(() => {
+    const set = new Set<string>();
+    normalized.forEach((n) => {
+      const v = n.dossierName && String(n.dossierName).trim();
+      if (v) set.add(String(v));
+    });
+
+    return [
+      { value: "Tous", label: "Tous" },
+      { value: "__has__", label: "tous les dossiers" },
+      { value: "__none__", label: "aucun dossier" },
+      ...Array.from(set).sort().map((d) => ({ value: d, label: d })),
+    ];
+  }, [normalized]);
+
   const filtered = useMemo(() => {
     return normalized.filter((item) => {
       if (filters.search) {
         const s = filters.search.toLowerCase();
         if (
           !item.description.toLowerCase().includes(s) &&
-          !item.code.toLowerCase().includes(s)
+          !item.code.toLowerCase().includes(s) &&
+          !(
+            item.dossierName &&
+            String(item.dossierName).toLowerCase().includes(s)
+          )
         ) {
           return false;
         }
@@ -216,9 +245,53 @@ export default function HistoriquePage() {
       if (filters.status !== "Tous" && item.status !== filters.status) {
         return false;
       }
+
+      if (filters.dossier !== "Tous") {
+        if (filters.dossier === "__none__") {
+          if (item.dossierName && String(item.dossierName).trim()) return false;
+        } else if (filters.dossier === "__has__") {
+          if (!item.dossierName || !String(item.dossierName).trim()) return false;
+        } else {
+          if (String(item.dossierName || "").trim() !== filters.dossier) return false;
+        }
+      }
       return true;
     });
   }, [normalized, filters]);
+
+  const filteredDossierKeys = useMemo(() => {
+    const set = new Set<string>();
+    filtered.forEach((n) => {
+      const k = n.dossierName && String(n.dossierName).trim()
+        ? String(n.dossierName).trim()
+        : null;
+      if (k) set.add(k);
+    });
+    return Array.from(set).sort();
+  }, [filtered]);
+
+  useEffect(() => {
+    // Si l'utilisateur filtre par dossier, on déplie automatiquement les
+    // dossiers correspondants pour qu'on voie les items filtrés.
+    if (filters.dossier === "Tous" || filters.dossier === "__none__") return;
+
+    if (filters.dossier === "__has__") {
+      setCollapsedDossiers((prev) => {
+        const next = { ...prev };
+        filteredDossierKeys.forEach((k) => {
+          next[k] = false;
+        });
+        return next;
+      });
+      return;
+    }
+
+    // Dossier spécifique
+    setCollapsedDossiers((prev) => ({
+      ...prev,
+      [filters.dossier]: false,
+    }));
+  }, [filters.dossier, filteredDossierKeys]);
 
   const total = data.length;
   const totalFiltered = filtered.length;
@@ -242,6 +315,9 @@ export default function HistoriquePage() {
   const avgConfidence =
     paginated.reduce((acc, it) => acc + it.confidence, 0) /
       (paginated.length || 1) || 0;
+
+  // Par défaut, on ferme tous les dossiers (les dossiers non présents dans
+  // l'objet collapsedDossiers sont considérés fermés).
 
   // Actions d'admin retirées de cette page : la vue globale et le forçage
   // de statut sont réservés au panneau d'administration.
@@ -329,6 +405,25 @@ export default function HistoriquePage() {
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                Dossier
+              </label>
+              <select
+                value={filters.dossier}
+                onChange={(e) =>
+                  setFilters((f) => ({ ...f, dossier: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm"
+                title="Filtrer par dossier"
+              >
+                {dossierOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             {/* Filtres avancés (agent, dates) réservés à la vue admin globale */}
           </div>
         </div>
@@ -384,6 +479,8 @@ export default function HistoriquePage() {
                     params.set("section", filters.section);
                   if (filters.status !== "Tous")
                     params.set("status", filters.status);
+                  if (filters.dossier && filters.dossier !== "Tous")
+                    params.set("dossier", filters.dossier);
 
                   const url = `${API_BASE_URL}/history.csv?${params.toString()}`;
                   window.open(url, "_blank", "noopener,noreferrer");
@@ -439,35 +536,163 @@ export default function HistoriquePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {paginated.map((item, idx) => (
-                    <tr
-                      key={`${currentPage}-${idx}`}
-                      className={
-                        idx % 2 === 0 ? "bg-muted/40" : "bg-background"
+                  {(() => {
+                    type DossierInfo = { count: number; first: number; last: number };
+                    const dossierInfo = new Map<string, DossierInfo>();
+
+                    paginated.forEach((it, idx) => {
+                      const dossierKey =
+                        it.dossierName && String(it.dossierName).trim()
+                          ? String(it.dossierName).trim()
+                          : null;
+                      if (!dossierKey) return;
+                      const current = dossierInfo.get(dossierKey);
+                      if (!current) {
+                        dossierInfo.set(dossierKey, {
+                          count: 1,
+                          first: idx,
+                          last: idx,
+                        });
+                      } else {
+                        dossierInfo.set(dossierKey, {
+                          ...current,
+                          count: current.count + 1,
+                          last: idx,
+                        });
                       }
-                    >
-                      <td className="px-3 py-2">{item.description}</td>
-                      <td className="px-3 py-2">{item.section}</td>
-                      <td className="px-3 py-2">{item.chapter}</td>
-                      <td className="px-3 py-2 font-mono">{item.code}</td>
-                      <td className="px-3 py-2">{item.quantity}</td>
-                      <td className="px-3 py-2">{item.ddRate}</td>
-                      <td className="px-3 py-2">{item.rsRate}</td>
-                      <td className="px-3 py-2">{item.otherTaxes}</td>
-                      <td className="px-3 py-2">{item.usUnit}</td>
-                      <td className="px-3 py-2">{item.origin}</td>
-                      <td className="px-3 py-2">{item.value}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        {item.dateLabel}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                          {item.confidence.toFixed(1)}%
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">{item.status}</td>
-                    </tr>
-                  ))}
+                    });
+
+                    return paginated.flatMap((it, idx) => {
+                      const dossierKey =
+                        it.dossierName && String(it.dossierName).trim()
+                          ? String(it.dossierName).trim()
+                          : null;
+
+                      // Aucun dossier => rendu direct à la position chronologique
+                      if (!dossierKey) {
+                        return [
+                          <tr
+                            key={`ungrouped-${currentPage}-row-${idx}`}
+                            className={
+                              idx % 2 === 0 ? "bg-muted/40" : "bg-background"
+                            }
+                          >
+                            <td className="px-3 py-2">{it.description}</td>
+                            <td className="px-3 py-2">{it.section}</td>
+                            <td className="px-3 py-2">{it.chapter}</td>
+                            <td className="px-3 py-2 font-mono">{it.code}</td>
+                            <td className="px-3 py-2">{it.quantity}</td>
+                            <td className="px-3 py-2">{it.ddRate}</td>
+                            <td className="px-3 py-2">{it.rsRate}</td>
+                            <td className="px-3 py-2">{it.otherTaxes}</td>
+                            <td className="px-3 py-2">{it.usUnit}</td>
+                            <td className="px-3 py-2">{it.origin}</td>
+                            <td className="px-3 py-2">{it.value}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              {it.dateLabel}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                                {it.confidence.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-3 py-2">{it.status}</td>
+                          </tr>,
+                        ];
+                      }
+
+                      const info = dossierInfo.get(dossierKey);
+                      if (!info) return [];
+
+                      // Si le dossier n'a jamais été ouvert manuellement,
+                      // on le considère fermé par défaut.
+                      const isCollapsed = collapsedDossiers[dossierKey] ?? true;
+                      const isFirst = idx === info.first;
+                      const isLast = idx === info.last;
+
+                      const out: JSX.Element[] = [];
+
+                      // Header du dossier à la première occurrence (donc il reste dans le bon ordre)
+                      if (isFirst) {
+                        out.push(
+                          <tr key={`group-header-${dossierKey}-${currentPage}`}>
+                            <td
+                              colSpan={14}
+                              className="px-3 py-2 bg-primary/5 font-semibold text-primary"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCollapsedDossiers((prev) => ({
+                                    ...prev,
+                                    [dossierKey]: !(prev[dossierKey] ?? false),
+                                  }));
+                                }}
+                                className="inline-flex items-center gap-2"
+                                aria-label={`Dossier ${dossierKey}: ${
+                                  isCollapsed ? "déplier" : "réduire"
+                                }`}
+                              >
+                                <span aria-hidden="true">
+                                  {isCollapsed ? ">" : "v"}
+                                </span>
+                                <span>{dossierKey}</span>
+                                <span className="text-muted-foreground font-normal">
+                                  ({info.count})
+                                </span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      // Eléments du dossier uniquement si déplié
+                      if (!isCollapsed) {
+                        out.push(
+                          <tr
+                            key={`group-item-${dossierKey}-${currentPage}-row-${idx}`}
+                            className={
+                              idx % 2 === 0 ? "bg-muted/40" : "bg-background"
+                            }
+                          >
+                            <td className="px-3 py-2">{it.description}</td>
+                            <td className="px-3 py-2">{it.section}</td>
+                            <td className="px-3 py-2">{it.chapter}</td>
+                            <td className="px-3 py-2 font-mono">{it.code}</td>
+                            <td className="px-3 py-2">{it.quantity}</td>
+                            <td className="px-3 py-2">{it.ddRate}</td>
+                            <td className="px-3 py-2">{it.rsRate}</td>
+                            <td className="px-3 py-2">{it.otherTaxes}</td>
+                            <td className="px-3 py-2">{it.usUnit}</td>
+                            <td className="px-3 py-2">{it.origin}</td>
+                            <td className="px-3 py-2">{it.value}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              {it.dateLabel}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                                {it.confidence.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-3 py-2">{it.status}</td>
+                          </tr>
+                        );
+
+                        // Séparateur de fin du dossier : après la dernière ligne rendue du dossier
+                        if (isLast) {
+                          out.push(
+                            <tr key={`group-sep-${dossierKey}-${currentPage}-${idx}`}>
+                              <td colSpan={14} className="px-3 py-0">
+                                <div className="h-5 bg-primary/100 rounded-lg shadow-[0_10px_24px_rgba(16,185,129,0.35)]" />
+                              </td>
+                            </tr>
+                          );
+                        }
+                      }
+
+                      return out;
+                    });
+                  })()}
                   {filtered.length === 0 && (
                     <tr>
                       <td

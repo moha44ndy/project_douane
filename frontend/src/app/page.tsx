@@ -103,6 +103,11 @@ export default function HomePage() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
+  // Optionnel : regroupe les validations dans un "dossier entreprise"
+  // (ex: AMKsecurity) pour les retrouver dans l'historique.
+  const [dossierName, setDossierName] = useState<string>("");
+  const [dossiersOptions, setDossiersOptions] = useState<string[]>([]);
+
   useEffect(() => {
     const checkSession = async () => {
       const {
@@ -120,6 +125,29 @@ export default function HomePage() {
     };
     void checkSession();
   }, [router]);
+
+  useEffect(() => {
+    const loadDossiers = async () => {
+      if (!accessToken) return;
+      try {
+        const res = await fetch(`${API_BASE_URL}/dossiers`, {
+          headers: {
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setDossiersOptions(
+            data.map((d: any) => d?.name).filter((x: any) => typeof x === "string" && x.trim())
+          );
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    void loadDossiers();
+  }, [accessToken]);
 
   useEffect(() => {
     // Debug: confirmer que React rend bien les classifications après setPayload
@@ -407,6 +435,7 @@ export default function HomePage() {
           origin: item.origin ?? null,
           value: item.value ?? null,
           user_id: userId,
+          dossier_name: dossierName.trim() || undefined,
           query: classifyQueryForCache || undefined,
           raw_response: raw || undefined,
         }),
@@ -503,6 +532,7 @@ export default function HomePage() {
             items: chunkItems,
             query: isFirstChunk ? classifyQueryForCache || undefined : undefined,
             raw_response: isFirstChunk ? raw || undefined : undefined,
+            dossier_name: dossierName.trim() || undefined,
           }),
         });
 
@@ -939,7 +969,27 @@ export default function HomePage() {
                     ))}
                   </tbody>
                 </table>
-                <div className="mt-4 flex items-center justify-end">
+                <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="text-sm font-semibold text-muted-foreground whitespace-nowrap">
+                      Dossier entreprise (optionnel)
+                    </div>
+                    <input
+                      type="text"
+                      value={dossierName}
+                      onChange={(e) => setDossierName(e.target.value)}
+                      placeholder="Ex: AMKsecurity"
+                      list="dossiers-list"
+                      className="min-w-[260px] rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                      aria-label="Nom du dossier entreprise"
+                    />
+                    <datalist id="dossiers-list">
+                      {dossiersOptions.map((n) => (
+                        <option key={n} value={n} />
+                      ))}
+                    </datalist>
+                  </div>
+
                   <button
                     type="button"
                     onClick={handleValidateAll}

@@ -16,6 +16,7 @@ type Filters = {
   section: string;
   status: string;
   agent: string;
+  dossier: string;
   dateFrom: string;
   dateTo: string;
 };
@@ -91,6 +92,7 @@ function normalizeHistoryItem(item: HistoryItem) {
   const status = (item.statut_validation ?? item.statut ?? "N/A") as string;
 
   const agentName = (item.agent_name ?? "N/A") as string;
+  const dossierName = (item.dossier_name ?? "") as string;
 
   const dateRaw = item.date_classification ?? item.date ?? "";
   const dateLabel = formatDateTime(dateRaw);
@@ -113,6 +115,7 @@ function normalizeHistoryItem(item: HistoryItem) {
     dateRaw,
     dateLabel,
     agentName,
+    dossierName,
   };
 }
 
@@ -126,6 +129,7 @@ export default function AdminHistoriquePage() {
     section: "Toutes",
     status: "Tous",
     agent: "Tous",
+    dossier: "Tous",
     dateFrom: "",
     dateTo: "",
   });
@@ -144,6 +148,8 @@ export default function AdminHistoriquePage() {
     error?: string;
   } | null>(null);
   const [quantityDrafts, setQuantityDrafts] = useState<Record<string, number>>({});
+  // Etat d'affichage des dossiers (fermé / ouvert). Par défaut: fermés.
+  const [collapsedDossiers, setCollapsedDossiers] = useState<Record<string, boolean>>({});
 
   const fetchCacheStatus = async (token?: string) => {
     try {
@@ -240,6 +246,21 @@ export default function AdminHistoriquePage() {
     return ["Tous", ...Array.from(set).sort()];
   }, [normalized]);
 
+  const dossierOptions = useMemo(() => {
+    const set = new Set<string>();
+    normalized.forEach((n) => {
+      const v = n.dossierName && String(n.dossierName).trim();
+      if (v) set.add(String(v));
+    });
+
+    return [
+      { value: "Tous", label: "Tous" },
+      { value: "__has__", label: "tous les dossiers" },
+      { value: "__none__", label: "aucun dossier" },
+      ...Array.from(set).sort().map((d) => ({ value: d, label: d })),
+    ];
+  }, [normalized]);
+
   const filtered = useMemo(() => {
     return normalized.filter((item) => {
       if (filters.search) {
@@ -260,6 +281,18 @@ export default function AdminHistoriquePage() {
       if (filters.agent !== "Tous" && item.agentName !== filters.agent) {
         return false;
       }
+
+      if (filters.dossier !== "Tous") {
+        if (filters.dossier === "__none__") {
+          if (item.dossierName && String(item.dossierName).trim()) return false;
+        } else if (filters.dossier === "__has__") {
+          if (!item.dossierName || !String(item.dossierName).trim()) return false;
+        } else {
+          if (String(item.dossierName || "").trim() !== filters.dossier)
+            return false;
+        }
+      }
+
       if (filters.dateFrom) {
         const from = new Date(filters.dateFrom);
         const current = new Date(item.dateRaw);
@@ -277,6 +310,37 @@ export default function AdminHistoriquePage() {
       return true;
     });
   }, [normalized, filters]);
+
+  const filteredDossierKeys = useMemo(() => {
+    const set = new Set<string>();
+    filtered.forEach((n) => {
+      const k = n.dossierName && String(n.dossierName).trim()
+        ? String(n.dossierName).trim()
+        : null;
+      if (k) set.add(k);
+    });
+    return Array.from(set).sort();
+  }, [filtered]);
+
+  useEffect(() => {
+    // Quand l'utilisateur filtre par dossier, on déplie automatiquement
+    // les dossiers concernés pour voir les items filtrés.
+    if (filters.dossier === "Tous" || filters.dossier === "__none__") return;
+    if (filters.dossier === "__has__") {
+      setCollapsedDossiers((prev) => {
+        const next = { ...prev };
+        filteredDossierKeys.forEach((k) => {
+          next[k] = false;
+        });
+        return next;
+      });
+      return;
+    }
+    setCollapsedDossiers((prev) => ({
+      ...prev,
+      [filters.dossier]: false,
+    }));
+  }, [filters.dossier, filteredDossierKeys]);
 
   const total = data.length;
   const totalFiltered = filtered.length;
@@ -322,6 +386,8 @@ export default function AdminHistoriquePage() {
       if (filters.section !== "Toutes") params.set("section", filters.section);
       if (filters.status !== "Tous") params.set("status", filters.status);
       if (filters.agent !== "Tous") params.set("agent", filters.agent);
+      if (filters.dossier && filters.dossier !== "Tous")
+        params.set("dossier", filters.dossier);
       if (filters.dateFrom) params.set("date_from", filters.dateFrom);
       if (filters.dateTo) params.set("date_to", filters.dateTo);
 
@@ -605,6 +671,25 @@ export default function AdminHistoriquePage() {
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                Dossier
+              </label>
+              <select
+                value={filters.dossier}
+                onChange={(e) =>
+                  setFilters((f) => ({ ...f, dossier: e.target.value }))
+                }
+                className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm"
+                title="Filtrer par dossier"
+              >
+                {dossierOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="block text-xs font-semibold text-muted-foreground mb-1">
@@ -733,108 +818,294 @@ export default function AdminHistoriquePage() {
                   <th className="px-3 py-2 text-left font-semibold">Date / heure</th>
                   <th className="px-3 py-2 text-left font-semibold">Confiance</th>
                   <th className="px-3 py-2 text-left font-semibold">Statut</th>
+                  <th className="px-3 py-2 text-left font-semibold">Dossier</th>
                   <th className="px-3 py-2 text-left font-semibold">Agent</th>
                   <th className="px-3 py-2 text-left font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {paginated.map((item, idx) => (
-                  <tr
-                    key={`${currentPage}-${idx}`}
-                    className={
-                      idx % 2 === 0 ? "bg-muted/40" : "bg-background"
-                    }
-                  >
-                    <td className="px-3 py-2">{item.id ?? "N/A"}</td>
-                    <td className="px-3 py-2">{item.description}</td>
-                    <td className="px-3 py-2">{item.section}</td>
-                    <td className="px-3 py-2">{item.chapter}</td>
-                    <td className="px-3 py-2 font-mono">{item.code}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={quantityDrafts[String(item.id)] ?? item.quantity}
-                          onChange={(e) => {
-                            const next = Number(e.target.value);
-                            if (!Number.isFinite(next)) return;
-                            const safe = Math.max(1, Math.floor(next));
-                            setQuantityDrafts((prev) => ({
-                              ...prev,
-                              [String(item.id)]: safe,
-                            }));
-                          }}
-                          className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm"
-                          aria-label={`Quantité pour ${item.description}`}
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateQuantity(
-                              item.id,
-                              quantityDrafts[String(item.id)] ?? item.quantity
-                            )
-                          }
-                          className="px-2 py-1 rounded-full border border-primary bg-primary/5 text-xs text-primary"
-                        >
-                          OK
-                        </button>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">{item.ddRate}</td>
-                    <td className="px-3 py-2">{item.rsRate}</td>
-                    <td className="px-3 py-2">{item.otherTaxes}</td>
-                    <td className="px-3 py-2">{item.usUnit}</td>
-                    <td className="px-3 py-2">{item.origin}</td>
-                    <td className="px-3 py-2">{item.value}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      {item.dateLabel}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                        {item.confidence.toFixed(1)}%
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">{item.status}</td>
-                    <td className="px-3 py-2">{item.agentName}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateStatus(
-                              item.id,
-                              item.status === "validé" ? "invalidé" : "validé"
-                            )
-                          }
-                          className="px-3 py-1 rounded-full border border-emerald-300 bg-emerald-50 text-xs text-emerald-700"
-                        >
-                          {item.status === "validé" ? "Invalider" : "Valider"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateStatus(
-                              item.id,
-                              item.status === "archivé" ? "validé" : "archivé"
-                            )
-                          }
-                          className="px-3 py-1 rounded-full border border-slate-300 bg-slate-50 text-xs text-slate-700"
-                        >
-                          {item.status === "archivé"
-                            ? "Désarchiver"
-                            : "Archiver"}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {(() => {
+                    type DossierInfo = { count: number; first: number; last: number };
+                    const dossierInfo = new Map<string, DossierInfo>();
+
+                    paginated.forEach((it, idx) => {
+                      const k =
+                        it.dossierName && String(it.dossierName).trim()
+                          ? String(it.dossierName).trim()
+                          : null;
+                      if (!k) return;
+                      const cur = dossierInfo.get(k);
+                      if (!cur) {
+                        dossierInfo.set(k, { count: 1, first: idx, last: idx });
+                      } else {
+                        dossierInfo.set(k, {
+                          ...cur,
+                          count: cur.count + 1,
+                          last: idx,
+                        });
+                      }
+                    });
+
+                    return paginated.flatMap((item, idx) => {
+                      const dossierKey =
+                        item.dossierName && String(item.dossierName).trim()
+                          ? String(item.dossierName).trim()
+                          : null;
+
+                      // Sans dossier => rendu normal
+                      if (!dossierKey) {
+                        return [
+                          <tr
+                            key={`admin-ungrouped-${currentPage}-${idx}`}
+                            className={
+                              idx % 2 === 0 ? "bg-muted/40" : "bg-background"
+                            }
+                          >
+                            <td className="px-3 py-2">{item.id ?? "N/A"}</td>
+                            <td className="px-3 py-2">{item.description}</td>
+                            <td className="px-3 py-2">{item.section}</td>
+                            <td className="px-3 py-2">{item.chapter}</td>
+                            <td className="px-3 py-2 font-mono">{item.code}</td>
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={
+                                    quantityDrafts[String(item.id)] ?? item.quantity
+                                  }
+                                  onChange={(e) => {
+                                    const next = Number(e.target.value);
+                                    if (!Number.isFinite(next)) return;
+                                    const safe = Math.max(1, Math.floor(next));
+                                    setQuantityDrafts((prev) => ({
+                                      ...prev,
+                                      [String(item.id)]: safe,
+                                    }));
+                                  }}
+                                  className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm"
+                                  aria-label={`Quantité pour ${item.description}`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateQuantity(
+                                      item.id,
+                                      quantityDrafts[String(item.id)] ?? item.quantity
+                                    )
+                                  }
+                                  className="px-2 py-1 rounded-full border border-primary bg-primary/5 text-xs text-primary"
+                                >
+                                  OK
+                                </button>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2">{item.ddRate}</td>
+                            <td className="px-3 py-2">{item.rsRate}</td>
+                            <td className="px-3 py-2">{item.otherTaxes}</td>
+                            <td className="px-3 py-2">{item.usUnit}</td>
+                            <td className="px-3 py-2">{item.origin}</td>
+                            <td className="px-3 py-2">{item.value}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              {item.dateLabel}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                                {item.confidence.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-3 py-2">{item.status}</td>
+                            <td className="px-3 py-2">{item.dossierName || "N/A"}</td>
+                            <td className="px-3 py-2">{item.agentName}</td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateStatus(
+                                      item.id,
+                                      item.status === "validé"
+                                        ? "invalidé"
+                                        : "validé"
+                                    )
+                                  }
+                                  className="px-3 py-1 rounded-full border border-emerald-300 bg-emerald-50 text-xs text-emerald-700"
+                                >
+                                  {item.status === "validé"
+                                    ? "Invalider"
+                                    : "Valider"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateStatus(
+                                      item.id,
+                                      item.status === "archivé"
+                                        ? "validé"
+                                        : "archivé"
+                                    )
+                                  }
+                                  className="px-3 py-1 rounded-full border border-slate-300 bg-slate-50 text-xs text-slate-700"
+                                >
+                                  {item.status === "archivé"
+                                    ? "Désarchiver"
+                                    : "Archiver"}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>,
+                        ];
+                      }
+
+                      const info = dossierInfo.get(dossierKey);
+                      if (!info) return [];
+                      const isCollapsed = collapsedDossiers[dossierKey] ?? true;
+
+                      const out: JSX.Element[] = [];
+
+                      // Header uniquement à la première occurrence
+                      if (idx === info.first) {
+                        out.push(
+                          <tr key={`admin-dossier-header-${dossierKey}-${currentPage}`}>
+                            <td colSpan={18} className="px-3 py-2 bg-primary/5 font-semibold text-primary">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCollapsedDossiers((prev) => ({
+                                    ...prev,
+                                    [dossierKey]: !(prev[dossierKey] ?? true),
+                                  }));
+                                }}
+                                className="inline-flex items-center gap-2"
+                                aria-label={`Dossier ${dossierKey}: ${
+                                  isCollapsed ? "déplier" : "réduire"
+                                }`}
+                              >
+                                <span aria-hidden="true">{isCollapsed ? ">" : "v"}</span>
+                                <span>{dossierKey}</span>
+                                <span className="text-muted-foreground font-normal">
+                                  ({info.count})
+                                </span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      // Items si déplié
+                      if (!isCollapsed) {
+                        out.push(
+                          <tr
+                            key={`admin-dossier-row-${dossierKey}-${currentPage}-${idx}`}
+                            className={`${idx % 2 === 0 ? "bg-muted/40" : "bg-background"}${
+                              idx === info.last ? " border-b-6 border-emerald-500/95" : ""
+                            }`}
+                          >
+                            <td className="px-3 py-2">{item.id ?? "N/A"}</td>
+                            <td className="px-3 py-2">{item.description}</td>
+                            <td className="px-3 py-2">{item.section}</td>
+                            <td className="px-3 py-2">{item.chapter}</td>
+                            <td className="px-3 py-2 font-mono">{item.code}</td>
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={
+                                    quantityDrafts[String(item.id)] ?? item.quantity
+                                  }
+                                  onChange={(e) => {
+                                    const next = Number(e.target.value);
+                                    if (!Number.isFinite(next)) return;
+                                    const safe = Math.max(1, Math.floor(next));
+                                    setQuantityDrafts((prev) => ({
+                                      ...prev,
+                                      [String(item.id)]: safe,
+                                    }));
+                                  }}
+                                  className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm"
+                                  aria-label={`Quantité pour ${item.description}`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateQuantity(
+                                      item.id,
+                                      quantityDrafts[String(item.id)] ?? item.quantity
+                                    )
+                                  }
+                                  className="px-2 py-1 rounded-full border border-primary bg-primary/5 text-xs text-primary"
+                                >
+                                  OK
+                                </button>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2">{item.ddRate}</td>
+                            <td className="px-3 py-2">{item.rsRate}</td>
+                            <td className="px-3 py-2">{item.otherTaxes}</td>
+                            <td className="px-3 py-2">{item.usUnit}</td>
+                            <td className="px-3 py-2">{item.origin}</td>
+                            <td className="px-3 py-2">{item.value}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              {item.dateLabel}
+                            </td>
+                            <td className="px-3 py-2">
+                              <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                                {item.confidence.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-3 py-2">{item.status}</td>
+                            <td className="px-3 py-2">{item.dossierName || "N/A"}</td>
+                            <td className="px-3 py-2">{item.agentName}</td>
+                            <td className="px-3 py-2">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateStatus(
+                                      item.id,
+                                      item.status === "validé"
+                                        ? "invalidé"
+                                        : "validé"
+                                    )
+                                  }
+                                  className="px-3 py-1 rounded-full border border-emerald-300 bg-emerald-50 text-xs text-emerald-700"
+                                >
+                                  {item.status === "validé"
+                                    ? "Invalider"
+                                    : "Valider"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateStatus(
+                                      item.id,
+                                      item.status === "archivé"
+                                        ? "validé"
+                                        : "archivé"
+                                    )
+                                  }
+                                  className="px-3 py-1 rounded-full border border-slate-300 bg-slate-50 text-xs text-slate-700"
+                                >
+                                  {item.status === "archivé"
+                                    ? "Désarchiver"
+                                    : "Archiver"}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return out;
+                    });
+                  })()}
                 {filtered.length === 0 && (
                   <tr>
                     <td
-                      colSpan={17}
+                      colSpan={18}
                       className="px-3 py-4 text-center text-sm text-muted-foreground"
                     >
                       Aucune classification ne correspond aux filtres.

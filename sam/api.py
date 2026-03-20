@@ -230,6 +230,9 @@ class ValidateClassificationRequest(BaseModel):
     # (cache utilisé uniquement lorsqu'au moins une classification est validée)
     query: str | None = None
     raw_response: str | None = None
+    # Optionnel : associe la classification à un "dossier" (ex: entreprise / société).
+    # Si aucun dossier n'est fourni => classification non associée.
+    dossier_name: str | None = None
 
 
 class ValidateClassificationBulkRequest(BaseModel):
@@ -245,6 +248,8 @@ class ValidateClassificationBulkRequest(BaseModel):
     # même si l'UI ne fournit pas `query/raw_response` par item.
     query: str | None = None
     raw_response: str | None = None
+    # Dossier appliqué à toutes les classifications validées dans cette requête.
+    dossier_name: str | None = None
 
 
 # Mapping chapitre SH (2 chiffres) -> (section romain, libellé section) pour corriger les réponses LLM
@@ -1422,6 +1427,14 @@ def startup_event() -> None:
     Les objets sont stockés sur l'application pour être réutilisés par les endpoints.
     """
 
+    # Assure que les tables "dossiers" existent (groupement des validations
+    # par entreprise/société). Best-effort : si la DB est indisponible, on ne
+    # bloque pas le démarrage.
+    try:
+        _ensure_dossier_tables()
+    except Exception:
+        logger.warning("[dossiers] impossible d'assurer les tables", exc_info=True)
+
     chunks, index = initialize_chatbot()
     app.state.chunks = chunks
     app.state.index = index
@@ -1429,6 +1442,109 @@ def startup_event() -> None:
     classifications_index, classifications_meta = initialize_validated_classifications_index()
     app.state.classifications_index = classifications_index
     app.state.classifications_meta = classifications_meta
+
+
+def _ensure_dossier_tables() -> None:
+    """
+    Tables pour grouper les validations de classifications dans des "dossiers"
+    (ex: AMKsecurity) afin que l'historique puisse afficher un dossier avec
+    dedans les résultats validés.
+    """
+    with get_db() as db:
+        db.execute(
+            text(
+                """
+                create table if not exists public.classification_dossiers (
+                    id uuid primary key default gen_random_uuid(),
+                    owner_user_id uuid not null,
+                    name text not null,
+                    name_norm text not null,
+                    description text,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                )
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                create unique index if not exists classification_dossiers_owner_name_norm_uniq
+                on public.classification_dossiers (owner_user_id, name_norm)
+                """
+            )
+        )
+
+        # Nouveau modèle optimisé : stocker directement `dossier_id`
+        # dans `public.classifications` (1 classification -> 1 dossier).
+        # On ne recrée plus `classification_dossier_items`.
+        try:
+            db.execute(
+                text(
+                    """
+                    alter table public.classifications
+                    add column if not exists dossier_id uuid references public.classification_dossiers(id)
+                    """
+                )
+            )
+        except Exception:
+            logger.warning("[dossiers] add classifications.dossier_id failed", exc_info=True)
+
+        # Migration best-effort depuis l'ancienne table de liaison.
+        try:
+            exists_row = db.execute(
+                text(
+                    "select to_regclass('public.classification_dossier_items') is not null as exists"
+                )
+            ).mappings().first()
+            if exists_row and exists_row.get("exists"):
+                db.execute(
+                    text(
+                        """
+                        update public.classifications c
+                        set dossier_id = di.dossier_id
+                        from (
+                          select distinct on (classification_id)
+                            classification_id,
+                            dossier_id
+                          from public.classification_dossier_items
+                        ) di
+                        where c.id = di.classification_id
+                          and (c.dossier_id is null)
+                        """
+                    )
+                )
+        except Exception:
+            logger.warning("[dossiers] migration items->classifications.dossier_id failed", exc_info=True)
+
+        db.commit()
+
+
+def _ensure_dossier_id(owner_user_id: str, dossier_name: str) -> str | None:
+    name = (dossier_name or "").strip()
+    if not name:
+        return None
+    name_norm = _strip_accents_ascii(name).strip().lower()
+    if not name_norm:
+        return None
+
+    with get_db() as db:
+        row = db.execute(
+            text(
+                """
+                insert into public.classification_dossiers (owner_user_id, name, name_norm)
+                values (:owner_user_id, :name, :name_norm)
+                on conflict (owner_user_id, name_norm)
+                do update set
+                    name = excluded.name,
+                    updated_at = now()
+                returning id::text as id
+                """
+            ),
+            {"owner_user_id": owner_user_id, "name": name, "name_norm": name_norm},
+        ).mappings().one()
+        db.commit()
+        return str(row.get("id")) if row else None
 
 
 @app.get("/health", tags=["system"])
@@ -3145,9 +3261,16 @@ def validate_classification(
     cache_query = payload.query
     cache_raw = payload.raw_response
 
+    dossier_id = None
+    try:
+        dossier_id = _ensure_dossier_id(admin_id, payload.dossier_name) if payload.dossier_name else None
+    except Exception:
+        logger.warning("[dossiers] ensure dossier failed (single)", exc_info=True)
+
     result = _validate_classification_one(
         payload=payload,
         admin_id=admin_id,
+        dossier_id=dossier_id,
         cache_query=cache_query,
         cache_raw=cache_raw,
         cache_already_set=False,
@@ -3159,6 +3282,7 @@ def validate_classification(
 def _validate_classification_one(
     payload: ValidateClassificationRequest,
     admin_id: str,
+    dossier_id: str | None,
     request: Request,
     cache_query: str | None,
     cache_raw: str | None,
@@ -3194,7 +3318,8 @@ def _validate_classification_one(
                  value,
                  user_id,
                  statut_validation,
-                 created_at)
+                 created_at,
+                 dossier_id)
                 values (
                   :description,
                   :section,
@@ -3210,7 +3335,8 @@ def _validate_classification_one(
                   :value,
                   :user_id,
                   :statut,
-                  :created_at
+                  :created_at,
+                  :dossier_id
                 )
                 returning
                   id,
@@ -3247,6 +3373,7 @@ def _validate_classification_one(
                 "user_id": payload.user_id,
                 "statut": "validé",
                 "created_at": now,
+                "dossier_id": dossier_id,
             },
         ).mappings().one()
         db.commit()
@@ -3322,6 +3449,13 @@ def validate_classifications_bulk(
     # que le premier item qui les contient déclenche le cache.
     cache_set_done = False
 
+    dossier_id_to_use: str | None = None
+    if payload.dossier_name:
+        try:
+            dossier_id_to_use = _ensure_dossier_id(admin_id, payload.dossier_name)
+        except Exception:
+            logger.warning("[dossiers] ensure dossier failed (bulk)", exc_info=True)
+
     for idx, item in enumerate(payload.items):
         try:
             # Cache par item (fallback) si non fourni au niveau bulk
@@ -3331,6 +3465,7 @@ def validate_classifications_bulk(
             result = _validate_classification_one(
                 payload=item,
                 admin_id=admin_id,
+                dossier_id=dossier_id_to_use,
                 cache_query=q,
                 cache_raw=raw_resp,
                 cache_already_set=already,
@@ -3532,6 +3667,32 @@ def delete_normalization_alias(
     return {"deleted": True, "id": row.get("id")}
 
 
+class DossierResponse(BaseModel):
+    id: str
+    name: str
+
+
+@app.get("/dossiers", tags=["history"])
+def list_dossiers(admin_id: str = Depends(admin_required)) -> list[DossierResponse]:
+    """Liste les dossiers (entreprises) de l'admin connecté."""
+    with get_db() as db:
+        rows = db.execute(
+            text(
+                """
+                select
+                  id::text as id,
+                  name
+                from public.classification_dossiers
+                where owner_user_id = :owner_user_id
+                order by created_at desc
+                limit 200
+                """
+            ),
+            {"owner_user_id": admin_id},
+        ).mappings().all()
+        return [DossierResponse(**dict(r)) for r in rows]
+
+
 @app.get("/history", tags=["history"])
 def get_history(user_id: str | None = None) -> list[dict]:
     """
@@ -3559,10 +3720,13 @@ def get_history(user_id: str | None = None) -> list[dict]:
           c.statut_validation,
           c.created_at as date_classification,
           c.user_id,
+          d.id::text as dossier_id,
+          d.name as dossier_name,
           u.nom_user as agent_name,
           u.id as agent_id
         from public.classifications c
         left join public.users u on u.id = c.user_id
+        left join public.classification_dossiers d on d.id = c.dossier_id
     """
 
     params: dict[str, Any] = {}
@@ -3584,6 +3748,7 @@ def export_history_csv(
     search: str | None = None,
     section: str | None = None,
     status: str | None = None,
+    dossier: str | None = None,
 ) -> Response:
     """
     Exporte l'historique des classifications au format CSV.
@@ -3611,10 +3776,13 @@ def export_history_csv(
           c.statut_validation,
           c.created_at as date_classification,
           c.user_id,
+          d.id::text as dossier_id,
+          d.name as dossier_name,
           u.nom_user as agent_name,
           u.id as agent_id
         from public.classifications c
         left join public.users u on u.id = c.user_id
+        left join public.classification_dossiers d on d.id = c.dossier_id
     """
 
     conditions: list[str] = []
@@ -3637,6 +3805,19 @@ def export_history_csv(
     if status and status not in {"Tous", "Tout"}:
         conditions.append("c.statut_validation = :status")
         params["status"] = status
+
+    if dossier and dossier not in {"Tous", "Tout"}:
+        if dossier == "__none__":
+            # Pas de dossier associé
+            conditions.append("c.dossier_id is null")
+        elif dossier == "__has__":
+            # Uniquement les classifications associées à un dossier
+            conditions.append("c.dossier_id is not null")
+        else:
+            dossier_norm = _strip_accents_ascii(dossier).strip().lower()
+            if dossier_norm:
+                conditions.append("d.name_norm = :dossier_norm")
+                params["dossier_norm"] = dossier_norm
 
     if conditions:
         base_sql += " where " + " and ".join(conditions)
@@ -3663,6 +3844,8 @@ def export_history_csv(
         "value",
         "statut_validation",
         "date_classification",
+        "dossier_id",
+        "dossier_name",
         "user_id",
         "agent_name",
         "agent_id",
@@ -3695,6 +3878,7 @@ def export_admin_history_csv(
     section: str | None = None,
     status: str | None = None,
     agent: str | None = None,
+    dossier: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = 5000,
@@ -3724,10 +3908,13 @@ def export_admin_history_csv(
           c.statut_validation,
           c.created_at as date_classification,
           c.user_id,
+          d.id::text as dossier_id,
+          d.name as dossier_name,
           u.nom_user as agent_name,
           u.id as agent_id
         from public.classifications c
         left join public.users u on u.id = c.user_id
+        left join public.classification_dossiers d on d.id = c.dossier_id
     """
 
     conditions: list[str] = []
@@ -3753,6 +3940,17 @@ def export_admin_history_csv(
     if agent and agent not in {"Tous", "Tout"}:
         conditions.append("u.nom_user = :agent")
         params["agent"] = agent
+
+    if dossier and dossier not in {"Tous", "Tout"}:
+        if dossier == "__none__":
+            conditions.append("c.dossier_id is null")
+        elif dossier == "__has__":
+            conditions.append("c.dossier_id is not null")
+        else:
+            dossier_norm = _strip_accents_ascii(dossier).strip().lower()
+            if dossier_norm:
+                conditions.append("d.name_norm = :dossier_norm")
+                params["dossier_norm"] = dossier_norm
 
     if date_from and date_from.strip():
         conditions.append("c.created_at::date >= :date_from")
@@ -3790,6 +3988,8 @@ def export_admin_history_csv(
         "value",
         "statut_validation",
         "date_classification",
+        "dossier_id",
+        "dossier_name",
         "user_id",
         "agent_name",
         "agent_id",
