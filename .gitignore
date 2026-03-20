@@ -11,4 +11,4 @@ node_modules
 next-env.d.ts
 
 # Artefacts RAG (FAISS) générés côté disque
-sam/indexFaiss/validated_classifications.*
+sam/indexFaiss/validated_classifications*
