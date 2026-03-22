@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 
 /** Évite les redirections ouvertes : chemins internes uniquement. */
@@ -20,7 +20,6 @@ function safeRedirectPath(raw: string | null): string {
 }
 
 function LoginForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -48,6 +47,7 @@ function LoginForm() {
       if (data.session) {
         const sync = await fetch("/api/auth/session", {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             access_token: data.session.access_token,
@@ -58,8 +58,8 @@ function LoginForm() {
           setError("Impossible d'enregistrer la session. Réessayez.");
           return;
         }
-        router.replace(afterLogin);
-        router.refresh();
+        // Navigation complète : garantit l’envoi du cookie httpOnly au middleware (évite un retour immédiat sur /login).
+        window.location.assign(afterLogin);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Erreur de connexion";
