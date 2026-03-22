@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -14,6 +15,8 @@ import threading
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+from starlette.responses import JSONResponse
 
 from fastapi import FastAPI, HTTPException, Response, Header, Request, Depends
 from fastapi import UploadFile, File
@@ -175,15 +178,59 @@ app = FastAPI(
     description="API de classification tarifaire CEDEAO (RAG + OpenAI)",
 )
 
-origins = ["*"]
+_cors_extra = [
+    o.strip()
+    for o in (os.getenv("CORS_ALLOWED_ORIGINS") or "").split(",")
+    if o.strip()
+]
+_cors_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    *_cors_extra,
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=_cors_origins,
+    # Ports dev (3000, 3001, etc.) sans tout ouvrir en prod si tu complètes CORS_ALLOWED_ORIGINS.
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _operational_error_client_detail(exc: OperationalError) -> str:
+    """Message API selon la cause (pooler, IPv6, etc.)."""
+    raw = str(getattr(exc, "orig", None) or exc)
+    low = raw.lower()
+    if "tenant or user not found" in low:
+        return (
+            "Supabase pooler: 'Tenant or user not found'. "
+            "Copy the Session pooler URI from Dashboard → Connect (user postgres.YOUR_PROJECT_REF, "
+            "host exactly as shown, port 5432). Do not use db.*.supabase.co for session mode."
+        )
+    if "timeout" in low or "10060" in raw or "timed out" in low:
+        return (
+            "Postgres connection timed out. Direct host db.*.supabase.co and port 6543 often resolve "
+            "to IPv6 only. On IPv4-only networks use Session pooler: SUPABASE_DB_POOLER_URL with "
+            "host aws-*.region.pooler.supabase.com and port 5432 (from Connect → Session pooler)."
+        )
+    return (
+        "Database unavailable (Postgres connection failed). "
+        "Prefer Session pooler in SUPABASE_DB_POOLER_URL (aws-*.pooler.supabase.com:5432, user "
+        "postgres.projectref). Transaction pooler (db.*:6543) can still be IPv6-only."
+    )
+
+
+@app.exception_handler(OperationalError)
+async def _handle_sqlalchemy_operational(_request: Request, exc: OperationalError) -> JSONResponse:
+    """Connexion DB (timeout Supabase IPv6, etc.) : réponse JSON + CORS via middleware."""
+    logger.error("Erreur SQLAlchemy OperationalError (souvent Postgres/Supabase)", exc_info=exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": _operational_error_client_detail(exc)},
+    )
 
 
 class ClassifyRequest(BaseModel):
