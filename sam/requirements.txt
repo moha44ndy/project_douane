@@ -75,9 +75,7 @@ pydantic_core==2.33.2
 pydeck==0.9.1
 Pygments==2.19.2
 pypdf==6.1.0
-PyQt5==5.15.11
-PyQt5-Qt5==5.15.2
-PyQt5_sip==12.17.1
+# PyQt5 retiré : GUI uniquement, casse le build Docker (qmake). Réinstaller en local si besoin d’un outil desktop.
 python-dateutil==2.9.0.post0
 python-dotenv==1.1.1
 pytz==2025.2
@@ -103,6 +101,7 @@ spacy==3.8.7
 spacy-legacy==3.0.12
 spacy-loggers==1.0.5
 SQLAlchemy==2.0.43
+psycopg2-binary==2.9.11
 srsly==2.5.1
 stanza==1.1.1
 sympy==1.14.0
