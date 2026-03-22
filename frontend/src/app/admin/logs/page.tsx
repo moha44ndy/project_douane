@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "../../../lib/apiBase";
+import { httpApiErrorMessage } from "../../../lib/httpApiErrorMessage";
 import { supabase } from "../../../lib/supabaseClient";
 
 type AuditLog = {
@@ -100,7 +101,7 @@ export default function AdminLogsPage() {
         );
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(text || `Erreur HTTP ${res.status}`);
+          throw new Error(httpApiErrorMessage(res.status, text));
         }
         const json = await res.json();
         setLogs(Array.isArray(json) ? json : []);
@@ -356,7 +357,7 @@ export default function AdminLogsPage() {
                   });
                   if (!res.ok) {
                     const text = await res.text();
-                    throw new Error(text || `Erreur HTTP ${res.status}`);
+                    throw new Error(httpApiErrorMessage(res.status, text));
                   }
                   const blob = await res.blob();
                   const downloadUrl = window.URL.createObjectURL(blob);
@@ -406,7 +407,7 @@ export default function AdminLogsPage() {
                   });
                   if (!res.ok) {
                     const text = await res.text();
-                    throw new Error(text || `Erreur HTTP ${res.status}`);
+                    throw new Error(httpApiErrorMessage(res.status, text));
                   }
                   const blob = await res.blob();
                   const downloadUrl = window.URL.createObjectURL(blob);

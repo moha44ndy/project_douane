@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
 import { ConfirmModal } from "../../../components/ConfirmModal";
 import { API_BASE_URL } from "../../../lib/apiBase";
+import { httpApiErrorMessage } from "../../../lib/httpApiErrorMessage";
 
 type HistoryItem = Record<string, any>;
 
@@ -196,7 +197,7 @@ export default function AdminHistoriquePage() {
         });
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(text || `Erreur HTTP ${res.status}`);
+          throw new Error(httpApiErrorMessage(res.status, text));
         }
         const json = await res.json();
         setData(Array.isArray(json) ? json : []);
@@ -398,7 +399,7 @@ export default function AdminHistoriquePage() {
 
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
 
       const blob = await res.blob();
@@ -442,7 +443,7 @@ export default function AdminHistoriquePage() {
       );
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const updated = await res.json();
       setData((prev) =>
@@ -477,7 +478,7 @@ export default function AdminHistoriquePage() {
       );
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const updated = await res.json();
       setData((prev) =>
@@ -1209,7 +1210,7 @@ export default function AdminHistoriquePage() {
             );
             if (!res.ok) {
               const text = await res.text();
-              throw new Error(text || `Erreur HTTP ${res.status}`);
+              throw new Error(httpApiErrorMessage(res.status, text));
             }
             const json = await res.json();
             const n = json?.keys_deleted ?? 0;

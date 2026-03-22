@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "../../lib/apiBase";
+import { httpApiErrorMessage } from "../../lib/httpApiErrorMessage";
 import { supabase } from "../../lib/supabaseClient";
 
 type HistoryItem = Record<string, any>;
@@ -169,7 +170,7 @@ export default function HistoriquePage() {
         const res = await fetch(url);
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(text || `Erreur HTTP ${res.status}`);
+          throw new Error(httpApiErrorMessage(res.status, text));
         }
         const json = await res.json();
         setData(Array.isArray(json) ? json : []);

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { API_BASE_URL } from "../../../lib/apiBase";
+import { httpApiErrorMessage } from "../../../lib/httpApiErrorMessage";
 import { supabase } from "../../../lib/supabaseClient";
 
 type NormalizationAliasRow = {
@@ -56,7 +57,7 @@ export default function AdminParametresPage() {
       }
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const json = await res.json();
       setRows(Array.isArray(json) ? json : []);
@@ -124,7 +125,7 @@ export default function AdminParametresPage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       setAliasInput("");
       setCanonicalInput("");
@@ -159,7 +160,7 @@ export default function AdminParametresPage() {
       );
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       setMessage(row.is_active ? "Alias désactivé." : "Alias réactivé.");
       await loadAliases();
@@ -192,7 +193,7 @@ export default function AdminParametresPage() {
       );
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       setMessage("Alias supprimé.");
       await loadAliases();

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { API_BASE_URL } from "../../lib/apiBase";
+import { httpApiErrorMessage } from "../../lib/httpApiErrorMessage";
 import { supabase } from "../../lib/supabaseClient";
 
 type User = {
@@ -160,7 +161,7 @@ export default function AdminPage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const created = await res.json();
       setUsers((prev) => [...prev, created]);
@@ -225,7 +226,7 @@ export default function AdminPage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const updated = await res.json();
       setUsers((prev) =>
@@ -272,7 +273,7 @@ export default function AdminPage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const updated = await res.json();
       setUsers((prev) =>
@@ -321,7 +322,7 @@ export default function AdminPage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const updated = await res.json();
       setUsers((prev) => prev.filter((u) => u.user_id !== updated.user_id));
@@ -349,7 +350,7 @@ export default function AdminPage() {
       );
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const data = await res.json();
       setActionMessage(
@@ -393,7 +394,7 @@ export default function AdminPage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       const updated = await res.json();
       setUsers((prev) =>
@@ -659,7 +660,7 @@ export default function AdminPage() {
                     });
                     if (!res.ok) {
                       const text = await res.text();
-                      throw new Error(text || `Erreur HTTP ${res.status}`);
+                      throw new Error(httpApiErrorMessage(res.status, text));
                     }
                     const blob = await res.blob();
                     const downloadUrl = window.URL.createObjectURL(blob);
@@ -729,7 +730,7 @@ export default function AdminPage() {
                     });
                     if (!res.ok) {
                       const text = await res.text();
-                      throw new Error(text || `Erreur HTTP ${res.status}`);
+                      throw new Error(httpApiErrorMessage(res.status, text));
                     }
                     const blob = await res.blob();
                     const downloadUrl = window.URL.createObjectURL(blob);

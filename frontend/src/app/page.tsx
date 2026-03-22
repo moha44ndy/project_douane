@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "../lib/apiBase";
+import { httpApiErrorMessage } from "../lib/httpApiErrorMessage";
 import { supabase } from "../lib/supabaseClient";
 import { log } from "../lib/logger";
 import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
@@ -333,7 +334,7 @@ export default function HomePage() {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || `Erreur HTTP ${response.status}`);
+        throw new Error(httpApiErrorMessage(response.status, text));
       }
 
       const data = await response.json();
@@ -419,7 +420,7 @@ export default function HomePage() {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(text || `Erreur HTTP ${response.status}`);
+        throw new Error(httpApiErrorMessage(response.status, text));
       }
 
       const data = (await response.json()) as {
@@ -587,7 +588,7 @@ export default function HomePage() {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || `Erreur HTTP ${res.status}`);
+        throw new Error(httpApiErrorMessage(res.status, text));
       }
       setValidationMessage("Classification validée et enregistrée.");
       setValidatedKeys((prev) => ({ ...prev, [rowKey]: true }));
@@ -683,7 +684,7 @@ export default function HomePage() {
 
         if (!res.ok) {
           const text = await res.text();
-          throw new Error(text || `Erreur HTTP ${res.status}`);
+          throw new Error(httpApiErrorMessage(res.status, text));
         }
 
         const data = await res.json();
