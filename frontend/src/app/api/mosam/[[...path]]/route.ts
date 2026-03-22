@@ -84,13 +84,13 @@ async function proxy(
       headers: resHeaders,
     });
   } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    console.error("[api/mosam proxy] fetch failed:", targetUrl, detail);
+    const technical = e instanceof Error ? e.message : String(e);
+    console.error("[api/mosam proxy] fetch failed:", targetUrl, technical);
     return NextResponse.json(
       {
         error:
-          "Le serveur Vercel n’a pas pu joindre MOSAM_API_UPSTREAM (timeout, refus de connexion ou réseau). Vérifiez que l’API écoute sur une IP/port accessibles depuis Internet (pas seulement depuis Cloud Shell) et que le pare-feu OCI autorise le port.",
-        detail,
+          "Le serveur Vercel n’a pas pu joindre MOSAM_API_UPSTREAM (timeout, refus de connexion ou réseau). Vérifiez que l’API écoute sur une IP/port accessibles depuis Internet (Compute OCI + règle entrante TCP 8080), pas seulement dans Oracle Cloud Shell.",
+        detail: technical,
       },
       { status: 502 }
     );

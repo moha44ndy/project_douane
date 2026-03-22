@@ -4,7 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "../../lib/apiBase";
-import { httpApiErrorMessage } from "../../lib/httpApiErrorMessage";
+import {
+  httpApiErrorMessage,
+  humanizeClientFetchError,
+} from "../../lib/httpApiErrorMessage";
 import { supabase } from "../../lib/supabaseClient";
 
 type HistoryItem = Record<string, any>;
@@ -177,9 +180,9 @@ export default function HistoriquePage() {
         // On ne termine le "checking" que si la session est valide
         setCheckingSession(false);
       } catch (err) {
-        const msg =
+        const raw =
           err instanceof Error ? err.message : "Erreur inconnue côté client";
-        setError(msg);
+        setError(humanizeClientFetchError(raw));
         // En cas d'erreur réseau/API, on sort aussi de l'état de "checking"
         setCheckingSession(false);
       } finally {

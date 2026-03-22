@@ -4,7 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { API_BASE_URL } from "../../lib/apiBase";
-import { httpApiErrorMessage } from "../../lib/httpApiErrorMessage";
+import {
+  httpApiErrorMessage,
+  humanizeClientFetchError,
+} from "../../lib/httpApiErrorMessage";
 import { supabase } from "../../lib/supabaseClient";
 
 type User = {
@@ -74,13 +77,16 @@ export default function AdminPage() {
         ]);
 
         if (!usersRes.ok) {
+          const text = await usersRes.text();
           throw new Error(
-            (await usersRes.text()) || `Erreur HTTP users ${usersRes.status}`
+            httpApiErrorMessage(usersRes.status, text) ||
+              `Erreur HTTP users ${usersRes.status}`
           );
         }
         if (!historyRes.ok) {
+          const text = await historyRes.text();
           throw new Error(
-            (await historyRes.text()) ||
+            httpApiErrorMessage(historyRes.status, text) ||
               `Erreur HTTP history ${historyRes.status}`
           );
         }
@@ -92,9 +98,9 @@ export default function AdminPage() {
         // Session valide + données chargées : on peut rendre la page
         setCheckingSession(false);
       } catch (err) {
-        const msg =
+        const raw =
           err instanceof Error ? err.message : "Erreur inconnue côté client";
-        setError(msg);
+        setError(humanizeClientFetchError(raw));
         setCheckingSession(false);
       } finally {
         setLoading(false);
