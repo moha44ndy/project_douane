@@ -3,9 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { API_BASE_URL } from "../../lib/apiBase";
 import { supabase } from "../../lib/supabaseClient";
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 type HistoryItem = Record<string, any>;
 

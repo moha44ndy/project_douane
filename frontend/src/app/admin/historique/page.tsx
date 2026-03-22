@@ -5,9 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../../lib/supabaseClient";
 import { ConfirmModal } from "../../../components/ConfirmModal";
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+import { API_BASE_URL } from "../../../lib/apiBase";
 
 type HistoryItem = Record<string, any>;
 

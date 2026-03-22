@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { API_BASE_URL } from "../lib/apiBase";
 import { supabase } from "../lib/supabaseClient";
 import { log } from "../lib/logger";
 import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
@@ -35,9 +36,6 @@ type ApiPayload = {
   /** Réponse court-circuitée (ex. question sur Mosam) : pas de lignes à valider. */
   assistant_info?: boolean;
 };
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 function tryParseStructuredPayload(rawText: string): ApiPayload | null {
   const stripCodeFences = (s: string) => {
