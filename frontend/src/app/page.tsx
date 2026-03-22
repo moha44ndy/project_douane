@@ -1224,6 +1224,7 @@ export default function HomePage() {
         onCancel={() => setShowLogoutModal(false)}
         onConfirm={async () => {
           setShowLogoutModal(false);
+          await fetch("/api/auth/session", { method: "DELETE" });
           await supabase.auth.signOut();
           router.push("/login");
         }}

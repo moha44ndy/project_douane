@@ -28,7 +28,20 @@ export default function LoginPage() {
       }
 
       if (data.session) {
+        const sync = await fetch("/api/auth/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            access_token: data.session.access_token,
+            expires_in: data.session.expires_in,
+          }),
+        });
+        if (!sync.ok) {
+          setError("Impossible d'enregistrer la session. Réessayez.");
+          return;
+        }
         router.push("/");
+        router.refresh();
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Erreur de connexion";
