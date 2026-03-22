@@ -15,6 +15,24 @@ const HOP_BY_HOP = new Set([
   "host",
 ]);
 
+/** En-têtes navigateur / Vercel inutiles ou trop lourds pour FastAPI (ex. cookies énormes). */
+const STRIP_TO_UPSTREAM = new Set([
+  ...HOP_BY_HOP,
+  "cookie",
+  "x-vercel-id",
+  "x-vercel-ja4-digest",
+  "x-vercel-ip-as-number",
+  "x-vercel-ip-continent",
+  "x-vercel-ip-country",
+  "x-vercel-ip-latitude",
+  "x-vercel-ip-longitude",
+  "x-vercel-ip-timezone",
+  "x-vercel-oidc-token",
+  "x-vercel-proxied-for",
+  "x-vercel-sc-headers",
+  "x-vercel-sc-host",
+]);
+
 async function proxy(
   req: NextRequest,
   params: { path?: string[] }
@@ -40,7 +58,7 @@ async function proxy(
 
   const outHeaders = new Headers();
   req.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP.has(key.toLowerCase())) {
+    if (!STRIP_TO_UPSTREAM.has(key.toLowerCase())) {
       outHeaders.set(key, value);
     }
   });
@@ -51,18 +69,32 @@ async function proxy(
     body = await req.arrayBuffer();
   }
 
-  const upstreamRes = await fetch(targetUrl, {
-    method,
-    headers: outHeaders,
-    body: body && body.byteLength > 0 ? body : undefined,
-  });
+  try {
+    const upstreamRes = await fetch(targetUrl, {
+      method,
+      headers: outHeaders,
+      body: body && body.byteLength > 0 ? body : undefined,
+    });
 
-  const resHeaders = new Headers(upstreamRes.headers);
-  return new NextResponse(upstreamRes.body, {
-    status: upstreamRes.status,
-    statusText: upstreamRes.statusText,
-    headers: resHeaders,
-  });
+    const resHeaders = new Headers(upstreamRes.headers);
+    resHeaders.delete("set-cookie");
+    return new NextResponse(upstreamRes.body, {
+      status: upstreamRes.status,
+      statusText: upstreamRes.statusText,
+      headers: resHeaders,
+    });
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    console.error("[api/mosam proxy] fetch failed:", targetUrl, detail);
+    return NextResponse.json(
+      {
+        error:
+          "Le serveur Vercel n’a pas pu joindre MOSAM_API_UPSTREAM (timeout, refus de connexion ou réseau). Vérifiez que l’API écoute sur une IP/port accessibles depuis Internet (pas seulement depuis Cloud Shell) et que le pare-feu OCI autorise le port.",
+        detail,
+      },
+      { status: 502 }
+    );
+  }
 }
 
 type RouteCtx = { params: Promise<{ path?: string[] }> };
