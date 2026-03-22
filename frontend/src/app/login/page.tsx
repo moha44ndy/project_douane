@@ -1,11 +1,27 @@
 'use client';
 
-import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "../../lib/supabaseClient";
 
-export default function LoginPage() {
+/** Évite les redirections ouvertes : chemins internes uniquement. */
+function safeRedirectPath(raw: string | null): string {
+  if (!raw) return "/";
+  let p = raw.trim();
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    return "/";
+  }
+  if (!p.startsWith("/") || p.startsWith("//") || p.includes("://")) {
+    return "/";
+  }
+  return p;
+}
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -15,6 +31,8 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+
+    const afterLogin = safeRedirectPath(searchParams.get("redirectedFrom"));
 
     try {
       const { data, error: signInError } = await supabase.auth.signInWithPassword({
@@ -40,7 +58,7 @@ export default function LoginPage() {
           setError("Impossible d'enregistrer la session. Réessayez.");
           return;
         }
-        router.push("/");
+        router.replace(afterLogin);
         router.refresh();
       }
     } catch (err) {
@@ -119,3 +137,16 @@ export default function LoginPage() {
   );
 }
 
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gradient flex items-center justify-center px-4 text-sm text-muted-foreground">
+          Chargement…
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
+  );
+}

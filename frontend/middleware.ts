@@ -4,9 +4,22 @@ import { jwtVerify } from "jose";
 
 const PROTECTED_PATHS = ["/", "/historique", "/admin"];
 
+function normalizeJwtSecret(raw: string): string {
+  const t = raw.trim();
+  if (
+    (t.startsWith('"') && t.endsWith('"')) ||
+    (t.startsWith("'") && t.endsWith("'"))
+  ) {
+    return t.slice(1, -1).trim();
+  }
+  return t;
+}
+
 async function isTokenValid(token: string): Promise<boolean> {
   try {
-    const secret = process.env.SUPABASE_JWT_SECRET;
+    const raw = process.env.SUPABASE_JWT_SECRET;
+    if (!raw) return false;
+    const secret = normalizeJwtSecret(raw);
     if (!secret) return false;
     await jwtVerify(token, new TextEncoder().encode(secret));
     return true;
