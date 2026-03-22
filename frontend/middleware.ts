@@ -1,28 +1,28 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { jwtVerify } from "jose";
 
 const PROTECTED_PATHS = ["/", "/historique", "/admin"];
 
-function normalizeJwtSecret(raw: string): string {
-  const t = raw.trim();
-  if (
-    (t.startsWith('"') && t.endsWith('"')) ||
-    (t.startsWith("'") && t.endsWith("'"))
-  ) {
-    return t.slice(1, -1).trim();
-  }
-  return t;
-}
+/**
+ * Valide le access_token auprès de Supabase (pas de JWT_SECRET local).
+ * Évite les écarts de copie / format du secret sur Vercel.
+ */
+async function isAccessTokenValid(token: string): Promise<boolean> {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!base || !anon) return false;
 
-async function isTokenValid(token: string): Promise<boolean> {
+  const url = `${base.replace(/\/$/, "")}/auth/v1/user`;
   try {
-    const raw = process.env.SUPABASE_JWT_SECRET;
-    if (!raw) return false;
-    const secret = normalizeJwtSecret(raw);
-    if (!secret) return false;
-    await jwtVerify(token, new TextEncoder().encode(secret));
-    return true;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        apikey: anon,
+      },
+      cache: "no-store",
+    });
+    return res.ok;
   } catch {
     return false;
   }
@@ -39,7 +39,7 @@ export async function middleware(req: NextRequest) {
   }
 
   const token = req.cookies.get("sb-access-token")?.value;
-  if (!token || !(await isTokenValid(token))) {
+  if (!token || !(await isAccessTokenValid(token))) {
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("redirectedFrom", pathname);
     return NextResponse.redirect(loginUrl);
