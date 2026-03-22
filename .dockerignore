@@ -1,0 +1,18 @@
+# Déploiement backend seul : ne pas envoyer le frontend ni les secrets au contexte Docker.
+.git
+.github
+frontend
+node_modules
+.next
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+venv
+.env
+.env.*
+!.env.example
+*.md
+sam/indexFaiss
+sam/tests/tmp_reports
+mcps
+assets
