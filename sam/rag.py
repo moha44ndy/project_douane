@@ -5,6 +5,8 @@ import pathlib
 import requests
 import os
 import re
+import unicodedata
+from difflib import SequenceMatcher
 from .config.settings import Config
 from .app_logger import get_logger
 from dotenv import load_dotenv
@@ -26,6 +28,485 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 client = OpenAI(api_key=Config.OPENAI_API_KEY)
 
 logger = get_logger(__name__)
+
+# --- Détection « question Mosam » par similarité (difflib), pas par explosion de variantes regex ---
+
+# Seuil : assez bas pour tolérer fautes (ex. « fonateur »), assez haut pour éviter les faux positifs marchandise.
+_META_FUZZY_GATE_WITH_MOSAM = 0.74
+_META_FUZZY_GATE_NO_MOSAM = 0.82
+_META_FUZZY_INTENT_MIN = 0.72
+_META_FUZZY_FULL_FAQ_MIN = 0.78
+
+# Phrases canoniques (ASCII, sans accents — aligné sur _normalize_text_for_meta_match).
+_META_PHRASES_FULL_FAQ = [
+    "informations completes sur mosam",
+    "fiche complete mosam",
+    "fiche mosam complete",
+    "tout sur mosam",
+    "aide complete mosam",
+]
+_META_PHRASES_FOUNDERS = [
+    "fondateur mosam",
+    "fondateurs mosam",
+    "fondateur de mosam",
+    "qui est le fondateur de mosam",
+    "qui est le fondateur mosam",
+    "qui sont les fondateurs de mosam",
+    "qui a cree mosam",
+    "cree par qui mosam",
+    "par qui mosam",
+    "par qui a cree mosam",
+]
+_META_PHRASES_RULES = [
+    "regles d utilisation mosam",
+    "regles mosam",
+    "quelles sont les regles mosam",
+    "utilisation de mosam",
+]
+_META_PHRASES_WORKS = [
+    "comment mosam fonctionne",
+    "comment fonctionne mosam",
+    "how does mosam work",
+]
+_META_PHRASES_PURPOSE = [
+    "mosam a ete cree pour",
+    "pourquoi mosam",
+    "pour quoi mosam",
+    "a ete cree pour quoi mosam",
+]
+_META_PHRASES_HELP = [
+    "comment mosam peut maider",
+    "comment mosam peut m aider",
+    "a quoi sert mosam",
+    "mosam sert a quoi",
+    "comment utiliser mosam",
+    "how can mosam help",
+    "what is mosam for",
+]
+_META_PHRASES_IDENTITY = [
+    "qui est mosam",
+    "quest ce que mosam",
+    "qu est ce que mosam",
+    "cest quoi mosam",
+    "what is mosam",
+    "who is mosam",
+]
+# Questions à l'assistant sans nommer Mosam (seuil plus strict).
+_META_PHRASES_ASSISTANT_ONLY = [
+    "qui es tu",
+    "qui etes vous",
+    "comment tu t appelles",
+    "comment t appelles tu",
+    "comment tu tappelles",
+    "presente toi",
+    "who are you",
+]
+# Politesse / bien-être (ton chaleureux, sans « mosam » dans le texte).
+_META_PHRASES_ASSISTANT_WARMTH = [
+    "ca va",
+    "ca va bien",
+    "tout va bien",
+    "comment vas tu",
+    "comment allez vous",
+    "tu vas bien",
+    "vous allez bien",
+    "vous sentez vous bien",
+    "how are you",
+    "hope you are well",
+]
+# Âge et autres questions perso hors politesse — ton factuel.
+_META_PHRASES_ASSISTANT_AGE = [
+    "quel age as tu",
+    "quelle age as tu",
+    "tu as quel age",
+    "quel est ton age",
+    "quelle est ton age",
+    "quel est votre age",
+    "quelle est votre age",
+    "how old are you",
+    "t as quel age",
+    "tas quel age",
+]
+_META_PHRASES_GATE_EXTRA = [
+    "rapport avec mosam",
+    "savoir sur mosam",
+    "quest ce que je dois savoir sur mosam",
+    "tout ce qui est en rapport avec mosam",
+    "mosam a ete cree",
+    "mosam a ete developpe",
+    "cree par mosam",
+    "how to use mosam",
+    "what should i know about mosam",
+]
+
+# Toutes les formulations « question Mosam » pour le passage au court-circuit (évite de recalculer).
+_META_ALL_GATE_PHRASES: list[str] = (
+    _META_PHRASES_FULL_FAQ
+    + _META_PHRASES_FOUNDERS
+    + _META_PHRASES_RULES
+    + _META_PHRASES_WORKS
+    + _META_PHRASES_PURPOSE
+    + _META_PHRASES_HELP
+    + _META_PHRASES_IDENTITY
+    + _META_PHRASES_GATE_EXTRA
+)
+
+_INTENT_PRECEDENCE = ("founders", "rules", "works", "purpose", "help", "identity")
+
+# Demande de code / position sans description de produit (« Code HS pour Mosam ») → réponse courte, pas la fiche complète.
+_META_HS_CODE_REQUEST_RE = re.compile(
+    r"(?is)(?=.*\bmosam\b)(?=.*(?:\bcode\s+(?:hs|sh|tec)\b|\bhs\s+code\b|\btec\s*/\s*sh\b|"
+    r"\bposition\s+tarifaire\b|\bclassement\s+douanier\b|\bnomenclature(?:\s+douaniere)?\b))",
+)
+
+# « Mosam » comme marque / modèle (ex. « Téléphone Mosam », « Mosam smartphone 5G ») : pas question meta.
+_META_PRODUCT_NEAR_MOSAM_RE = re.compile(
+    r"(?is)"
+    r"\b(?:telephones?|smartphones?|portables?|mobiles?|cellulaires?|"
+    r"ordinateurs?|ordis?|pcs?|tablettes?|laptops?|notebooks?|"
+    r"chargeurs?|ecrans?|ecouteurs?|casques?|souris?|claviers?|"
+    r"routeurs?|modems?|box(?:es)?|\busb\b)\b.{0,55}\bmosam\b|"
+    r"\bmosam\b.{0,55}\b(?:telephones?|smartphones?|portables?|mobiles?|cellulaires?|"
+    r"ordinateurs?|ordis?|pcs?|tablettes?|laptops?|notebooks?|"
+    r"chargeurs?|ecrans?|\b5g\b|\b4g\b|\blte\b|\bgb\b|\bram\b|\bgo\b)\b"
+)
+
+# « Mosam » comme dénomination sociale / bénéficiaire (pas question sur l’assistant).
+# Ne pas confondre avec « pourquoi mosam » : \bpour\s+mosam\b n’aligne pas sur « pourquoi » (pas de coupure de mot).
+_META_MOSAM_COMPANY_SUFFIX_RE = re.compile(
+    r"(?is)\bmosam\s+(?:sa\b|sas\b|sarl\b|sarlu\b|sasu\b|eurl\b|sca\b|gie\b|ltd\b|inc\b|llc\b|plc\b|gmbh\b)",
+)
+_META_MOSAM_IMPORT_EXPORT_AND_GOODS_RE = re.compile(
+    r"(?is)(?=.*\b(?:import|importation|export|exportation)\b)(?=.*\bmarchandises?\b)(?=.*\bmosam\b)"
+)
+_META_MOSAM_BENEFICIARY_POUR_RE = re.compile(r"(?is)\bpour\s+mosam\b")
+# « pour Mosam » seul matche le fuzzy « pourquoi mosam » ; n’exempter du meta que si contexte logistique / douane.
+_META_MOSAM_LOGISTICS_CONTEXT_RE = re.compile(
+    r"(?is)\b(?:import|importation|export|exportation|marchandises?|livraison|expedition|"
+    r"fret|conteneur|cargaison|colis|palette|douane|transit|dae|connaissement)\b"
+)
+
+
+def _meta_collapse_ws(s: str) -> str:
+    # « as-tu » / tirets → espaces pour rapprocher les scores fuzzy des phrases canoniques.
+    t = (s or "").replace("-", " ").strip().lower()
+    return re.sub(r"\s+", " ", t)
+
+
+def _meta_fuzzy_best_phrase_in_text(phrase: str, text: str) -> float:
+    """
+    Score dans [0,1] : correspondance entre une phrase de référence et le texte,
+    avec fenêtres glissantes (tolère fautes de frappe et texte bruité autour).
+    """
+    p = _meta_collapse_ws(phrase)
+    t = _meta_collapse_ws(text)
+    if not p or not t:
+        return 0.0
+    if p in t:
+        return 1.0
+    pl = len(p)
+    best = 0.0
+    pad = 14
+    step = 1 if len(t) < 220 else 2 if len(t) < 450 else 3
+    # Fenêtres de longueur proche de la référence (fautes / mots en plus).
+    for wl in range(max(5, pl - 6), min(len(t), pl + pad) + 1):
+        for i in range(0, len(t) - wl + 1, step):
+            win = t[i : i + wl]
+            best = max(best, SequenceMatcher(None, p, win).ratio())
+    if len(t) <= pl + pad:
+        best = max(best, SequenceMatcher(None, p, t).ratio())
+    return best
+
+
+def _meta_text_chunks(normalized_raw: str) -> list[str]:
+    """Découpe le texte normalisé : lignes + extrait autour de « mosam » + tout le texte court."""
+    chunks: list[str] = []
+    t = _meta_collapse_ws(normalized_raw)
+    if not t:
+        return chunks
+    if len(t) <= 400:
+        chunks.append(t)
+    else:
+        chunks.append(t[:500])
+    for line in normalized_raw.splitlines():
+        c = _meta_collapse_ws(line)
+        if len(c) >= 4:
+            chunks.append(c)
+    if "mosam" in t:
+        i = t.find("mosam")
+        lo = max(0, i - 120)
+        hi = min(len(t), i + 140)
+        chunks.append(t[lo:hi])
+    # Dédupliquer en gardant l'ordre
+    seen: set[str] = set()
+    out: list[str] = []
+    for ch in chunks:
+        if ch not in seen:
+            seen.add(ch)
+            out.append(ch)
+    return out
+
+
+def _mosam_line_looks_like_product_brand(normalized_ascii: str) -> bool:
+    """True si au moins une ligne ressemble à une désignation de produit + Mosam (marque), pas à une FAQ."""
+    for line in normalized_ascii.splitlines():
+        s = _meta_collapse_ws(line)
+        if not s or "mosam" not in s or len(s) > 160:
+            continue
+        if _META_PRODUCT_NEAR_MOSAM_RE.search(s):
+            return True
+    return False
+
+
+def _mosam_line_looks_like_company_or_customs_context(normalized_ascii: str) -> bool:
+    """
+    True si « Mosam » est plutôt société / destinataire / flux douanier que question sur l’outil.
+    Évite les faux positifs fuzzy « pour … mosam » ≈ « pourquoi mosam ».
+    """
+    for line in normalized_ascii.splitlines():
+        s = _meta_collapse_ws(line)
+        if not s or "mosam" not in s:
+            continue
+        if _META_MOSAM_COMPANY_SUFFIX_RE.search(s):
+            return True
+        if _META_MOSAM_IMPORT_EXPORT_AND_GOODS_RE.search(s):
+            return True
+        if _META_MOSAM_BENEFICIARY_POUR_RE.search(s) and _META_MOSAM_LOGISTICS_CONTEXT_RE.search(s):
+            return True
+    return False
+
+
+def _meta_best_pack_score(chunks: list[str], phrases: list[str]) -> float:
+    best = 0.0
+    for ch in chunks:
+        for p in phrases:
+            best = max(best, _meta_fuzzy_best_phrase_in_text(p, ch))
+            if best >= 0.97:
+                return best
+    return best
+
+
+_ASSISTANT_META_NARRATIVE = (
+    "Je suis Mosam, assistant logiciel pour la classification tarifaire selon le TEC/SH CEDEAO.\n\n"
+    "À quoi je sers : vous décrivez une ou plusieurs marchandises (matière, usage, caractéristiques "
+    "techniques), ou vous envoyez un fichier txt ou pdf ; je propose des codes et taux indicatifs "
+    "à partir de la documentation tarifaire et de l’analyse automatique du texte.\n\n"
+    "Comment je peux vous aider : accélérer une première lecture tarifaire et présenter une réponse "
+    "structurée ; seule l’autorité douanière peut valider une position définitive.\n\n"
+    "Comment je fonctionne (synthèse) : recherche d’extraits pertinents dans la base tarifaire, "
+    "puis génération d’une proposition (codes, sections, taux possibles). La qualité dépend surtout "
+    "de la précision de votre description.\n\n"
+    "Règles d’utilisation : décrire le produit le plus factuellement possible ; une ligne ou une puce "
+    "par article si vous en avez plusieurs ; traiter toute proposition comme indicative et à faire "
+    "valider par l’autorité douanière.\n\n"
+    "Pourquoi Mosam existe dans ce contexte : pour faciliter le travail de première analyse de "
+    "classification à partir des textes officiels CEDEAO.\n\n"
+    "Mosam a été créé par l’Industrie Mosam, avec pour fondateurs Mohamed Ndiaye et "
+    "Christophe Ouattara."
+)
+
+_META_ASSISTANT_JSON = json.dumps(
+    {
+        "narrative": _ASSISTANT_META_NARRATIVE,
+        "classifications": [],
+        "assistant_info": True,
+    },
+    ensure_ascii=False,
+)
+
+# Réponse fixe complète (rétrocompat / défaut si question très générale).
+ASSISTANT_META_RESPONSE_JSON: str = _META_ASSISTANT_JSON
+
+_META_MORE_HINT = (
+    "\n\nPour afficher toute la fiche Mosam d’un coup (rôle, fonctionnement, règles, équipe), "
+    "écrivez par exemple : « Informations complètes sur Mosam »."
+)
+
+_META_SNIPPET_FOUNDERS = (
+    "Les fondateurs de Mosam sont Mohamed Ndiaye et Christophe Ouattara. "
+    "Mosam a été créé par l’Industrie Mosam."
+)
+_META_SNIPPET_RULES = (
+    "Règles d’utilisation : décrire la marchandise de façon factuelle (matière, usage, caractéristiques) ; "
+    "une ligne ou une puce par article si vous en avez plusieurs ; traiter chaque proposition comme "
+    "indicative et à faire valider par l’autorité douanière."
+)
+_META_SNIPPET_WORKS = (
+    "Mosam repère des extraits pertinents dans la base tarifaire, puis produit une proposition structurée "
+    "(codes, sections, taux possibles). La qualité dépend surtout de la précision de votre description."
+)
+_META_SNIPPET_PURPOSE = (
+    "Mosam vise à faciliter la première analyse de classification tarifaire selon le TEC/SH CEDEAO, "
+    "à partir des textes officiels. Les propositions restent indicatives."
+)
+_META_SNIPPET_HELP = (
+    "Mosam vous aide à obtenir plus vite une proposition de codes et de taux possibles : décrivez la "
+    "marchandise dans le champ prévu ou envoyez un fichier txt ou pdf. La décision définitive revient "
+    "à l’autorité douanière."
+)
+_META_SNIPPET_IDENTITY = (
+    "Je m’appelle Mosam. Je suis un assistant logiciel pour la classification tarifaire TEC/SH CEDEAO. "
+    "Je ne suis pas une personne physique ; j’aide les équipes à formuler des propositions indicatives "
+    "de classement douanier."
+)
+_META_SNIPPET_WARMTH = (
+    "Merci de prendre des nouvelles : tout va bien de mon côté, et j’espère sincèrement que vous allez bien "
+    "vous aussi. Je suis là pour vous accompagner sur la classification tarifaire TEC/SH CEDEAO — "
+    "décrivez une marchandise quand vous êtes prêt, ou posez une question qui contient « Mosam » si vous "
+    "voulez en savoir plus sur l’outil."
+)
+_META_SNIPPET_PERSONAL = (
+    "Je suis un programme informatique : je n’ai pas d’âge ni de vie personnelle au sens humain. "
+    "Mosam sert à proposer des classements tarifaires indicatifs (TEC/SH CEDEAO). "
+    "Décrivez une marchandise dans le champ prévu, ou posez une question qui contient le mot « Mosam » "
+    "pour obtenir une réponse sur l’outil."
+)
+_META_SNIPPET_UNKNOWN = (
+    "Je n’ai pas de réponse dédiée à cette question précise dans Mosam. "
+    "Pour des codes TEC/SH indicatifs, décrivez une marchandise ou envoyez un fichier txt ou pdf. "
+    "Pour tout ce qui dépasse la classification tarifaire (juridique, sécurité, organisation, comptes, etc.), "
+    "adressez-vous à votre administration ou à votre référent métier.\n\n"
+    "Pour un rappel général sur mon rôle et mon fonctionnement, vous pouvez écrire par exemple : "
+    "« Informations complètes sur Mosam »."
+)
+_META_SNIPPET_HS_GUIDE = (
+    "Pour obtenir un code TEC/SH indicatif, décrivez la marchandise dans le champ prévu "
+    "(matière, usage, caractéristiques techniques) ou envoyez un fichier txt ou pdf. "
+    "Ici, « Mosam » est le nom de cet assistant logiciel, pas une désignation de produit : sans description "
+    "concrète de marchandise, je ne peux pas proposer de position tarifaire. "
+    "Toute proposition reste indicative et doit être validée par l’autorité douanière."
+)
+_META_MORE_HINT_COMPACT = (
+    "\n\nPour afficher toute la fiche Mosam (rôle, fonctionnement, règles, équipe), écrivez par exemple : "
+    "« Informations complètes sur Mosam »."
+)
+
+
+def build_assistant_meta_response_json(query: str) -> str:
+    """
+    Réponse assistant_info : courte si la question est ciblée, fiche complète si question large
+    ou si l'utilisateur demande explicitement la fiche complète.
+    Intentions choisies par score de similarité (difflib), pas par regex à variantes.
+    """
+    t = _normalize_text_for_meta_match(query or "")
+    if not t:
+        return _META_ASSISTANT_JSON
+    chunks = _meta_text_chunks(t)
+    collapsed = _meta_collapse_ws(t)
+    # Sans « mosam » dans le texte : questions à l'assistant (nom, présentation) ne doivent pas
+    # retomber sur la fiche complète — les scores fuzzy sur un long copier-collé d'UI restent souvent < seuil.
+    if "mosam" not in collapsed:
+        score_id = _meta_best_pack_score(chunks, _META_PHRASES_ASSISTANT_ONLY)
+        score_age = _meta_best_pack_score(chunks, _META_PHRASES_ASSISTANT_AGE)
+        score_warm = _meta_best_pack_score(chunks, _META_PHRASES_ASSISTANT_WARMTH)
+        if max(score_id, score_age, score_warm) >= _META_FUZZY_GATE_NO_MOSAM:
+            best = max(score_id, score_age, score_warm)
+            # En cas d’égalité ou quasi-égalité, priorité : chaleur > âge > identité.
+            if score_warm >= best - 0.02 and score_warm >= score_age - 0.02 and score_warm >= score_id - 0.02:
+                narrative = _META_SNIPPET_WARMTH + _META_MORE_HINT
+            elif score_age > score_id:
+                narrative = _META_SNIPPET_PERSONAL + _META_MORE_HINT
+            else:
+                narrative = _META_SNIPPET_IDENTITY + _META_MORE_HINT
+            return json.dumps(
+                {"narrative": narrative, "classifications": [], "assistant_info": True},
+                ensure_ascii=False,
+            )
+    # Avant le fuzzy « fiche complète » : un collage UI peut sinon atteindre le seuil et masquer cette intention.
+    if "mosam" in collapsed and _META_HS_CODE_REQUEST_RE.search(collapsed):
+        return json.dumps(
+            {
+                "narrative": _META_SNIPPET_HS_GUIDE + _META_MORE_HINT_COMPACT,
+                "classifications": [],
+                "assistant_info": True,
+            },
+            ensure_ascii=False,
+        )
+
+    if _meta_best_pack_score(chunks, _META_PHRASES_FULL_FAQ) >= _META_FUZZY_FULL_FAQ_MIN:
+        return _META_ASSISTANT_JSON
+
+    scores: dict[str, float] = {
+        "founders": _meta_best_pack_score(chunks, _META_PHRASES_FOUNDERS),
+        "rules": _meta_best_pack_score(chunks, _META_PHRASES_RULES),
+        "works": _meta_best_pack_score(chunks, _META_PHRASES_WORKS),
+        "purpose": _meta_best_pack_score(chunks, _META_PHRASES_PURPOSE),
+        "help": _meta_best_pack_score(chunks, _META_PHRASES_HELP),
+        "identity": _meta_best_pack_score(chunks, _META_PHRASES_IDENTITY),
+    }
+    qualified = {k: v for k, v in scores.items() if v >= _META_FUZZY_INTENT_MIN}
+    if not qualified:
+        # Question reconnue comme « à propos de Mosam » mais sans intention ciblée : pas d’invention, réponse honnête.
+        return json.dumps(
+            {
+                "narrative": _META_SNIPPET_UNKNOWN,
+                "classifications": [],
+                "assistant_info": True,
+            },
+            ensure_ascii=False,
+        )
+    best = max(qualified.values())
+    near = [k for k, v in qualified.items() if v >= best - 0.04]
+    intent: str | None = None
+    for k in _INTENT_PRECEDENCE:
+        if k in near:
+            intent = k
+            break
+    if intent is None:
+        intent = max(qualified, key=qualified.get)
+
+    narrative_map = {
+        "founders": _META_SNIPPET_FOUNDERS,
+        "rules": _META_SNIPPET_RULES,
+        "works": _META_SNIPPET_WORKS,
+        "purpose": _META_SNIPPET_PURPOSE,
+        "help": _META_SNIPPET_HELP,
+        "identity": _META_SNIPPET_IDENTITY,
+    }
+    narrative = narrative_map[intent] + _META_MORE_HINT
+    return json.dumps(
+        {"narrative": narrative, "classifications": [], "assistant_info": True},
+        ensure_ascii=False,
+    )
+
+
+def _normalize_text_for_meta_match(text: str) -> str:
+    """
+    Applatit les apostrophes typographiques (U+2019, etc.) avant NFKD/ASCII.
+    Sinon « Qu'est-ce » devient « Quest-ce » et ne matche plus les motifs qu'est…
+    """
+    t = text
+    for ch in (
+        "\u2019",  # right single quotation mark (courant dans les UI / Word)
+        "\u2018",  # left single quotation mark
+        "\u02bc",  # modifier letter apostrophe
+        "\u02bb",
+    ):
+        t = t.replace(ch, "'")
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
+    return t
+
+
+def is_assistant_meta_query(text: str) -> bool:
+    """True si le texte ressemble à une question sur Mosam / l'assistant (score de similarité)."""
+    if not (text or "").strip():
+        return False
+    t = _normalize_text_for_meta_match(text)
+    if not t:
+        return False
+    collapsed = _meta_collapse_ws(t)
+    if "mosam" in collapsed and _mosam_line_looks_like_product_brand(t):
+        return False
+    if "mosam" in collapsed and _mosam_line_looks_like_company_or_customs_context(t):
+        return False
+    chunks = _meta_text_chunks(t)
+    if "mosam" in collapsed:
+        return _meta_best_pack_score(chunks, _META_ALL_GATE_PHRASES) >= _META_FUZZY_GATE_WITH_MOSAM
+    score_id = _meta_best_pack_score(chunks, _META_PHRASES_ASSISTANT_ONLY)
+    score_age = _meta_best_pack_score(chunks, _META_PHRASES_ASSISTANT_AGE)
+    score_warm = _meta_best_pack_score(chunks, _META_PHRASES_ASSISTANT_WARMTH)
+    return max(score_id, score_age, score_warm) >= _META_FUZZY_GATE_NO_MOSAM
+
 
 # Configuration embeddings / modèles
 # Par défaut: "small" (moins cher + rapide). Tu peux override via Config.EMBEDDING_MODEL
@@ -541,6 +1022,7 @@ def use_llm(prompt_text):
             "7) Si l'entrée décrit un conditionnement/lot (ex: « 2 packs de 12 bouteilles d'eau », « 3 cartons de 10 téléphones »), classe la marchandise contenue (bouteilles d'eau, téléphones), pas le conditionnement. "
             "8) N'ajoute jamais de lignes pour des termes non-marchandise ou méta-informations isolées (ex: « Qte », « Valeur », « Origine », nombres seuls, pays seuls). Si une entrée est non classifiable, n'invente pas de code précis: garde un code non renseigné et une confiance très basse. "
             "9) Pour des variantes proches (singulier/pluriel, accents, alias simples), privilégie l'interprétation métier la plus naturelle et évite de multiplier des lignes quasi identiques inutilement. "
+            "10) Si la demande porte sur Mosam (identité, aide, rôle, fonctionnement, règles d'utilisation, origine du projet, etc.) et non sur une marchandise, réponds brièvement dans narrative et mets classifications exactement à []. N'invente pas de lignes produit à partir du contexte documentaire. Si tu ne connais pas un fait (ex. auteur du logiciel), dis-le clairement. "
             "Abréviations: D.D. = droits de douane, R.S. = régime statistique, U.S. = unité de mesure. "
             "Retourne exclusivement un objet JSON (aucun texte hors JSON) de la forme: "
             "{\"narrative\":\"texte pour le douanier (avec rappel: proposition indicative, à faire valider par l'autorité douanière)\",\"classifications\":[{"
@@ -569,23 +1051,103 @@ def use_llm(prompt_text):
     except Exception as e:
         return f"Erreur lors de l'appel au modèle OpenAI : {e}"
 
+
+# Libellés fréquents quand l’utilisateur colle tout le bloc de l’UI (évite N requêtes / N classifications fantômes).
+_UI_BOILERPLATE_SUBSTRINGS: tuple[str, ...] = (
+    "decrire la marchandise",
+    "decrivez la marchandise",
+    "decrivez la marchandise a classer",
+    "matiere, usage, caracteristiques",
+    "une ou plusieurs lignes ou puces",
+    "une ligne ou une puce par article",
+    "ou envoyer un fichier",
+    "fichier (txt, pdf)",
+    "fichier txt, pdf",
+    "lancer la classification",
+    "resultat structure",
+    "proposition indicative, a faire valider",
+    "proposition indicative",
+    "dossier entreprise (optionnel)",
+    "dossier entreprise",
+    "ex: amksecurity",
+    "tout valider",
+    "classification(s) recue(s)",
+    "unite(s) classee(s)",
+    "quantite cumulee",
+    "detail calcul quantite",
+    "qte retenue:",
+    "source: valeur explicite",
+    "confiance extraction",
+    "section / chapitre",
+    "reessayer",
+    "aucune classification detectee",
+    "reponse recue, mais",
+    "origine : non renseigne",
+    "valeur : non renseigne",
+    "origine: non renseigne",
+    "valeur: non renseigne",
+    "analyse indicative des marchandises",
+)
+_UI_BOILERPLATE_TABLE_ROW_HINT = re.compile(
+    r"(?is)\bmarchandise\b.*\bqte\b.*\b(?:code|tec)",
+)
+
+
+def is_ui_boilerplate_line(text: str) -> bool:
+    """True si la ligne ressemble à de l’aide / en-tête UI, pas à une désignation de marchandise."""
+    t = (text or "").strip()
+    if not t:
+        return True
+    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii").lower()
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return True
+    if _UI_BOILERPLATE_TABLE_ROW_HINT.search(t):
+        return True
+    return any(s in t for s in _UI_BOILERPLATE_SUBSTRINGS)
+
+
 def split_user_queries(raw_text):
     """Découpe l'entrée utilisateur si plusieurs articles sont fournis d'un coup."""
     if not raw_text:
         return []
     normalized = raw_text.replace("\r", "\n")
-    line_parts = [
-        re.sub(r"^[\-\*\d\)\.]+\s*", "", line).strip()
-        for line in normalized.split("\n")
-    ]
-    queries = [part for part in line_parts if part]
+    raw_lines = normalized.split("\n")
+    list_line_re = re.compile(r"^\s*(?:[-*•]|\d+[\.\)])\s+")
+
+    kept: list[tuple[str, str]] = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        content = re.sub(r"^[\-\*\d\)\.]+\s*", "", stripped).strip()
+        if not content:
+            continue
+        if is_ui_boilerplate_line(content):
+            continue
+        kept.append((stripped, content))
+
+    if not kept:
+        one = _meta_collapse_ws(normalized)
+        return [one] if one else []
+
+    if len(kept) == 1:
+        queries = [kept[0][1]]
+    else:
+        list_marked = sum(1 for s, _ in kept if list_line_re.match(s))
+        if list_marked >= 2:
+            queries = [c for _, c in kept]
+        else:
+            queries = [" ".join(c for _, c in kept)]
+
     if len(queries) > 1:
         return queries
-    if ";" in raw_text:
-        semi_parts = [seg.strip() for seg in raw_text.split(";") if seg.strip()]
+    one = queries[0] if queries else ""
+    if ";" in one:
+        semi_parts = [seg.strip() for seg in one.split(";") if seg.strip()]
         if len(semi_parts) > 1:
             return semi_parts
-    return [raw_text.strip()] if raw_text.strip() else []
+    return [one.strip()] if one.strip() else []
 
 
 def build_context_for_query(query, chunks, index):
@@ -604,6 +1166,10 @@ def process_user_input(
     validated_index: faiss.Index | None = None,
     validated_meta: list[dict[str, object]] | None = None,
 ):
+    if is_assistant_meta_query(user_input):
+        logger.debug("meta query about assistant; skip RAG/LLM classification")
+        return build_assistant_meta_response_json(user_input)
+
     queries = split_user_queries(user_input)
     if not queries:
         return "Merci de préciser au moins une marchandise à classifier."

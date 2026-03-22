@@ -421,19 +421,32 @@ export default function AdminPage() {
   return (
     <div className="space-y-8">
       <header className="rounded-3xl bg-card border border-border shadow-xl px-4 sm:px-8 py-6 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Link href="/" className="mosam-btn-admin min-h-[44px] inline-flex items-center touch-manipulation">
-              Retour à la classification
-            </Link>
-            <Link href="/admin/historique" className="mosam-btn-admin min-h-[44px] inline-flex items-center touch-manipulation">
-              Historique global
-            </Link>
-            <Link href="/admin/logs" className="mosam-btn-admin min-h-[44px] inline-flex items-center touch-manipulation">
-              Journal d&apos;audit
-            </Link>
-          </div>
-        </div>
+        <nav className="mosam-admin-nav" aria-label="Navigation administration">
+          <Link
+            href="/"
+            className="mosam-btn-admin mosam-admin-nav-link touch-manipulation"
+          >
+            Retour à la classification
+          </Link>
+          <Link
+            href="/admin/historique"
+            className="mosam-btn-admin mosam-admin-nav-link touch-manipulation"
+          >
+            Historique global
+          </Link>
+          <Link
+            href="/admin/logs"
+            className="mosam-btn-admin mosam-admin-nav-link touch-manipulation"
+          >
+            Journal d&apos;audit
+          </Link>
+          <Link
+            href="/admin/parametres"
+            className="mosam-btn-admin mosam-admin-nav-link touch-manipulation"
+          >
+            Réglages
+          </Link>
+        </nav>
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-primary mb-1">
             Panneau administrateur
@@ -444,36 +457,36 @@ export default function AdminPage() {
         </div>
       </header>
 
-      <section className="grid lg:grid-cols-4 gap-4">
-        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex items-end justify-between">
-          <div className="text-xs text-muted-foreground">
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div className="text-xs text-muted-foreground break-words min-w-0 pr-2">
             Utilisateurs totaux
           </div>
-          <div className="text-3xl font-bold text-primary leading-none">
+          <div className="text-3xl font-bold text-primary leading-none shrink-0">
             {totalUsers}
           </div>
         </div>
-        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex items-end justify-between">
-          <div className="text-xs text-muted-foreground">
+        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div className="text-xs text-muted-foreground break-words min-w-0 pr-2">
             Utilisateurs actifs
           </div>
-          <div className="text-3xl font-bold text-primary leading-none">
+          <div className="text-3xl font-bold text-primary leading-none shrink-0">
             {activeUsers}
           </div>
         </div>
-        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex items-end justify-between">
-          <div className="text-xs text-muted-foreground">
+        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div className="text-xs text-muted-foreground break-words min-w-0 pr-2">
             Administrateurs
           </div>
-          <div className="text-3xl font-bold text-primary leading-none">
+          <div className="text-3xl font-bold text-primary leading-none shrink-0">
             {adminUsers}
           </div>
         </div>
-        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex items-end justify-between">
-          <div className="text-xs text-muted-foreground">
+        <div className="rounded-3xl bg-card border border-border shadow-xl p-5 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div className="text-xs text-muted-foreground break-words min-w-0 pr-2">
             Classifications enregistrées
           </div>
-          <div className="text-3xl font-bold text-primary leading-none">
+          <div className="text-3xl font-bold text-primary leading-none shrink-0">
             {historyCount}
           </div>
         </div>

@@ -20,6 +20,7 @@ from fastapi import UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 import requests
 import io
 import csv
@@ -38,8 +39,11 @@ from .cache import (
 from .db import get_db
 from .rag import (
     add_validated_classification_example_to_index,
+    build_assistant_meta_response_json,
     initialize_chatbot,
     initialize_validated_classifications_index,
+    is_assistant_meta_query,
+    is_ui_boilerplate_line,
     process_user_input,
 )
 from .config.settings import Config
@@ -362,7 +366,12 @@ def _normalize_classifications_response(raw_text: str) -> str:
         "other_taxes",
     ]
 
-    if isinstance(data.get("narrative"), str) and data.get("narrative"):
+    # Réponses `assistant_info` : garder les accents du narrative (texte fixe / présentation).
+    if (
+        isinstance(data.get("narrative"), str)
+        and data.get("narrative")
+        and not data.get("assistant_info")
+    ):
         data["narrative"] = _strip_accents_ascii(data["narrative"])
 
     for item in classifications:
@@ -1119,6 +1128,27 @@ def _require_admin(authorization: str | None) -> str:
     return user_id
 
 
+def _require_authenticated_user(authorization: str | None) -> str:
+    """
+    Vérifie le JWT Supabase et retourne l'id utilisateur (sans requête BDD, sans exiger is_admin).
+    Utilisé pour la validation des classifications par les agents connectés.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Jeton d'authentification manquant")
+    token = authorization.split(" ", 1)[1].strip()
+    payload = _verify_supabase_jwt(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Jeton d'authentification invalide")
+    uid = payload.get("sub") or payload.get("user_id")
+    if not uid:
+        raise HTTPException(status_code=401, detail="Jeton d'authentification invalide")
+    return str(uid)
+
+
+def user_required(authorization: str | None = Header(default=None)) -> str:
+    return _require_authenticated_user(authorization)
+
+
 def _create_supabase_auth_user(email: str, password: str) -> str | None:
     """
     Crée un utilisateur dans Supabase Auth via l'API d'admin.
@@ -1579,6 +1609,8 @@ def _filter_candidate_lines(lines: list[str], max_items: int) -> list[str]:
     for line in lines:
         line = _clean_text_line(line)
         if not line:
+            continue
+        if is_ui_boilerplate_line(line):
             continue
         line_norm = unicodedata.normalize("NFKD", line).encode("ascii", "ignore").decode("ascii").lower()
         line_norm = re.sub(r"\s+", " ", line_norm).strip()
@@ -2400,6 +2432,9 @@ def _is_noise_item_text(text: str) -> bool:
     if t in generic:
         return True
 
+    if is_ui_boilerplate_line(text):
+        return True
+
     # Pays isolés (fréquent dans les lignes "origine XXX")
     countries = {
         "chine",
@@ -3122,6 +3157,13 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
 
     request_id = uuid.uuid4().hex[:8]
 
+    # Questions sur l'assistant : réponse immédiate (sans Redis, sans extraction multi-lignes, sans LLM).
+    if is_assistant_meta_query(payload.query or ""):
+        raw_out = _normalize_classifications_response(
+            build_assistant_meta_response_json(payload.query or "")
+        )
+        return ClassifyResponse(raw=_ensure_json_raw(raw_out))
+
     # Vérifier si une réponse a déjà été mise en cache (sauf si le cache est désactivé)
     cache_key = _classify_cache_key(payload.query)
     cache_disabled = cache_classify_is_disabled()
@@ -3246,42 +3288,54 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
 def validate_classification(
     payload: ValidateClassificationRequest,
     request: Request,
-    admin_id: str = Depends(admin_required),
+    actor_user_id: str = Depends(user_required),
 ) -> dict:
     """
     Enregistre en base UNE classification choisie par un agent.
 
     Cette route est appelée depuis le frontend quand l'utilisateur
     clique sur "Valider cette classification" pour une ligne donnée.
+    Authentification : JWT utilisateur (pas besoin d'être administrateur).
     """
-    # Sécurité : endpoint admin uniquement (et limité en débit)
     _rate_limit(request, "classification.validate")
-    # admin_id validé via `admin_required`
 
     cache_query = payload.query
     cache_raw = payload.raw_response
 
     dossier_id = None
     try:
-        dossier_id = _ensure_dossier_id(admin_id, payload.dossier_name) if payload.dossier_name else None
+        dossier_id = (
+            _ensure_dossier_id(actor_user_id, payload.dossier_name) if payload.dossier_name else None
+        )
     except Exception:
         logger.warning("[dossiers] ensure dossier failed (single)", exc_info=True)
 
-    result = _validate_classification_one(
-        payload=payload,
-        admin_id=admin_id,
-        dossier_id=dossier_id,
-        cache_query=cache_query,
-        cache_raw=cache_raw,
-        cache_already_set=False,
-        request=request,
-    )
+    try:
+        result = _validate_classification_one(
+            payload=payload,
+            actor_user_id=actor_user_id,
+            dossier_id=dossier_id,
+            cache_query=cache_query,
+            cache_raw=cache_raw,
+            cache_already_set=False,
+            request=request,
+        )
+    except OperationalError:
+        logger.exception("[classifications/validate] base de données inaccessible")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Impossible de joindre la base de données (délai dépassé ou réseau). "
+                "Vérifiez que Supabase est joignable depuis cette machine "
+                "(pare-feu, VPN, port 6543 vs 5432 dans SUPABASE_DB_URL)."
+            ),
+        ) from None
     return result
 
 
 def _validate_classification_one(
     payload: ValidateClassificationRequest,
-    admin_id: str,
+    actor_user_id: str,
     dossier_id: str | None,
     request: Request,
     cache_query: str | None,
@@ -3292,6 +3346,11 @@ def _validate_classification_one(
     Implémentation commune : insère une classification validée, alimente le RAG,
     et (optionnel) met à jour le cache classify (une fois par requête).
     """
+    if payload.user_id is not None and str(payload.user_id) != str(actor_user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Le champ user_id ne correspond pas au compte connecté",
+        )
 
     now = datetime.now(timezone.utc)
 
@@ -3370,7 +3429,7 @@ def _validate_classification_one(
                 "us_unit": payload.us_unit,
                 "origin": payload.origin,
                 "value": payload.value,
-                "user_id": payload.user_id,
+                "user_id": actor_user_id,
                 "statut": "validé",
                 "created_at": now,
                 "dossier_id": dossier_id,
@@ -3402,7 +3461,7 @@ def _validate_classification_one(
             cache_set(cache_key, raw_str, ex=3600)
 
     # Audit best-effort
-    user_id_for_audit = admin_id
+    user_id_for_audit = actor_user_id
     _insert_audit_log(
         actor_id=user_id_for_audit,
         action="classification.validate",
@@ -3426,12 +3485,12 @@ def _validate_classification_one(
 def validate_classifications_bulk(
     payload: ValidateClassificationBulkRequest,
     request: Request,
-    admin_id: str = Depends(admin_required),
+    actor_user_id: str = Depends(user_required),
 ) -> dict:
     """
     Validation multiple en une seule requête.
+    JWT utilisateur requis (compte connecté, sans rôle admin obligatoire).
     """
-    # Bulk : on autorise plus de requêtes, mais on reste protégé contre le flood.
     _rate_limit(request, "classification.validate.bulk", limit=200, window_seconds=60)
 
     if not payload.items:
@@ -3452,7 +3511,7 @@ def validate_classifications_bulk(
     dossier_id_to_use: str | None = None
     if payload.dossier_name:
         try:
-            dossier_id_to_use = _ensure_dossier_id(admin_id, payload.dossier_name)
+            dossier_id_to_use = _ensure_dossier_id(actor_user_id, payload.dossier_name)
         except Exception:
             logger.warning("[dossiers] ensure dossier failed (bulk)", exc_info=True)
 
@@ -3464,7 +3523,7 @@ def validate_classifications_bulk(
             already = cache_set_done
             result = _validate_classification_one(
                 payload=item,
-                admin_id=admin_id,
+                actor_user_id=actor_user_id,
                 dossier_id=dossier_id_to_use,
                 cache_query=q,
                 cache_raw=raw_resp,
@@ -3474,6 +3533,17 @@ def validate_classifications_bulk(
             results.append(result)
             if (q and raw_resp) and not cache_set_done:
                 cache_set_done = True
+        except OperationalError:
+            logger.exception("[classifications/validate/bulk] base de données inaccessible")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Impossible de joindre la base de données (délai dépassé ou réseau). "
+                    "Vérifiez Supabase et la variable SUPABASE_DB_URL (ports 6543 / 5432)."
+                ),
+            ) from None
+        except HTTPException:
+            raise
         except Exception as e:
             errors.append({"index": idx, "error": f"{type(e).__name__}: {e}"})
             continue

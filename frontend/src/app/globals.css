@@ -583,8 +583,32 @@ pre {
 
 .mosam-header-actions-buttons {
   display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 13px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 1023px) {
+  .mosam-header-actions-buttons {
+    flex-direction: column;
+    align-self: stretch;
+    width: 100%;
+    max-width: 100%;
+    justify-content: flex-start;
+  }
+
+  .mosam-header-actions-buttons > a {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    justify-content: center;
+    text-align: center;
+    white-space: normal;
+    line-height: 1.25;
+    box-sizing: border-box;
+  }
 }
 
 .mosam-btn-secondary {
@@ -619,6 +643,64 @@ pre {
   justify-content: center;
   text-decoration: none;
   touch-action: manipulation;
+}
+
+/*
+ * Variantes « en-tête » uniquement : zone tactile confortable + texte sur plusieurs lignes.
+ * (Hero accueil, nav admin, lien retour dans les <header> de page.)
+ */
+.mosam-header-actions-buttons .mosam-btn-secondary,
+.mosam-header-actions-buttons .mosam-btn-admin {
+  height: auto;
+  min-height: 44px;
+  padding: 10px 16px;
+  box-sizing: border-box;
+}
+
+a.mosam-btn-admin.mosam-header-btn {
+  height: auto;
+  min-height: 44px;
+  padding: 10px 16px;
+  box-sizing: border-box;
+}
+
+/* Barre d'actions admin : une colonne sur téléphone / tablette, ligne sur grand écran */
+.mosam-admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+@media (min-width: 1024px) {
+  .mosam-admin-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+}
+
+/* Uniquement dans la barre à plusieurs boutons (évite w-full sur un lien seul en flex-row) */
+.mosam-admin-nav > .mosam-btn-admin.mosam-admin-nav-link {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  min-height: 44px;
+  padding: 10px 16px;
+  box-sizing: border-box;
+  justify-content: center;
+  text-align: center;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+@media (min-width: 1024px) {
+  .mosam-admin-nav > .mosam-btn-admin.mosam-admin-nav-link {
+    width: auto;
+    max-width: none;
+    white-space: nowrap;
+  }
 }
 
 .mosam-btn-primary {

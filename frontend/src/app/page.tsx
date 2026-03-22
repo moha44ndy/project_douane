@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { log } from "../lib/logger";
 import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
@@ -32,6 +32,8 @@ type ClassificationItem = {
 type ApiPayload = {
   narrative?: string;
   classifications?: ClassificationItem[];
+  /** Réponse court-circuitée (ex. question sur Mosam) : pas de lignes à valider. */
+  assistant_info?: boolean;
 };
 
 const API_BASE_URL =
@@ -79,6 +81,148 @@ function tryParseStructuredPayload(rawText: string): ApiPayload | null {
   return null;
 }
 
+/** Retire les phrases légales en fin de narrative déjà couvertes par la 1re ligne du copier-coller. */
+function trimRedundantDouaneDisclaimerFromNarrative(n: string): string {
+  let t = n.trim();
+  const patterns: RegExp[] = [
+    /\s+[.;]?\s*[àa]\s+valider\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
+    /\s+proposition\s+indicative\s*,?\s*[àa]\s+faire\s+valider\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
+    /\s+doit\s+être\s+validée?\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
+    /\s+doit\s+etre\s+validee?\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
+  ];
+  let prev = "";
+  while (prev !== t) {
+    prev = t;
+    for (const re of patterns) {
+      t = t.replace(re, "").trim();
+    }
+  }
+  return t;
+}
+
+/**
+ * Corrige les formes sans accent fréquentes dans les réponses API (copier-coller uniquement).
+ * Ne touche pas aux codes numériques ni aux sigles d'unité courants (PIECE, KG…).
+ */
+function polishFrenchForClipboard(s: string): string {
+  if (!s) return s;
+  let t = s;
+  const fixes: Array<[RegExp, string]> = [
+    [/\bNon renseigne\b/gi, "Non renseigné"],
+    [/\bmateriels\b/gi, "matériels"],
+    [/\bmateriel\b/gi, "matériel"],
+    [/\bmecaniques\b/gi, "mécaniques"],
+    [/\bmecanique\b/gi, "mécanique"],
+    [/\bautorite\b/gi, "autorité"],
+    [/\bdouaniere\b/gi, "douanière"],
+    [/\bdouanier\b/gi, "douanier"],
+    [/\bbasee\b/gi, "basée"],
+    [/\bbasees\b/gi, "basées"],
+    [/\bvalidee\b/gi, "validée"],
+    [/\bvalidees\b/gi, "validées"],
+    [/\betre\b/gi, "être"],
+    [/\belectrique\b/gi, "électrique"],
+    [/\belectronique\b/gi, "électronique"],
+    [/\bregne\b/gi, "règne"],
+    [/\brefrigeres\b/gi, "réfrigérés"],
+    [/\brefrigere\b/gi, "réfrigéré"],
+    [/\bcaracteristiques\b/gi, "caractéristiques"],
+    [/\blegumes\b/gi, "légumes"],
+    [/\blegume\b/gi, "légume"],
+    [/\bimportees\b/gi, "importées"],
+    [/\bimportee\b/gi, "importée"],
+    [/\bimportes\b/gi, "importés"],
+    [/\bimporte\b/gi, "importé"],
+  ];
+  for (const [re, rep] of fixes) {
+    t = t.replace(re, rep);
+  }
+  return t;
+}
+
+/**
+ * Texte prêt à coller : avertissement légal, synthèse éventuelle, puis tableau TSV
+ * (en-tête + une ligne par classification) pour Excel / traitement de texte, sans bruit UI.
+ */
+function formatPayloadForClipboard(
+  payload: ApiPayload,
+  getItemQuantity: (item: ClassificationItem, index: number) => number
+): string {
+  const lines: string[] = [];
+  lines.push(
+    "Proposition indicative, à faire valider par l'autorité douanière."
+  );
+  lines.push("");
+
+  const isAssistant = Boolean(payload.assistant_info);
+  const narrativeClean = payload.narrative?.trim()
+    ? trimRedundantDouaneDisclaimerFromNarrative(payload.narrative.trim())
+    : "";
+
+  if (isAssistant && narrativeClean) {
+    lines.push(polishFrenchForClipboard(narrativeClean));
+    return lines.join("\n");
+  }
+
+  if (narrativeClean) {
+    lines.push(polishFrenchForClipboard(narrativeClean));
+    lines.push("");
+  }
+
+  const rows = payload.classifications ?? [];
+  if (rows.length === 0) {
+    lines.push("(Aucune ligne de classification.)");
+    return lines.join("\n");
+  }
+
+  const header = [
+    "Marchandise",
+    "Qté",
+    "Code TEC/SH",
+    "Section",
+    "Intitulé section",
+    "Chapitre",
+    "Intitulé chapitre",
+    "D.D.",
+    "R.S.",
+    "Autres taxes",
+    "U.S.",
+    "Confiance %",
+    "Origine",
+    "Valeur",
+  ].join("\t");
+  lines.push(header);
+
+  const sanitizeCell = (s: string) =>
+    polishFrenchForClipboard(
+      s.replace(/\r?\n/g, " ").replace(/\t/g, " ").trim()
+    );
+
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i];
+    const qty = getItemQuantity(item, i);
+    const cells = [
+      sanitizeCell(item.description ?? ""),
+      String(qty),
+      sanitizeCell(item.hs_code ?? ""),
+      sanitizeCell(item.section ?? ""),
+      sanitizeCell(item.section_name ?? ""),
+      sanitizeCell(item.chapter ?? ""),
+      sanitizeCell(item.chapter_name ?? ""),
+      sanitizeCell(item.dd_rate ?? ""),
+      sanitizeCell(item.rs_rate ?? ""),
+      sanitizeCell(item.other_taxes ?? ""),
+      sanitizeCell(item.us_unit ?? ""),
+      typeof item.confidence === "number" ? String(item.confidence) : "",
+      sanitizeCell(item.origin ?? ""),
+      sanitizeCell(item.value ?? ""),
+    ];
+    lines.push(cells.join("\t"));
+  }
+
+  return lines.join("\n");
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -102,6 +246,8 @@ export default function HomePage() {
   const [validatingAll, setValidatingAll] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<"idle" | "ok" | "error">("idle");
+  const copyFeedbackTimeoutRef = useRef<number | null>(null);
 
   // Optionnel : regroupe les validations dans un "dossier entreprise"
   // (ex: AMKsecurity) pour les retrouver dans l'historique.
@@ -362,6 +508,7 @@ export default function HomePage() {
   };
 
   const classifications = payload?.classifications ?? [];
+  const isAssistantInfo = Boolean(payload?.assistant_info);
   const getRowKey = (item: ClassificationItem, index: number) =>
     `${index}||${item.hs_code ?? ""}||${item.description ?? ""}`;
 
@@ -583,6 +730,34 @@ export default function HomePage() {
     setValidationMessage(null);
     setValidatedKeys({});
     setQuantityOverrides({});
+    setCopyFeedback("idle");
+    if (copyFeedbackTimeoutRef.current) {
+      window.clearTimeout(copyFeedbackTimeoutRef.current);
+      copyFeedbackTimeoutRef.current = null;
+    }
+  };
+
+  const handleCopyResults = async () => {
+    if (!payload) return;
+    if (copyFeedbackTimeoutRef.current) {
+      window.clearTimeout(copyFeedbackTimeoutRef.current);
+      copyFeedbackTimeoutRef.current = null;
+    }
+    const text = formatPayloadForClipboard(payload, getItemQuantity);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyFeedback("ok");
+      copyFeedbackTimeoutRef.current = window.setTimeout(() => {
+        setCopyFeedback("idle");
+        copyFeedbackTimeoutRef.current = null;
+      }, 2200);
+    } catch {
+      setCopyFeedback("error");
+      copyFeedbackTimeoutRef.current = window.setTimeout(() => {
+        setCopyFeedback("idle");
+        copyFeedbackTimeoutRef.current = null;
+      }, 3200);
+    }
   };
 
   return (
@@ -737,7 +912,7 @@ export default function HomePage() {
               <span className="block mt-1">{parseFailureDetail}</span>
             )}
             <span className="block mt-1">
-              Essayez de réessayer, ou videz le cache côté admin puis réessayez.
+              Réessayez ; si le problème persiste, contactez un administrateur.
             </span>
           </p>
           <div className="flex flex-col sm:flex-row gap-3">
@@ -748,12 +923,6 @@ export default function HomePage() {
             >
               Réessayer
             </button>
-            <Link
-              href="/admin/historique"
-              className="mosam-btn-secondary min-h-[44px] touch-manipulation text-center"
-            >
-              Vider le cache (admin)
-            </Link>
           </div>
           <pre className="text-xs overflow-auto max-h-48 p-3 rounded-xl bg-white border border-amber-200 text-left">
             {raw.slice(0, 2000)}
@@ -764,54 +933,105 @@ export default function HomePage() {
 
       {payload && (
         <section className="rounded-3xl bg-card border border-border shadow-xl p-6 space-y-4">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-xl font-semibold text-primary">
-              Résultat structuré
+              {isAssistantInfo ? "Mosam" : "Résultat structuré"}
             </h2>
-            <button
-              type="button"
-              onClick={handleCloseResults}
-              aria-label="Fermer"
-              className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => void handleCopyResults()}
+                aria-label="Copier les résultats (texte et tableau pour tableur)"
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full border border-primary px-3 py-2 text-primary hover:bg-primary/10 touch-manipulation"
               >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+              {copyFeedback === "ok" && (
+                <span className="text-xs font-medium text-emerald-700 whitespace-nowrap" aria-hidden="true">
+                  Copié
+                </span>
+              )}
+              {copyFeedback === "error" && (
+                <span className="text-xs font-medium text-red-700 max-w-[10rem] leading-tight" aria-hidden="true">
+                  Copie impossible
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleCloseResults}
+                aria-label="Fermer"
+                className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-            Proposition indicative, à faire valider par l&apos;autorité douanière.
-          </p>
+          {!isAssistantInfo && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+              Proposition indicative, à faire valider par l&apos;autorité douanière.
+            </p>
+          )}
           {fileItemsCount !== null && (
             <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
               {fileItemsCount} produit(s) détecté(s) dans le fichier.
             </p>
           )}
-          <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
-            {classifications.length} classification(s) reçue(s) (dans l'UI).
-          </p>
-          <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
-            {totalClassifiedQuantity} unité(s) classifiée(s) (quantité cumulée).
-          </p>
-          {payload.narrative && (
-            <p className="text-sm text-foreground leading-relaxed">
-              {payload.narrative}
-            </p>
+          {!isAssistantInfo && (
+            <>
+              <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
+                {classifications.length} classification(s) reçue(s) (dans l&apos;UI).
+              </p>
+              <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
+                {totalClassifiedQuantity} unité(s) classifiée(s) (quantité cumulée).
+              </p>
+            </>
           )}
+          {payload.narrative &&
+            (isAssistantInfo ? (
+              <div className="rounded-2xl border border-sky-200 bg-sky-50/90 px-4 py-4 text-sm text-sky-950 leading-relaxed space-y-3">
+                {payload.narrative
+                  .split(/\n\s*\n+/)
+                  .map((p) => p.trim())
+                  .filter(Boolean)
+                  .map((para, i) => (
+                    <p key={i} className="m-0">
+                      {para}
+                    </p>
+                  ))}
+              </div>
+            ) : (
+              <p className="text-sm text-foreground leading-relaxed">{payload.narrative}</p>
+            ))}
 
-          {classifications.length === 0 && (
+          {classifications.length === 0 && !isAssistantInfo && (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               Réponse reçue, mais aucune classification détectée.
               <div className="mt-3 flex flex-col sm:flex-row gap-3">
@@ -822,12 +1042,6 @@ export default function HomePage() {
                 >
                   Réessayer
                 </button>
-                <Link
-                  href="/admin/historique"
-                  className="mosam-btn-secondary min-h-[44px] touch-manipulation text-center"
-                >
-                  Vider le cache (admin)
-                </Link>
               </div>
             </div>
           )}

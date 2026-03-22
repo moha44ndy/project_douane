@@ -166,14 +166,15 @@ export default function AdminLogsPage() {
 
   return (
     <div className="space-y-8">
-      <header className="rounded-3xl bg-card border border-border shadow-xl px-8 py-6 space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <Link href="/admin" className="mosam-btn-admin">
-              Retour au panneau admin
-            </Link>
-          </div>
-          <div className="text-right text-sm text-muted-foreground">
+      <header className="rounded-3xl bg-card border border-border shadow-xl px-4 sm:px-8 py-6 space-y-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <Link
+            href="/admin"
+            className="mosam-btn-admin mosam-header-btn inline-flex w-full shrink-0 items-center justify-center touch-manipulation lg:w-auto"
+          >
+            Retour au panneau admin
+          </Link>
+          <div className="text-sm text-muted-foreground lg:text-right">
             <div className="font-semibold text-primary">
               Total logs chargés : {logs.length}
             </div>
@@ -181,7 +182,7 @@ export default function AdminLogsPage() {
           </div>
         </div>
         <div>
-          <h1 className="text-3xl font-bold text-primary mb-1">
+          <h1 className="text-2xl sm:text-3xl font-bold text-primary mb-1">
             Journal d&apos;audit
           </h1>
           <p className="text-muted-foreground text-sm">
