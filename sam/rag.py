@@ -1069,7 +1069,7 @@ _UI_BOILERPLATE_SUBSTRINGS: tuple[str, ...] = (
     "proposition indicative",
     "dossier entreprise (optionnel)",
     "dossier entreprise",
-    "ex: amksecurity",
+    "ex: Mosam Entreprise",
     "tout valider",
     "classification(s) recue(s)",
     "unite(s) classee(s)",

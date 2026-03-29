@@ -1524,7 +1524,7 @@ def startup_event() -> None:
 def _ensure_dossier_tables() -> None:
     """
     Tables pour grouper les validations de classifications dans des "dossiers"
-    (ex: AMKsecurity) afin que l'historique puisse afficher un dossier avec
+    (ex: Mosam Entreprise) afin que l'historique puisse afficher un dossier avec
     dedans les résultats validés.
     """
     with get_db() as db:

@@ -249,7 +249,7 @@ export default function HomePage() {
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
 
   // Optionnel : regroupe les validations dans un "dossier entreprise"
-  // (ex: AMKsecurity) pour les retrouver dans l'historique.
+  // (ex: Mosam Entreprise) pour les retrouver dans l'historique.
   const [dossierName, setDossierName] = useState<string>("");
   const [dossiersOptions, setDossiersOptions] = useState<string[]>([]);
 
@@ -1191,7 +1191,7 @@ export default function HomePage() {
                       type="text"
                       value={dossierName}
                       onChange={(e) => setDossierName(e.target.value)}
-                      placeholder="Ex: AMKsecurity"
+                      placeholder="Ex: Mosam Entreprise"
                       list="dossiers-list"
                       className="min-w-[260px] rounded-lg border border-border bg-background px-3 py-2 text-sm"
                       aria-label="Nom du dossier entreprise"
