@@ -40,6 +40,19 @@ from .cache import (
     cache_set,
 )
 from .db import get_db
+from .classification_completeness import apply_completeness_adjustments, sanitize_provisional_narrative
+from .classification_risk import enrich_classifications_with_risk
+from .description_quality import assess_description_quality, enrich_item_description_quality
+from .tariff_labels import build_tariff_label_index, lookup_position_label, set_tariff_label_index
+from .tariff_metadata import get_full_chapter_name, get_full_section_name, get_position_heading
+from .tariff_rates import build_tariff_rate_index, enrich_item_tariff_rates, set_tariff_rate_index
+from .tariff_notes import (
+    build_chapter_notes_index,
+    build_chapter_titles_index,
+    set_chapter_notes_index,
+    set_chapter_titles_index,
+)
+from .tariff_position_rules import build_surface_sensitive_positions, set_surface_sensitive_positions
 from .rag import (
     add_validated_classification_example_to_index,
     build_assistant_meta_response_json,
@@ -343,10 +356,13 @@ def _normalize_section_chapter_from_hs(hs_code: str | None) -> dict[str, str]:
     if ch < 1 or ch > 99:
         return {}
     section_roman, section_name = HS_CHAPTER_TO_SECTION.get(ch, ("", ""))
+    full_section = get_full_section_name(section_roman, section_name)
+    full_chapter = get_full_chapter_name(ch)
     return {
         "section": section_roman,
-        "section_name": section_name,
+        "section_name": full_section,
         "chapter": f"{ch:02d}",
+        "chapter_name": full_chapter,
     }
 
 
@@ -385,16 +401,16 @@ def _normalize_classifications_response(raw_text: str) -> str:
             continue
         normalized = _normalize_section_chapter_from_hs(str(hs))
         if normalized:
-            # On corrige/sécurise le numéro de chapitre et la section à partir du code HS.
-            # On NE dérive PAS `chapter_name` ici : le mapping section->titre existe,
-            # mais pas (actuellement) un mapping complet chapitre->intitulé.
-            # Surtout : on évite d'écraser un `chapter_name` fourni par le LLM.
-            if normalized.get("section") and not item.get("section"):
+            # Corrige systematiquement section/chapitre a partir du code SH (le LLM se trompe souvent).
+            if normalized.get("section"):
                 item["section"] = normalized["section"]
-            if normalized.get("section_name") and not item.get("section_name"):
+            if normalized.get("section_name"):
                 item["section_name"] = normalized["section_name"]
             if normalized.get("chapter"):
                 item["chapter"] = normalized["chapter"]
+        position_label = lookup_position_label(str(hs))
+        if position_label and not item.get("position_label"):
+            item["position_label"] = position_label
     # Nettoyage d'affichage : certaines zones peuvent contenir des caractères
     # non parfaitement supportés par la chaîne UI/copie-collage.
     # On supprime les accents pour garantir un rendu stable.
@@ -403,14 +419,17 @@ def _normalize_classifications_response(raw_text: str) -> str:
         "description",
         "justification",
         "excerpt",
+        "position_label",
         "section_name",
         "chapter_name",
+        "subposition_label",
         "origin",
         "value",
         "dd_rate",
         "rs_rate",
         "us_unit",
         "other_taxes",
+        "taxes_note",
     ]
 
     # Réponses `assistant_info` : garder les accents du narrative (texte fixe / présentation).
@@ -430,6 +449,63 @@ def _normalize_classifications_response(raw_text: str) -> str:
             if isinstance(item.get(k), str) and item.get(k):
                 item[k] = _strip_accents_ascii(item[k])
 
+    data["classifications"] = _filter_phantom_classifications(classifications)
+    for item in data["classifications"]:
+        if isinstance(item, dict):
+            source = item.get("source_query") or item.get("description")
+            enrich_item_description_quality(item, source_text=source)
+            apply_completeness_adjustments(item, source_text=source)
+            hs = item.get("hs_code")
+            if hs:
+                normalized = _normalize_section_chapter_from_hs(str(hs))
+                if normalized:
+                    if normalized.get("section"):
+                        item["section"] = normalized["section"]
+                    if normalized.get("section_name"):
+                        item["section_name"] = normalized["section_name"]
+                    if normalized.get("chapter"):
+                        item["chapter"] = normalized["chapter"]
+                    item["chapter_name"] = get_full_chapter_name(
+                        normalized.get("chapter") or item.get("chapter") or "",
+                        str(item.get("chapter_name") or ""),
+                    )
+                if item.get("subposition_status") == "a_determiner":
+                    heading = get_position_heading(str(hs))
+                    if heading:
+                        item["position_label"] = heading
+            enrich_item_tariff_rates(item)
+    if isinstance(data.get("narrative"), str) and data.get("narrative"):
+        data["narrative"] = sanitize_provisional_narrative(
+            data["narrative"],
+            [item for item in data["classifications"] if isinstance(item, dict)],
+        )
+    enrich_classifications_with_risk(data["classifications"])
+
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _inject_source_query_into_llm_response(raw_text: str, source_query: str) -> str:
+    """Attache le texte source utilisateur a chaque classification pour l'analyse de completude."""
+    if not raw_text or not source_query:
+        return raw_text
+    stripped = raw_text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`")
+        if stripped.lower().startswith("json"):
+            stripped = stripped[4:]
+        stripped = stripped.strip("` \n\r")
+    try:
+        data = json.loads(stripped)
+    except Exception:
+        return raw_text
+    if not isinstance(data, dict):
+        return raw_text
+    classifications = data.get("classifications")
+    if not isinstance(classifications, list):
+        return raw_text
+    for item in classifications:
+        if isinstance(item, dict):
+            item["source_query"] = source_query
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -1515,6 +1591,26 @@ def startup_event() -> None:
     chunks, index = initialize_chatbot()
     app.state.chunks = chunks
     app.state.index = index
+    tariff_label_index = build_tariff_label_index(chunks)
+    set_tariff_label_index(tariff_label_index)
+    app.state.tariff_label_index = tariff_label_index
+    tariff_rate_index = build_tariff_rate_index(chunks)
+    set_tariff_rate_index(tariff_rate_index)
+    app.state.tariff_rate_index = tariff_rate_index
+    chapter_notes_index = build_chapter_notes_index(chunks)
+    set_chapter_notes_index(chapter_notes_index)
+    app.state.chapter_notes_index = chapter_notes_index
+    chapter_titles_index = build_chapter_titles_index(chunks)
+    set_chapter_titles_index(chapter_titles_index)
+    app.state.chapter_titles_index = chapter_titles_index
+    surface_sensitive_positions = build_surface_sensitive_positions(tariff_label_index)
+    set_surface_sensitive_positions(surface_sensitive_positions)
+    app.state.surface_sensitive_positions = surface_sensitive_positions
+    logger.info("%s libelles tarifaires indexes depuis les chunks TEC", len(tariff_label_index))
+    logger.info("%s grilles de taux TEC indexees depuis les chunks", len(tariff_rate_index))
+    logger.info("%s chapitres avec notes TEC indexes", len(chapter_notes_index))
+    logger.info("%s titres de chapitres indexes depuis les chunks TEC", len(chapter_titles_index))
+    logger.info("%s positions sensibles a la surface exterieure (TEC)", len(surface_sensitive_positions))
     # Index FAISS dedie aux classifications validées (apprentissage par exemples).
     classifications_index, classifications_meta = initialize_validated_classifications_index()
     app.state.classifications_index = classifications_index
@@ -1690,10 +1786,147 @@ def _filter_candidate_lines(lines: list[str], max_items: int) -> list[str]:
     return cleaned
 
 
+_PRODUCT_DOSSIER_HEADER = re.compile(
+    r"^(?:produit|marchandise|article|d[eé]signation)\s*:\s*.+",
+    re.IGNORECASE | re.UNICODE,
+)
+_QUESTION_SECTION_LINE = re.compile(r"^question\s*:?\s*$", re.IGNORECASE | re.UNICODE)
+_META_QUESTION_LINE = re.compile(
+    r"(?:code\s*sh|position\s*tarifaire|classif|quel\s+est\s+le\s+code)",
+    re.IGNORECASE | re.UNICODE,
+)
+_DOSSIER_SECTION_KEYWORDS = ("composition", "caracteristique", "specification", "usage", "capacite")
+_COMMERCIAL_METADATA_ONLY = re.compile(
+    r"^(?:"
+    r"(?:provenant\s+de|origine)\s+(?:la\s+|le\s+|l')?[\w\s'-]+"
+    r"(?:\s+et\s+achet[eé]+e?\s+(?:a|à)\s+[\d\s.,]+\s*(?:dollars?|usd|eur|euros?|fcfa|xof)?)?"
+    r"|achet[eé]+e?\s+(?:a|à)\s+[\d\s.,]+\s*(?:dollars?|usd|eur|euros?|fcfa|xof)?"
+    r"|(?:valeur|prix)\s*[:=]?\s*[\d\s.,]+\s*(?:dollars?|usd|eur|euros?|fcfa|xof)?"
+    r")\s*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _is_structured_product_dossier_text(raw: str) -> bool:
+    """True si le texte ressemble a une fiche Produit + Composition/Caracteristiques."""
+    text = (raw or "").replace("\r", "\n").strip()
+    if not text:
+        return False
+
+    first_line = ""
+    for ln in text.splitlines():
+        if ln.strip():
+            first_line = ln.strip()
+            break
+    if not first_line or not _PRODUCT_DOSSIER_HEADER.match(first_line):
+        return False
+
+    ascii_norm = (
+        unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").lower()
+    )
+    return any(keyword in ascii_norm for keyword in _DOSSIER_SECTION_KEYWORDS)
+
+
+def _is_commercial_metadata_only_text(text: str) -> bool:
+    """Detecte une ligne qui ne decrit qu'une origine, une valeur ou un achat."""
+    normalized = (text or "").strip()
+    if not normalized:
+        return False
+    ascii_norm = (
+        unicodedata.normalize("NFKD", normalized)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    ascii_norm = re.sub(r"\s+", " ", ascii_norm).strip()
+    if _COMMERCIAL_METADATA_ONLY.match(ascii_norm):
+        return True
+    if re.search(
+        r"\b(?:achet[eé]+e?\s+(?:a|à)|provenant\s+de|origine|valeur|prix|dollars?|usd|fcfa)\b",
+        ascii_norm,
+    ) and len(ascii_norm.split()) <= 8:
+        return True
+    return False
+
+
+def _filter_phantom_classifications(classifications: list[Any]) -> list[dict[str, Any]]:
+    """Supprime les lignes LLM qui ne decrivent pas une marchandise classifiable."""
+    kept: list[dict[str, Any]] = []
+    for item in classifications:
+        if not isinstance(item, dict):
+            continue
+        description = str(item.get("description") or "").strip()
+        if not description:
+            continue
+        if _is_commercial_metadata_only_text(description):
+            continue
+        hs_code = str(item.get("hs_code") or "").strip().upper()
+        hs_missing = (
+            not hs_code
+            or "NON RENSEIGN" in hs_code
+            or hs_code in ("N/A", "NA", "NON APPLICABLE")
+        )
+        if hs_missing and _is_commercial_metadata_only_text(description):
+            continue
+        if hs_missing and re.search(
+            r"\b(?:achet[eé]|provenant|origine|valeur|prix|dollars?)\b",
+            description,
+            re.IGNORECASE,
+        ) and len(description.split()) < 12:
+            continue
+        kept.append(item)
+    return kept
+
+
+def _try_parse_structured_product_dossier(raw: str) -> str | None:
+    """
+    Détecte une fiche produit structurée (Produit / Composition / Caractéristiques)
+    et la renvoie comme une seule description à classifier.
+    """
+    text = (raw or "").replace("\r", "\n").strip()
+    if not text:
+        return None
+
+    if not _is_structured_product_dossier_text(text):
+        return None
+
+    cleaned_lines: list[str] = []
+    in_question = False
+    for ln in text.splitlines():
+        stripped = ln.strip()
+        ln_norm = (
+            unicodedata.normalize("NFKD", stripped)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .lower()
+        )
+        if _QUESTION_SECTION_LINE.match(ln_norm):
+            in_question = True
+            continue
+        if in_question:
+            if not stripped or _META_QUESTION_LINE.search(ln_norm):
+                continue
+            # Fin de la section question : ligne vide ou nouvelle section.
+            if re.match(r"^(?:produit|composition|caract)", ln_norm):
+                in_question = False
+            else:
+                continue
+        cleaned_lines.append(ln)
+
+    result = "\n".join(cleaned_lines).strip()
+    if len(result) < 5:
+        return None
+    return result[:20000]
+
+
 def _extract_items_from_txt(text_content: str, max_items: int) -> tuple[str, list[str]]:
     raw = (text_content or "").replace("\r", "\n").strip()
     if not raw:
         return "", []
+
+    dossier = _try_parse_structured_product_dossier(raw)
+    if dossier:
+        return dossier, [dossier]
 
     # 0) Parsing "tableau texte" (Produit | Qté | Valeur, etc.).
     # IMPORTANT: on combine maintenant le résultat du tableau avec le reste
@@ -2259,7 +2492,7 @@ def _split_leading_quantity(item: str) -> tuple[int, str, str, str, int]:
         text = (m_mult_tail.group(1) or "").strip()
         return qty, text, "explicit", m_mult_tail.group(2) or "", 95
 
-    return 1, s, "explicit", "", 60
+    return 1, s, "implicit", "", 60
 
 
 def _strip_inline_metadata(text: str) -> str:
@@ -2283,18 +2516,186 @@ def _strip_inline_metadata(text: str) -> str:
     return s
 
 
+_COMPOSITION_BLOCK = re.compile(
+    r"\b(?:composition|compos[eé](?:\s+de)?|constitu[eé](?:\s+de)?|caract[eé]ristiques?|sp[eé]cifications?)\s*:",
+    re.IGNORECASE | re.UNICODE,
+)
+
+_COMMA_CONTINUATION_START = re.compile(
+    r"^(?:"
+    r"non\b|ni\b|sans\b|avec\b|sauf\b|contenant|comprenant|incluant|"
+    r"r[eé]duction|r[eé]duit|reduit|"
+    r"additionn(?:e|é)?(?:e|é)?s?\b|addition\b|"
+    r"m[eê]me\b|aussi\b|"
+    r"en\b|à\b|au\b|aux\b|pour\b|"
+    r"type\b|mod[eè]le|format\b|qualit[eé]\b|teneur\b|"
+    r"mati[eè]re\b|grasse\b|prot[eé]ines?\b|lactose\b|"
+    r"extra\b|ultra\b|super\b|semi[\s-]|demi[\s-]|"
+    r"nature\b|bio\b|pur\b|brut(?:e)?\b|raffin[eé]|concentr[eé]|pasteuris[eé]|"
+    r"homog[eé]n[eé]is[eé]|aromatis[eé]|sucr[eé]|[eé]dulcor|ferment[eé]|acidifi[eé]|"
+    r"affin[eé]|etuv[eé]|[eé]tuv[eé]|d[eé]sodoris[eé]|d[eé]graiss[eé]|d[eé]cortiqu[eé]|"
+    r"torr[eé]fi[eé]|d[eé]caf[eé]in[eé]|"
+    r"long\b|en\s+conserve|conserv[eé]|"
+    r"de\s+qualit[eé]|d['\u2019]une\s+teneur|d['\u2019]un\s+poids|"
+    r"conditionn[eé]|destin[eé]|pr[eé]sentant|"
+    r"ou\b|et\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+# Premiers mots qui signalent un nouvel article après une virgule (pas un qualificatif).
+_PRODUCT_HEAD_WORDS = frozenset(
+    {
+        "sucre",
+        "lait",
+        "beurre",
+        "fromage",
+        "creme",
+        "huile",
+        "farine",
+        "riz",
+        "ble",
+        "cafe",
+        "the",
+        "viande",
+        "poisson",
+        "volaille",
+        "poulet",
+        "boeuf",
+        "ordinateur",
+        "telephone",
+        "clavier",
+        "ecran",
+        "vehicule",
+        "voiture",
+        "moto",
+        "acier",
+        "ciment",
+        "medicament",
+        "parfum",
+        "savon",
+        "textile",
+        "tissu",
+        "coton",
+        "vetement",
+        "chaussure",
+        "bijou",
+        "cheval",
+        "bouteille",
+        "canette",
+    }
+)
+
+
+def _segment_first_word(segment: str) -> str:
+    seg_norm = (
+        unicodedata.normalize("NFKD", (segment or ""))
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+    )
+    tokens = re.findall(r"[a-z0-9]+", seg_norm)
+    return tokens[0] if tokens else ""
+
+
+def _starts_new_product_segment(segment: str) -> bool:
+    """True si le segment commence par un nom de marchandise (nouvel article)."""
+    first = _segment_first_word(segment)
+    return bool(first and first in _PRODUCT_HEAD_WORDS)
+
+
+def _is_comma_continuation(segment: str, *, previous: str = "") -> bool:
+    """
+    True si le segment après une virgule ressemble à un qualificatif tarifaire
+    (ex. « non concentrés », « réduction de concentré de sucre ») plutôt qu'à un nouvel article.
+    """
+    seg = (segment or "").strip()
+    if not seg:
+        return True
+    if _starts_new_product_segment(seg):
+        return False
+    seg_norm = unicodedata.normalize("NFKD", seg).encode("ascii", "ignore").decode("ascii")
+    if _COMMA_CONTINUATION_START.search(seg_norm):
+        return True
+    # Suite d'une description avec bloc « composition: » explicite.
+    if _COMPOSITION_BLOCK.search(previous or ""):
+        return True
+    return False
+
+
+def _split_on_commas_preserving_decimals(text: str) -> list[str]:
+    """Découpe sur les virgules en préservant les décimales françaises (ex. 1,5 %)."""
+    parts: list[str] = []
+    current: list[str] = []
+    chars = text or ""
+    for i, c in enumerate(chars):
+        if c == ",":
+            prev_digit = i > 0 and chars[i - 1].isdigit()
+            next_digit = i + 1 < len(chars) and chars[i + 1].isdigit()
+            if prev_digit and next_digit:
+                current.append(c)
+                continue
+            chunk = "".join(current).strip()
+            if chunk:
+                parts.append(chunk)
+            current = []
+        else:
+            current.append(c)
+    chunk = "".join(current).strip()
+    if chunk:
+        parts.append(chunk)
+    return parts
+
+
+def _split_comma_aware(text: str) -> list[str]:
+    """Découpe sur les virgules en fusionnant les qualificatifs descriptifs."""
+    s = (text or "").strip()
+    if not s:
+        return []
+    # Bloc explicite « composition: … » → une seule marchandise.
+    if _COMPOSITION_BLOCK.search(s):
+        cleaned = _clean_text_line(s)
+        return [cleaned] if cleaned else []
+
+    parts = _split_on_commas_preserving_decimals(s)
+    if len(parts) <= 1:
+        cleaned = _clean_text_line(s)
+        return [cleaned] if cleaned else []
+
+    merged: list[str] = []
+    current = parts[0]
+    for seg in parts[1:]:
+        if _is_comma_continuation(seg, previous=current):
+            current = f"{current}, {seg}"
+        else:
+            if current:
+                merged.append(_clean_text_line(current))
+            current = seg
+    if current:
+        merged.append(_clean_text_line(current))
+    return [m for m in merged if m]
+
+
 def _split_multi_article_entry(text: str) -> list[str]:
     """
     Découpe une ligne contenant plusieurs articles.
-    Ex: "ordinateur + telephone", "ordinateur et telephone".
+    Ex: "ordinateur + telephone", "ordinateur et telephone", "ordinateur, telephone".
+    Les virgules à l'intérieur d'une description (ex. « crème de lait, non concentrés,
+    sans addition de sucre ») ne séparent pas les articles.
     """
     s = (text or "").strip()
     if not s:
         return []
-    # Ajoute la virgule comme séparateur pour "A, B, C".
-    # (On garde + ; et "et" pour les cas déjà supportés.)
-    parts = re.split(r"\s*(?:\+|;|,|\bet\b)\s*", s, flags=re.IGNORECASE)
-    cleaned = [_clean_text_line(p) for p in parts if _clean_text_line(p)]
+    # Séparateurs forts : +, ;, « et » entre articles distincts.
+    strong_parts = re.split(r"\s*(?:\+|;|\bet\b)\s*", s, flags=re.IGNORECASE)
+    result: list[str] = []
+    for part in strong_parts:
+        part = part.strip()
+        if not part:
+            continue
+        result.extend(_split_comma_aware(part))
+    cleaned = [_clean_text_line(p) for p in result if _clean_text_line(p)]
     return cleaned if cleaned else [s]
 
 
@@ -2482,6 +2883,9 @@ def _is_noise_item_text(text: str) -> bool:
     if is_ui_boilerplate_line(text):
         return True
 
+    if _is_commercial_metadata_only_text(text):
+        return True
+
     # Pays isolés (fréquent dans les lignes "origine XXX")
     countries = {
         "chine",
@@ -2518,8 +2922,11 @@ def _aggregate_items_with_quantities(
     item_meta: dict[str, dict[str, Any]] = {}
 
     for raw_item in items:
-        # 1) split multi-articles dans la ligne
-        sub_items = _split_multi_article_entry(raw_item)
+        # Fiche produit structuree : ne pas decouper sur « et » (origine/valeur).
+        if _is_structured_product_dossier_text(raw_item):
+            sub_items = [raw_item]
+        else:
+            sub_items = _split_multi_article_entry(raw_item)
         if not sub_items:
             continue
         for sub in sub_items:
@@ -2544,6 +2951,7 @@ def _aggregate_items_with_quantities(
             meta = item_meta.get(display_text) or {
                 "line_count": 0,
                 "explicit_count": 0,
+                "implicit_count": 0,
                 "range_upper_count": 0,
                 "word_number_count": 0,
                 "lot_count": 0,
@@ -2554,6 +2962,8 @@ def _aggregate_items_with_quantities(
             meta["line_count"] += 1
             if source == "explicit":
                 meta["explicit_count"] += 1
+            elif source == "implicit":
+                meta["implicit_count"] += 1
             elif source == "range_upper":
                 meta["range_upper_count"] += 1
             elif source == "word_number":
@@ -2577,6 +2987,7 @@ def _aggregate_items_with_quantities(
         meta = item_meta.get(label, {})
         line_count = int(meta.get("line_count", 0))
         explicit_count = int(meta.get("explicit_count", 0))
+        implicit_count = int(meta.get("implicit_count", 0))
         lot_count = int(meta.get("lot_count", 0))
         range_count = int(meta.get("range_upper_count", 0))
         word_count = int(meta.get("word_number_count", 0))
@@ -2598,6 +3009,8 @@ def _aggregate_items_with_quantities(
             qsource = "range_upper"
         elif word_count > 0:
             qsource = "word_number"
+        elif implicit_count > 0 and explicit_count == 0:
+            qsource = "implicit"
         elif line_count > 1 and explicit_count == 0:
             qsource = "repeat"
         else:
@@ -2609,6 +3022,10 @@ def _aggregate_items_with_quantities(
         meta["quantity_source"] = qsource
         meta["quantity_raw"] = ", ".join(meta.get("quantity_raw_samples", []))
         meta["quantity_confidence"] = qconf
+        meta["description_quality"] = assess_description_quality(
+            source_text=label if _is_structured_product_dossier_text(label) else None,
+            description=label,
+        )
         item_meta[label] = meta
 
     return unique_items, item_counts, total_quantity, item_meta
@@ -2940,7 +3357,7 @@ async def classify_file(
     if not cache_disabled:
         cached_raw = cache_get(cache_key)
         if cached_raw is not None:
-            raw_out = _ensure_json_raw(cached_raw)
+            raw_out = _normalize_classifications_response(_ensure_json_raw(cached_raw))
             _inspect_raw_json(raw_out, request_id, "HIT")
             # Si la réponse en cache contient déjà des quantités, on les additionne,
             # sinon on considère 1 par ligne.
@@ -3157,6 +3574,10 @@ async def classify_file(
             cls.setdefault("quantity_source", meta.get("quantity_source", "explicit"))
             cls.setdefault("quantity_raw", meta.get("quantity_raw", ""))
             cls.setdefault("quantity_confidence", meta.get("quantity_confidence", 60))
+            cls.setdefault("description_quality", meta.get("description_quality"))
+            if cls.get("description_quality") is None:
+                enrich_item_description_quality(cls, source_text=src_text)
+            cls["source_query"] = src_text
 
         # Le LLM peut parfois renvoyer des variantes quasi identiques (doublons).
         # On fusionne ces doublons pour éviter des lignes "Bouteilles d'eau" en double.
@@ -3166,7 +3587,7 @@ async def classify_file(
             "narrative": narrative or "Proposition indicative, à faire valider par l'autorité douanière.",
             "classifications": merged_classifications,
         }
-        raw_out = _ensure_json_raw(merged)
+        raw_out = _normalize_classifications_response(_ensure_json_raw(merged))
 
     except HTTPException:
         raise
@@ -3227,7 +3648,7 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     if not cache_disabled:
         cached_raw = cache_get(cache_key)
         if cached_raw is not None:
-            raw_out = _ensure_json_raw(cached_raw)
+            raw_out = _normalize_classifications_response(_ensure_json_raw(cached_raw))
             logger.debug(
                 "[classify %s] cache HIT raw_len=%s raw_preview=%r",
                 request_id,
@@ -3283,6 +3704,9 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
         raise HTTPException(status_code=500, detail=detail) from exc
 
     # Corriger section/chapitre à partir du code SH pour chaque classification
+    result = _inject_source_query_into_llm_response(
+        result, classify_input or (payload.query or "")
+    )
     result = _normalize_classifications_response(result)
     raw_out = _ensure_json_raw(result)
 
@@ -3307,9 +3731,16 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
                         item.setdefault("quantity_source", meta.get("quantity_source", "explicit"))
                         item.setdefault("quantity_raw", meta.get("quantity_raw", ""))
                         item.setdefault("quantity_confidence", meta.get("quantity_confidence", 60))
+                        item.setdefault("description_quality", meta.get("description_quality"))
+                        if item.get("description_quality") is None:
+                            enrich_item_description_quality(item, source_text=src)
+                        item["source_query"] = src
                     # Fusionne les doublons quasi-identiques renvoyés par le LLM.
                     parsed["classifications"] = _merge_duplicate_classifications(cls)
-                    raw_out = _ensure_json_raw(parsed)
+                    for item in parsed["classifications"]:
+                        if isinstance(item, dict) and not item.get("source_query"):
+                            item["source_query"] = classify_input or (payload.query or "")
+                    raw_out = _normalize_classifications_response(_ensure_json_raw(parsed))
         except Exception:
             # Si on ne peut pas enrichir la réponse, on conserve `raw_out` tel quel.
             pass

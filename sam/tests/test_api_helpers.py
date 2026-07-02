@@ -50,6 +50,49 @@ class TestJsonParsingHelpers(unittest.TestCase):
         self.assertIn("error", obj)
 
 
+class TestSplitMultiArticleEntry(unittest.TestCase):
+    def test_comma_in_tariff_description_stays_single_item(self) -> None:
+        text = "crème de lait, non concentrés, sans addition de sucre"
+        items = api_mod._split_multi_article_entry(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0], text)
+
+    def test_comma_between_distinct_products_splits(self) -> None:
+        items = api_mod._split_multi_article_entry("ordinateur, téléphone")
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0], "ordinateur")
+        self.assertEqual(items[1], "téléphone")
+
+    def test_plus_and_et_still_split(self) -> None:
+        items = api_mod._split_multi_article_entry("ordinateur + téléphone et clavier")
+        self.assertEqual(len(items), 3)
+
+    def test_olive_oil_extra_virgin_single_item(self) -> None:
+        text = "huile d'olive, extra vierge"
+        items = api_mod._split_multi_article_entry(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0], text)
+
+    def test_composition_block_stays_single_item(self) -> None:
+        text = "crème de lait avec composition: non concentrés, reduction de concentré de sucre"
+        items = api_mod._split_multi_article_entry(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0], text)
+
+    def test_reduction_clause_after_comma_merges(self) -> None:
+        text = "lait, réduction de concentré de sucre"
+        items = api_mod._split_multi_article_entry(text)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0], text)
+
+    def test_two_distinct_products_with_sugar(self) -> None:
+        text = "crème de lait non concentrés, sucre avec reduction de concentré"
+        items = api_mod._split_multi_article_entry(text)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0], "crème de lait non concentrés")
+        self.assertEqual(items[1], "sucre avec reduction de concentré")
+
+
 class TestClassificationResponseNormalization(unittest.TestCase):
     def test_normalize_section_and_chapter_from_hs_code(self) -> None:
         raw = json.dumps(

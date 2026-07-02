@@ -15,7 +15,9 @@ type ClassificationItem = {
   quantity_source?: string;
   quantity_raw?: string;
   quantity_confidence?: number;
+  description_quality?: number;
   hs_code?: string;
+  position_label?: string;
   section?: string;
   section_name?: string;
   chapter?: string;
@@ -24,11 +26,54 @@ type ClassificationItem = {
   rs_rate?: string;
   us_unit?: string;
   other_taxes?: string;
+  taxes_source?: "tec" | "provisional" | "unavailable";
+  taxes_note?: string;
+  other_taxes_source?: string;
   justification?: string;
   excerpt?: string;
   origin?: string;
   value?: string;
   confidence?: number;
+  risk_level?: "low" | "medium" | "high";
+  risk_label?: string;
+  classification_status?: "confirmee" | "provisoire";
+  completeness_checklist?: Array<{
+    field: string;
+    label: string;
+    status: "ok" | "missing" | "optional_missing";
+  }>;
+  missing_fields?: string[];
+  completeness_score?: number;
+  subposition_status?: "a_determiner";
+  subposition_label?: string;
+  hs_code_suggested?: string;
+  classification_analysis?: {
+    product_identified?: string;
+    function?: string;
+    composition_lines?: string[];
+    chapters_studied?: string[];
+    chapter_retained?: string;
+    chapter_name?: string;
+    missing_information?: string[];
+    rgi_applied?: string[];
+    rgi_not_applicable?: Array<{ rule: string; reason: string }>;
+    decision?: string;
+    facts?: string[];
+    hypotheses?: string[];
+    why_position?: {
+      code?: string;
+      title?: string;
+      reasons?: string[];
+    };
+    alternatives_studied?: Array<{
+      code: string;
+      status: "retained" | "rejected";
+      reason: string;
+    }>;
+    explanatory_notes?: Array<{ scope: string; text: string }>;
+    position_retained?: string;
+    confidence?: number;
+  };
 };
 
 type ApiPayload = {
@@ -78,6 +123,18 @@ function tryParseStructuredPayload(rawText: string): ApiPayload | null {
   }
 
   return null;
+}
+
+/** Retire l'avertissement legal en tete ou en fin de narrative (deja affiche dans l'encart UI). */
+function trimDouaneDisclaimerFromNarrative(n: string): string {
+  let t = trimRedundantDouaneDisclaimerFromNarrative(n.trim());
+  t = t
+    .replace(
+      /^proposition\s+indicative\s*,?\s*[àa]\s+faire\s+valider\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*/iu,
+      ""
+    )
+    .trim();
+  return trimRedundantDouaneDisclaimerFromNarrative(t);
 }
 
 /** Retire les phrases légales en fin de narrative déjà couvertes par la 1re ligne du copier-coller. */
@@ -139,6 +196,32 @@ function polishFrenchForClipboard(s: string): string {
   return t;
 }
 
+function getChecklistMark(status?: string): string {
+  if (status === "ok") return "✓";
+  if (status === "missing") return "✗";
+  return "–";
+}
+
+function getChecklistTone(status?: string): string {
+  if (status === "ok") return "text-emerald-700";
+  if (status === "missing") return "text-red-700";
+  return "text-muted-foreground";
+}
+
+function getRiskEmoji(level?: string): string {
+  if (level === "low") return "🟢";
+  if (level === "medium") return "🟡";
+  if (level === "high") return "🔴";
+  return "";
+}
+
+function getRiskToneClass(level?: string): string {
+  if (level === "low") return "text-emerald-700";
+  if (level === "medium") return "text-amber-700";
+  if (level === "high") return "text-red-700";
+  return "text-muted-foreground";
+}
+
 /**
  * Texte prêt à coller : avertissement légal, synthèse éventuelle, puis tableau TSV
  * (en-tête + une ligne par classification) pour Excel / traitement de texte, sans bruit UI.
@@ -148,15 +231,19 @@ function formatPayloadForClipboard(
   getItemQuantity: (item: ClassificationItem, index: number) => number
 ): string {
   const lines: string[] = [];
-  lines.push(
-    "Proposition indicative, à faire valider par l'autorité douanière."
-  );
-  lines.push("");
-
-  const isAssistant = Boolean(payload.assistant_info);
   const narrativeClean = payload.narrative?.trim()
     ? trimRedundantDouaneDisclaimerFromNarrative(payload.narrative.trim())
     : "";
+
+  const isAssistant = Boolean(payload.assistant_info);
+  const narrativeStartsWithDisclaimer = /^proposition\s+indicative\b/i.test(narrativeClean);
+
+  if (!isAssistant && !narrativeStartsWithDisclaimer) {
+    lines.push(
+      "Proposition indicative, à faire valider par l'autorité douanière."
+    );
+    lines.push("");
+  }
 
   if (isAssistant && narrativeClean) {
     lines.push(polishFrenchForClipboard(narrativeClean));
@@ -187,6 +274,7 @@ function formatPayloadForClipboard(
     "Autres taxes",
     "U.S.",
     "Confiance %",
+    "Risque",
     "Origine",
     "Valeur",
   ].join("\t");
@@ -213,6 +301,11 @@ function formatPayloadForClipboard(
       sanitizeCell(item.other_taxes ?? ""),
       sanitizeCell(item.us_unit ?? ""),
       typeof item.confidence === "number" ? String(item.confidence) : "",
+      sanitizeCell(
+        item.risk_label
+          ? `${getRiskEmoji(item.risk_level)} ${item.risk_label}`
+          : ""
+      ),
       sanitizeCell(item.origin ?? ""),
       sanitizeCell(item.value ?? ""),
     ];
@@ -530,6 +623,8 @@ export default function HomePage() {
         return "Nombre en lettres";
       case "lot":
         return "Format de lot";
+      case "implicit":
+        return "Quantité implicite (1)";
       case "explicit":
       default:
         return "Valeur explicite";
@@ -1027,7 +1122,9 @@ export default function HomePage() {
                   ))}
               </div>
             ) : (
-              <p className="text-sm text-foreground leading-relaxed">{payload.narrative}</p>
+              <p className="text-sm text-foreground leading-relaxed whitespace-pre-line">
+                {trimDouaneDisclaimerFromNarrative(payload.narrative.trim())}
+              </p>
             ))}
 
           {classifications.length === 0 && !isAssistantInfo && (
@@ -1068,7 +1165,7 @@ export default function HomePage() {
                         Taux
                       </th>
                       <th className="px-3 py-2 text-left font-semibold">
-                        Confiance
+                        Confiance de la classification
                       </th>
                       <th className="px-3 py-2 text-left font-semibold">
                         Action
@@ -1093,6 +1190,181 @@ export default function HomePage() {
                           {item.value && (
                             <div className="text-xs text-muted-foreground">
                               Valeur : {item.value}
+                            </div>
+                          )}
+                          {item.classification_status && (
+                            <div className="mt-2 text-xs font-semibold text-foreground/80">
+                              Statut :{" "}
+                              {item.classification_status === "confirmee"
+                                ? "Classification confirmee"
+                                : "Classification provisoire"}
+                            </div>
+                          )}
+                          {item.completeness_checklist &&
+                            item.completeness_checklist.length > 0 && (
+                              <div className="mt-2 text-xs text-muted-foreground leading-snug">
+                                <div className="font-semibold text-foreground/80">
+                                  Qualite de la description
+                                </div>
+                                {item.completeness_checklist.map((entry) => (
+                                  <div
+                                    key={entry.field}
+                                    className={getChecklistTone(entry.status)}
+                                  >
+                                    {getChecklistMark(entry.status)} {entry.label}
+                                  </div>
+                                ))}
+                                {typeof item.completeness_score === "number" && (
+                                  <div className="mt-1 font-semibold text-foreground/80">
+                                    Score : {item.completeness_score}%
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          {item.classification_analysis && (
+                            <div className="mt-3 text-xs text-muted-foreground leading-snug border-t border-border/60 pt-2">
+                              <div className="font-semibold text-foreground/80">
+                                Analyse du classement
+                              </div>
+                              {item.classification_analysis.product_identified && (
+                                <div>
+                                  {getChecklistMark("ok")} Produit :{" "}
+                                  {item.classification_analysis.product_identified}
+                                </div>
+                              )}
+                              {item.classification_analysis.function && (
+                                <div>
+                                  {getChecklistMark("ok")} Fonction :{" "}
+                                  {item.classification_analysis.function}
+                                </div>
+                              )}
+                              {item.classification_analysis.composition_lines &&
+                                item.classification_analysis.composition_lines.length > 0 && (
+                                  <div>
+                                    {getChecklistMark("ok")} Composition :{" "}
+                                    {item.classification_analysis.composition_lines.join(", ")}
+                                  </div>
+                                )}
+                              {item.classification_analysis.chapters_studied &&
+                                item.classification_analysis.chapters_studied.length > 0 && (
+                                  <div>
+                                    {getChecklistMark("ok")} Chapitres etudies :{" "}
+                                    {item.classification_analysis.chapters_studied.join(", ")}
+                                  </div>
+                                )}
+                              {item.classification_analysis.chapter_retained && (
+                                <div>
+                                  {getChecklistMark("ok")} Chapitre retenu :{" "}
+                                  {item.classification_analysis.chapter_retained}
+                                  {item.classification_analysis.chapter_name
+                                    ? ` — ${item.classification_analysis.chapter_name}`
+                                    : ""}
+                                </div>
+                              )}
+                              {item.classification_analysis.missing_information &&
+                                item.classification_analysis.missing_information.length > 0 && (
+                                  <div className={getChecklistTone("missing")}>
+                                    {getChecklistMark("missing")} Informations manquantes :{" "}
+                                    {item.classification_analysis.missing_information.join("; ")}
+                                  </div>
+                                )}
+                              {item.classification_analysis.rgi_applied &&
+                                item.classification_analysis.rgi_applied.length > 0 && (
+                                  <div>
+                                    {getChecklistMark("ok")} RGI appliquees :{" "}
+                                    {item.classification_analysis.rgi_applied.join(", ")}
+                                  </div>
+                                )}
+                              {item.classification_analysis.rgi_not_applicable &&
+                                item.classification_analysis.rgi_not_applicable.length > 0 &&
+                                item.classification_analysis.rgi_not_applicable.map((entry) => (
+                                  <div key={entry.rule} className={getChecklistTone("optional_missing")}>
+                                    {getChecklistMark("optional_missing")} {entry.rule} non
+                                    appliquee : {entry.reason}
+                                  </div>
+                                ))}
+                              {item.classification_analysis.why_position &&
+                                item.classification_analysis.why_position.reasons &&
+                                item.classification_analysis.why_position.reasons.length > 0 && (
+                                  <div className="mt-2">
+                                    <div className="font-semibold text-foreground/80">
+                                      {item.classification_analysis.why_position.title ||
+                                        `Pourquoi ${item.classification_analysis.position_retained || item.hs_code} ?`}
+                                    </div>
+                                    {item.classification_analysis.why_position.reasons.map(
+                                      (reason) => (
+                                        <div key={reason} className="mt-0.5">
+                                          {reason}
+                                        </div>
+                                      )
+                                    )}
+                                  </div>
+                                )}
+                              {item.classification_analysis.alternatives_studied &&
+                                item.classification_analysis.alternatives_studied.length > 0 && (
+                                  <div className="mt-2">
+                                    <div className="font-semibold text-foreground/80">
+                                      Alternatives etudiees
+                                    </div>
+                                    {item.classification_analysis.alternatives_studied.map(
+                                      (alt) => (
+                                        <div
+                                          key={`${alt.code}-${alt.status}`}
+                                          className={
+                                            alt.status === "retained"
+                                              ? getChecklistTone("ok")
+                                              : getChecklistTone("optional_missing")
+                                          }
+                                        >
+                                          {alt.status === "retained"
+                                            ? getChecklistMark("ok")
+                                            : getChecklistMark("optional_missing")}{" "}
+                                          <span className="font-mono">{alt.code}</span> —{" "}
+                                          {alt.status === "retained" ? "retenu" : "rejete"} :{" "}
+                                          {alt.reason}
+                                        </div>
+                                      )
+                                    )}
+                                  </div>
+                                )}
+                              {item.classification_analysis.explanatory_notes &&
+                                item.classification_analysis.explanatory_notes.length > 0 && (
+                                  <div className="mt-2">
+                                    <div className="font-semibold text-foreground/80">
+                                      Notes explicatives SH
+                                    </div>
+                                    {item.classification_analysis.explanatory_notes.map(
+                                      (note) => (
+                                        <div key={note.text} className="mt-0.5 italic">
+                                          {note.text}
+                                        </div>
+                                      )
+                                    )}
+                                  </div>
+                                )}
+                              {item.classification_analysis.decision && (
+                                <div className="mt-1 font-semibold text-foreground/80">
+                                  Decision : {item.classification_analysis.decision}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {item.missing_fields && item.missing_fields.length > 0 && (
+                            <div className="mt-2 text-xs leading-snug text-amber-700">
+                              <div className="font-semibold">
+                                Informations manquantes
+                              </div>
+                              {item.missing_fields.map((field) => (
+                                <div key={field}>• {field}</div>
+                              ))}
+                            </div>
+                          )}
+                          {item.justification && (
+                            <div className="mt-2 text-xs text-muted-foreground leading-relaxed">
+                              <span className="font-semibold text-foreground/80">
+                                Justification :{" "}
+                              </span>
+                              {item.justification}
                             </div>
                           )}
                         </td>
@@ -1124,10 +1396,20 @@ export default function HomePage() {
                               {item.quantity_raw ? ` (brut: ${item.quantity_raw})` : ""}
                             </div>
                             <div>
-                              Confiance extraction:{" "}
-                              {typeof item.quantity_confidence === "number"
-                                ? `${item.quantity_confidence}%`
-                                : "N/R"}
+                              Fiabilité quantité :{" "}
+                              {item.quantity_source === "implicit"
+                                ? "implicite (1 pièce)"
+                                : typeof item.quantity_confidence === "number"
+                                  ? `${item.quantity_confidence}%`
+                                  : "N/R"}
+                            </div>
+                            <div>
+                              Qualité de la description :{" "}
+                              {typeof item.completeness_score === "number"
+                                ? `${item.completeness_score}%`
+                                : typeof item.description_quality === "number"
+                                  ? `${item.description_quality}%`
+                                  : "N/R"}
                             </div>
                           </div>
                         </td>
@@ -1135,6 +1417,22 @@ export default function HomePage() {
                           <div className="font-mono">
                             {item.hs_code || "Non renseigné"}
                           </div>
+                          {item.subposition_label && (
+                            <div className="mt-1 text-xs text-amber-700 dark:text-amber-400 leading-snug">
+                              {item.subposition_label}
+                            </div>
+                          )}
+                          {item.position_label && (
+                            <div className="mt-1 text-xs text-muted-foreground leading-snug">
+                              {item.position_label}
+                            </div>
+                          )}
+                          {item.hs_code_suggested &&
+                            item.hs_code_suggested !== item.hs_code && (
+                              <div className="mt-1 text-xs text-muted-foreground leading-snug">
+                                Hypothese initiale : {item.hs_code_suggested}
+                              </div>
+                            )}
                         </td>
                         <td className="px-3 py-2 align-top text-sm">
                           <div>{item.section || "N/A"}</div>
@@ -1158,15 +1456,43 @@ export default function HomePage() {
                         <td className="px-3 py-2 align-top text-xs">
                           <div>D.D. {item.dd_rate || "N/R"}</div>
                           <div>R.S. {item.rs_rate || "N/R"}</div>
-                          <div>Autres {item.other_taxes || "N/R"}</div>
+                          <div className="text-muted-foreground">
+                            {item.other_taxes || "N/R"}
+                          </div>
                           <div>U.S. {item.us_unit || "N/R"}</div>
+                          {item.taxes_source === "tec" && (
+                            <div className="mt-1 text-[10px] text-emerald-700 dark:text-emerald-400">
+                              Source : TEC (sous-position confirmee)
+                            </div>
+                          )}
+                          {item.taxes_source === "provisional" && (
+                            <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-400 leading-snug">
+                              {item.taxes_note || "Taux a confirmer apres sous-position"}
+                            </div>
+                          )}
+                          {item.taxes_note && item.taxes_source === "tec" && (
+                            <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-400 leading-snug">
+                              {item.taxes_note}
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-2 align-top">
+                          <div className="text-xs text-muted-foreground mb-1">
+                            Classification
+                          </div>
                           <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
                             {typeof item.confidence === "number"
                               ? `${item.confidence}%`
                               : "N/R"}
                           </span>
+                          {item.risk_label && (
+                            <div
+                              className={`mt-2 text-xs leading-snug ${getRiskToneClass(item.risk_level)}`}
+                            >
+                              <span aria-hidden="true">{getRiskEmoji(item.risk_level)} </span>
+                              {item.risk_label}
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-2 align-top">
                           <button

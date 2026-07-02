@@ -16,6 +16,7 @@ from langchain.docstore.document import Document
 from langchain_community.document_loaders import PyPDFLoader
 from requests.auth import HTTPBasicAuth
 from sqlalchemy import text as sql_text
+from sqlalchemy.exc import OperationalError
 
 from .db import get_db
 import urllib3
@@ -804,13 +805,24 @@ def _persist_classifications_index(index: faiss.Index, meta: list[dict[str, obje
     os.replace(tmp_path, meta_path)
 
 
+def _empty_validated_classifications_index() -> tuple[faiss.Index, list[dict[str, object]]]:
+    return faiss.IndexFlatL2(_embedding_dim_probe()), []
+
+
 def _load_classifications_index_from_disk() -> tuple[faiss.Index, list[dict[str, object]]]:
     index_path, meta_path = _classifications_index_paths()
     expected_dim = _embedding_dim_probe()
     if not os.path.exists(index_path) or not os.path.exists(meta_path):
         # Si des fichiers d'apprentissage ont ete supprimes/corrompus, on reconstruit
         # depuis la DB plutot que repartir a vide.
-        return _rebuild_classifications_index_from_db()
+        try:
+            return _rebuild_classifications_index_from_db()
+        except OperationalError as exc:
+            logger.warning(
+                "[validated_classifications] DB indisponible au demarrage, index vide: %s",
+                exc,
+            )
+            return _empty_validated_classifications_index()
 
     index = faiss.read_index(index_path)
     try:
@@ -822,7 +834,14 @@ def _load_classifications_index_from_disk() -> tuple[faiss.Index, list[dict[str,
             "[validated_classifications] meta json invalide/corrompu, reconstruction depuis DB...",
             exc_info=True,
         )
-        return _rebuild_classifications_index_from_db()
+        try:
+            return _rebuild_classifications_index_from_db()
+        except OperationalError as exc:
+            logger.warning(
+                "[validated_classifications] DB indisponible, index vide: %s",
+                exc,
+            )
+            return _empty_validated_classifications_index()
 
     if index.d != expected_dim or int(index.ntotal) != len(meta):
         logger.warning(
@@ -832,7 +851,14 @@ def _load_classifications_index_from_disk() -> tuple[faiss.Index, list[dict[str,
             index.ntotal,
             len(meta),
         )
-        return _rebuild_classifications_index_from_db()
+        try:
+            return _rebuild_classifications_index_from_db()
+        except OperationalError as exc:
+            logger.warning(
+                "[validated_classifications] DB indisponible, index vide: %s",
+                exc,
+            )
+            return _empty_validated_classifications_index()
 
     return index, meta
 
@@ -1005,7 +1031,8 @@ def use_llm(prompt_text):
             "Règles générales d'interprétation (RGI): "
             "RGI 1: Les titres des sections, chapitres et sous-chapitres n'ont qu'une valeur indicative. "
             "RGI 2: Marchandises incomplètes ou non finies classées comme complètes. "
-            "RGI 3: Mélange ou assemblage classé selon la matière prépondérante. "
+            "RGI 3: Mélange ou assemblage classé selon la matière prépondérante; la RGI 3 b) porte sur le caractère essentiel "
+            "(fonction, usage, valeur, présentation, matière dominante, surface extérieure, etc.), pas sur un simple pourcentage de composition. "
             "RGI 4: Sinon, position la plus analogue. "
             "RGI 5: Les emballages sont classés avec les marchandises qu'ils contiennent (ne pas créer de ligne séparée pour l'emballage primaire: flacon, gobelet doseur, etc.). "
             "RGI 6: Sous-positions selon les termes des sous-positions. "
@@ -1013,7 +1040,14 @@ def use_llm(prompt_text):
             "Ne mentionne jamais les documents sources; fais comme si les infos étaient internes. "
             "Réponds dans la langue du prompt. "
             "Règles de sortie strictes: "
-            "1) Une ligne de classification = un produit distinct demandé par l'utilisateur. Ne décompose jamais un produit en ses composants (écran, processeur, RAM, disque, connecteur, poids, etc.) sauf si l'utilisateur demande explicitement des lignes séparées pour des composants. "
+            "1) Une ligne de classification = un produit distinct demandé par l'utilisateur. Ne décompose jamais un produit en ses composants (écran, processeur, RAM, cuir, coton, polyester, doublure, fermeture, dimensions, etc.) sauf si l'utilisateur demande explicitement des lignes séparées pour des composants. "
+            "1bis) Si la description contient des sections Composition ou Caractéristiques (% matières, doublure, poignée, dimensions), ce sont des précisions du même article — retourne une seule classification pour l'article principal (ex. sac à main chapitre 42), pas une ligne par matière. "
+            "1ter) Si le libellé TEC ou les notes du chapitre indiquent un critère de sous-position (ex. matière de la surface extérieure, "
+            "type de contenant, fonction déterminante) et que cette information n'est pas précisée dans la description, "
+            "indique clairement dans la justification que la sous-position ne peut pas être déterminée avec certitude, "
+            "retourne uniquement la position à 4 chiffres (sans code à 8 ou 10 chiffres), ne cite pas de sous-positions précises "
+            "qui dépendent de ce critère manquant, baisse la confiance (≤ 65), et demande l'information manquante au lieu d'inventer un code. "
+            "Ne cite une RGI que si elle est réellement appliquée (ex. ne pas invoquer RGI 3 si le critère de sous-position manque). "
             "2) Si l'utilisateur demande N produits (ex: « Produit 1: ordinateur, Produit 2: chargeur »), retourne au plus N lignes, une par produit. "
             "3) Pour un mélange (ex: mix de fruits secs), propose une seule ligne avec le code du mélange; les codes possibles par ingrédient peuvent figurer dans la justification uniquement, pas comme lignes séparées. "
             "4) En cas d'informations contradictoires (ex: étiquette « alcoolisée » mais teneur 0 %), privilégie les critères objectifs (teneur en alcool, composition) et propose une seule ligne recommandée; mentionne les alternatives dans le narrative ou la justification, pas comme lignes à valider. "
@@ -1029,12 +1063,20 @@ def use_llm(prompt_text):
             "\"description\":\"Résumé de la marchandise\",\"hs_code\":\"8517.13.00.00\","
             "\"section\":\"XVI\",\"section_name\":\"Machines et appareils; matériel électrique\","
             "\"chapter\":\"85\",\"chapter_name\":\"Machines, appareils et matériel électrique\","
-            "\"dd_rate\":\"5 %\",\"rs_rate\":\"1 %\",\"us_unit\":\"PIÈCE\",\"other_taxes\":\"TVA 18 %\","
-            "\"justification\":\"Synthèse RGI / critères\",\"excerpt\":\"Citation si pertinent\","
-            "\"origin\":\"Non renseigné\",\"value\":\"Non renseigné\",\"confidence\":90}]}. "
+            "\"justification\":\"RGI 1 : [règle appliquée] — fonction principale, caractère essentiel, chapitres envisagés/écartés, motif du code retenu\",\"excerpt\":\"Citation si pertinent\","
+            "\"origin\":\"Non renseigné\",\"value\":\"Non renseigné\",\"confidence\":90,"
+            "\"classification_status\":\"confirmee\"}]}. "
+            "Les champs dd_rate, rs_rate et us_unit sont complétés automatiquement par le système depuis le TEC : "
+            "mets \"N/R\" si tu n'es pas certain. Pour other_taxes, mets toujours \"N/R\" (TVA hors TEC). "
             "Le champ \"section\" doit être le numéro romain de la section SH qui contient le chapitre (ex: code 8517 → chapitre 85 → section XVI). "
             "\"chapter\" = les deux premiers chiffres du code (ex: 85). Utilise \"Non renseigné\" si une donnée manque. "
-            "confidence entre 0 et 100. Une seule ligne par produit demandé; pas de lignes pour composants, emballage primaire ou « poids »."
+            "confidence entre 0 et 100. Une seule ligne par produit demandé; pas de lignes pour composants, emballage primaire ou « poids ». "
+            "Le champ \"justification\" est obligatoire pour chaque classification : il doit indiquer explicitement la ou les RGI appliquées "
+            "(ex. « RGI 1 », « RGI 3 b », « RGI 6 ») en tête de phrase, puis le raisonnement structuré "
+            "(fonction principale de la marchandise, caractère essentiel, chapitres ou positions étudiés et écartés avec motif, motif du code SH retenu). "
+            "Mentionne explicitement les chapitres ou positions écartés (ex. « chapitre 76 écarté car… ») pour alimenter l'analyse des alternatives. "
+            "Ne pas créer de champ séparé pour la RGI : tout le raisonnement juridique va dans \"justification\". "
+            "Utilise \"classification_status\" = \"confirmee\" si les informations indispensables sont présentes, sinon \"provisoire\"."
         )
 
         # Utilise l'API de chat du client OpenAI (SDK >= 1.x)
