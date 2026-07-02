@@ -40,6 +40,7 @@ from .cache import (
     cache_set,
 )
 from .db import get_db
+from .brand_messaging import INDICATIVE_DISCLAIMER_FR
 from .classification_completeness import apply_completeness_adjustments, sanitize_provisional_narrative
 from .classification_risk import enrich_classifications_with_risk
 from .description_quality import assess_description_quality, enrich_item_description_quality
@@ -3584,7 +3585,7 @@ async def classify_file(
         merged_classifications = _merge_duplicate_classifications(merged_classifications)
 
         merged = {
-            "narrative": narrative or "Proposition indicative, à faire valider par l'autorité douanière.",
+            "narrative": narrative or INDICATIVE_DISCLAIMER_FR,
             "classifications": merged_classifications,
         }
         raw_out = _normalize_classifications_response(_ensure_json_raw(merged))

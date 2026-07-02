@@ -6,6 +6,8 @@ import re
 import unicodedata
 from typing import Any
 
+from .brand_messaging import INDICATIVE_DISCLAIMER_ASCII
+
 from .tariff_labels import get_tariff_label_index
 from .tariff_metadata import get_position_heading
 from .tariff_notes import get_chapter_explanatory_notes
@@ -500,7 +502,7 @@ def build_provisional_ch42_narrative(classifications: list[dict[str, Any]]) -> s
         break
     chapter_part = f"du chapitre {chapter}" if chapter else "du chapitre concerne"
     return (
-        "Proposition indicative, a faire valider par l'autorite douaniere.\n\n"
+        f"{INDICATIVE_DISCLAIMER_ASCII}\n\n"
         "Produit analyse\n"
         f"{product_label}\n\n"
         "La matiere de la surface exterieure n'est pas precisee dans la description fournie. "
@@ -525,7 +527,7 @@ def sanitize_provisional_narrative(narrative: str, classifications: list[dict[st
 
     body = _PROPOSITION_BOILERPLATE_RE.sub("", text).strip()
     body = re.sub(r"\s{2,}", " ", body).strip()
-    prefix = "Proposition indicative, a faire valider par l'autorite douaniere."
+    prefix = f"{INDICATIVE_DISCLAIMER_ASCII}"
     return f"{prefix} {body}".strip() if body else prefix
 
 

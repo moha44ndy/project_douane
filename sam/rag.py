@@ -157,7 +157,7 @@ _INTENT_PRECEDENCE = ("founders", "rules", "works", "purpose", "help", "identity
 # Demande de code / position sans description de produit (« Code HS pour Mosam ») → réponse courte, pas la fiche complète.
 _META_HS_CODE_REQUEST_RE = re.compile(
     r"(?is)(?=.*\bmosam\b)(?=.*(?:\bcode\s+(?:hs|sh|tec)\b|\bhs\s+code\b|\btec\s*/\s*sh\b|"
-    r"\bposition\s+tarifaire\b|\bclassement\s+douanier\b|\bnomenclature(?:\s+douaniere)?\b))",
+    r"\bposition\s+tarifaire\b|\bclassement\s+tarifaire\b|\bnomenclature(?:\s+tarifaire)?\b))",
 )
 
 # « Mosam » comme marque / modèle (ex. « Téléphone Mosam », « Mosam smartphone 5G ») : pas question meta.
@@ -261,7 +261,7 @@ def _mosam_line_looks_like_product_brand(normalized_ascii: str) -> bool:
 
 def _mosam_line_looks_like_company_or_customs_context(normalized_ascii: str) -> bool:
     """
-    True si « Mosam » est plutôt société / destinataire / flux douanier que question sur l’outil.
+    True si « Mosam » est plutôt société / destinataire / flux logistique que question sur l’outil.
     Évite les faux positifs fuzzy « pour … mosam » ≈ « pourquoi mosam ».
     """
     for line in normalized_ascii.splitlines():
@@ -293,13 +293,13 @@ _ASSISTANT_META_NARRATIVE = (
     "techniques), ou vous envoyez un fichier txt ou pdf ; je propose des codes et taux indicatifs "
     "à partir de la documentation tarifaire et de l’analyse automatique du texte.\n\n"
     "Comment je peux vous aider : accélérer une première lecture tarifaire et présenter une réponse "
-    "structurée ; seule l’autorité douanière peut valider une position définitive.\n\n"
+    "structurée ; toute utilisation officielle exige une validation humaine.\n\n"
     "Comment je fonctionne (synthèse) : recherche d’extraits pertinents dans la base tarifaire, "
     "puis génération d’une proposition (codes, sections, taux possibles). La qualité dépend surtout "
     "de la précision de votre description.\n\n"
     "Règles d’utilisation : décrire le produit le plus factuellement possible ; une ligne ou une puce "
     "par article si vous en avez plusieurs ; traiter toute proposition comme indicative et à faire "
-    "valider par l’autorité douanière.\n\n"
+    "valider avant toute utilisation officielle.\n\n"
     "Pourquoi Mosam existe dans ce contexte : pour faciliter le travail de première analyse de "
     "classification à partir des textes officiels CEDEAO.\n\n"
     "Mosam a été créé par l’Industrie Mosam, avec pour fondateurs Mohamed Ndiaye et "
@@ -330,7 +330,7 @@ _META_SNIPPET_FOUNDERS = (
 _META_SNIPPET_RULES = (
     "Règles d’utilisation : décrire la marchandise de façon factuelle (matière, usage, caractéristiques) ; "
     "une ligne ou une puce par article si vous en avez plusieurs ; traiter chaque proposition comme "
-    "indicative et à faire valider par l’autorité douanière."
+    "indicative et à faire valider avant toute utilisation officielle."
 )
 _META_SNIPPET_WORKS = (
     "Mosam repère des extraits pertinents dans la base tarifaire, puis produit une proposition structurée "
@@ -343,12 +343,12 @@ _META_SNIPPET_PURPOSE = (
 _META_SNIPPET_HELP = (
     "Mosam vous aide à obtenir plus vite une proposition de codes et de taux possibles : décrivez la "
     "marchandise dans le champ prévu ou envoyez un fichier txt ou pdf. La décision définitive revient "
-    "à l’autorité douanière."
+    "à l’utilisateur ou à son référent métier."
 )
 _META_SNIPPET_IDENTITY = (
     "Je m’appelle Mosam. Je suis un assistant logiciel pour la classification tarifaire TEC/SH CEDEAO. "
     "Je ne suis pas une personne physique ; j’aide les équipes à formuler des propositions indicatives "
-    "de classement douanier."
+    "de classement tarifaire."
 )
 _META_SNIPPET_WARMTH = (
     "Merci de prendre des nouvelles : tout va bien de mon côté, et j’espère sincèrement que vous allez bien "
@@ -375,7 +375,7 @@ _META_SNIPPET_HS_GUIDE = (
     "(matière, usage, caractéristiques techniques) ou envoyez un fichier txt ou pdf. "
     "Ici, « Mosam » est le nom de cet assistant logiciel, pas une désignation de produit : sans description "
     "concrète de marchandise, je ne peux pas proposer de position tarifaire. "
-    "Toute proposition reste indicative et doit être validée par l’autorité douanière."
+    "Toute proposition reste indicative et doit être validée avant toute utilisation officielle."
 )
 _META_MORE_HINT_COMPACT = (
     "\n\nPour afficher toute la fiche Mosam (rôle, fonctionnement, règles, équipe), écrivez par exemple : "
@@ -1027,7 +1027,7 @@ def search_faiss_index(query, index, k=5):
 def use_llm(prompt_text):
     try:
         system_instruction = (
-            "Tu es Mosam, un assistant douanier pour la classification tarifaire TEC/SH CEDEAO. "
+            "Tu es Mosam, un assistant logiciel pour la classification tarifaire TEC/SH CEDEAO. "
             "Règles générales d'interprétation (RGI): "
             "RGI 1: Les titres des sections, chapitres et sous-chapitres n'ont qu'une valeur indicative. "
             "RGI 2: Marchandises incomplètes ou non finies classées comme complètes. "
@@ -1052,14 +1052,14 @@ def use_llm(prompt_text):
             "3) Pour un mélange (ex: mix de fruits secs), propose une seule ligne avec le code du mélange; les codes possibles par ingrédient peuvent figurer dans la justification uniquement, pas comme lignes séparées. "
             "4) En cas d'informations contradictoires (ex: étiquette « alcoolisée » mais teneur 0 %), privilégie les critères objectifs (teneur en alcool, composition) et propose une seule ligne recommandée; mentionne les alternatives dans le narrative ou la justification, pas comme lignes à valider. "
             "5) Si la description est vague ou peut correspondre à plusieurs types de produits (ex: « appareil électronique portable avec écran et batterie »), signale-le dans le narrative, baisse la confiance ou demande des précisions, et ne propose qu'une seule hypothèse en indiquant clairement qu'elle est indicative. "
-            "6) Ne prétends jamais que la classification est officielle ou définitive. Dans le narrative, rappelle que la proposition doit être vérifiée par l'autorité douanière. "
+            "6) Ne prétends jamais que la classification est officielle ou définitive. Dans le narrative, rappelle que la proposition doit être validée avant toute utilisation officielle. "
             "7) Si l'entrée décrit un conditionnement/lot (ex: « 2 packs de 12 bouteilles d'eau », « 3 cartons de 10 téléphones »), classe la marchandise contenue (bouteilles d'eau, téléphones), pas le conditionnement. "
             "8) N'ajoute jamais de lignes pour des termes non-marchandise ou méta-informations isolées (ex: « Qte », « Valeur », « Origine », nombres seuls, pays seuls). Si une entrée est non classifiable, n'invente pas de code précis: garde un code non renseigné et une confiance très basse. "
             "9) Pour des variantes proches (singulier/pluriel, accents, alias simples), privilégie l'interprétation métier la plus naturelle et évite de multiplier des lignes quasi identiques inutilement. "
             "10) Si la demande porte sur Mosam (identité, aide, rôle, fonctionnement, règles d'utilisation, origine du projet, etc.) et non sur une marchandise, réponds brièvement dans narrative et mets classifications exactement à []. N'invente pas de lignes produit à partir du contexte documentaire. Si tu ne connais pas un fait (ex. auteur du logiciel), dis-le clairement. "
             "Abréviations: D.D. = droits de douane, R.S. = régime statistique, U.S. = unité de mesure. "
             "Retourne exclusivement un objet JSON (aucun texte hors JSON) de la forme: "
-            "{\"narrative\":\"texte pour le douanier (avec rappel: proposition indicative, à faire valider par l'autorité douanière)\",\"classifications\":[{"
+            "{\"narrative\":\"texte pour l'utilisateur (avec rappel: proposition indicative, à faire valider avant toute utilisation officielle)\",\"classifications\":[{"
             "\"description\":\"Résumé de la marchandise\",\"hs_code\":\"8517.13.00.00\","
             "\"section\":\"XVI\",\"section_name\":\"Machines et appareils; matériel électrique\","
             "\"chapter\":\"85\",\"chapter_name\":\"Machines, appareils et matériel électrique\","
@@ -1227,10 +1227,10 @@ def process_user_input(
 
     combined_context = "\n\n".join(prompt_sections)
     enriched_prompt = (
-        "Le douanier peut avoir fourni plusieurs marchandises. "
+        "L'utilisateur peut avoir fourni plusieurs marchandises. "
         "Analyse chaque bloc ci-dessous et produis une réponse structurée avec, pour chaque marchandise, "
         "la position tarifaire, le taux d'imposition et les détails pertinents.\n\n"
-        f"{combined_context}\n\nDemande initiale du douanier:\n{user_input}"
+        f"{combined_context}\n\nDemande initiale de l'utilisateur:\n{user_input}"
     )
     logger.debug("start the send of the question")
     response = use_llm(enriched_prompt)

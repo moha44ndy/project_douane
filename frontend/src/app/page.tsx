@@ -9,6 +9,9 @@ import { supabase } from "../lib/supabaseClient";
 import { log } from "../lib/logger";
 import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
 
+const INDICATIVE_DISCLAIMER =
+  "Proposition indicative, à faire valider avant toute utilisation officielle.";
+
 type ClassificationItem = {
   description?: string;
   quantity?: number;
@@ -126,25 +129,28 @@ function tryParseStructuredPayload(rawText: string): ApiPayload | null {
 }
 
 /** Retire l'avertissement legal en tete ou en fin de narrative (deja affiche dans l'encart UI). */
-function trimDouaneDisclaimerFromNarrative(n: string): string {
-  let t = trimRedundantDouaneDisclaimerFromNarrative(n.trim());
+function trimIndicativeDisclaimerFromNarrative(n: string): string {
+  let t = trimRedundantIndicativeDisclaimerFromNarrative(n.trim());
   t = t
     .replace(
-      /^proposition\s+indicative\s*,?\s*[àa]\s+faire\s+valider\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*/iu,
+      /^proposition\s+indicative\s*,?\s*(?:[àa]\s+faire\s+valider\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re|[àa]\s+faire\s+valider\s+avant\s+toute\s+utilisation\s+officielle)\.?\s*/iu,
       ""
     )
     .trim();
-  return trimRedundantDouaneDisclaimerFromNarrative(t);
+  return trimRedundantIndicativeDisclaimerFromNarrative(t);
 }
 
 /** Retire les phrases légales en fin de narrative déjà couvertes par la 1re ligne du copier-coller. */
-function trimRedundantDouaneDisclaimerFromNarrative(n: string): string {
+function trimRedundantIndicativeDisclaimerFromNarrative(n: string): string {
   let t = n.trim();
   const patterns: RegExp[] = [
     /\s+[.;]?\s*[àa]\s+valider\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
     /\s+proposition\s+indicative\s*,?\s*[àa]\s+faire\s+valider\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
     /\s+doit\s+être\s+validée?\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
     /\s+doit\s+etre\s+validee?\s+par\s+l[''\u2019]?autorit[ée]e?\s+douani[èe]re\.?\s*$/iu,
+    /\s+proposition\s+indicative\s*,?\s*[àa]\s+faire\s+valider\s+avant\s+toute\s+utilisation\s+officielle\.?\s*$/iu,
+    /\s+doit\s+être\s+validée?\s+avant\s+toute\s+utilisation\s+officielle\.?\s*$/iu,
+    /\s+doit\s+etre\s+validee?\s+avant\s+toute\s+utilisation\s+officielle\.?\s*$/iu,
   ];
   let prev = "";
   while (prev !== t) {
@@ -170,8 +176,6 @@ function polishFrenchForClipboard(s: string): string {
     [/\bmecaniques\b/gi, "mécaniques"],
     [/\bmecanique\b/gi, "mécanique"],
     [/\bautorite\b/gi, "autorité"],
-    [/\bdouaniere\b/gi, "douanière"],
-    [/\bdouanier\b/gi, "douanier"],
     [/\bbasee\b/gi, "basée"],
     [/\bbasees\b/gi, "basées"],
     [/\bvalidee\b/gi, "validée"],
@@ -232,7 +236,7 @@ function formatPayloadForClipboard(
 ): string {
   const lines: string[] = [];
   const narrativeClean = payload.narrative?.trim()
-    ? trimRedundantDouaneDisclaimerFromNarrative(payload.narrative.trim())
+    ? trimRedundantIndicativeDisclaimerFromNarrative(payload.narrative.trim())
     : "";
 
   const isAssistant = Boolean(payload.assistant_info);
@@ -240,7 +244,7 @@ function formatPayloadForClipboard(
 
   if (!isAssistant && !narrativeStartsWithDisclaimer) {
     lines.push(
-      "Proposition indicative, à faire valider par l'autorité douanière."
+      INDICATIVE_DISCLAIMER
     );
     lines.push("");
   }
@@ -862,8 +866,7 @@ export default function HomePage() {
             Mosam – Classification Tarifaire CEDEAO
           </h1>
           <p className="mosam-hero-subtitle">
-            Assistant IA pour la classification douanière TEC/SH 2022 – Côte
-            d&apos;Ivoire.
+            Assistant IA de classification tarifaire Mosam (TEC/SH 2022).
           </p>
         </div>
         <div className="mosam-header-actions">
@@ -881,7 +884,7 @@ export default function HomePage() {
           </button>
           <div className="mosam-header-actions-primary">
             <div className="mosam-hero-meta">
-              Direction Générale des Douanes
+              Industrie Mosam
             </div>
             <div className="mosam-hero-stats">
               21 sections · 97 chapitres · 5000+ codes
@@ -1090,7 +1093,7 @@ export default function HomePage() {
           </div>
           {!isAssistantInfo && (
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-              Proposition indicative, à faire valider par l&apos;autorité douanière.
+              {INDICATIVE_DISCLAIMER}
             </p>
           )}
           {fileItemsCount !== null && (
@@ -1123,7 +1126,7 @@ export default function HomePage() {
               </div>
             ) : (
               <p className="text-sm text-foreground leading-relaxed whitespace-pre-line">
-                {trimDouaneDisclaimerFromNarrative(payload.narrative.trim())}
+                {trimIndicativeDisclaimerFromNarrative(payload.narrative.trim())}
               </p>
             ))}
 

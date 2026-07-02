@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Mosam - Classification CEDEAO",
-  description: "Assistant de classification tarifaire CEDEAO",
+  description: "Assistant de classification tarifaire Mosam",
 };
 
 export const viewport: Viewport = {

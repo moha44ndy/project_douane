@@ -74,14 +74,14 @@ function LoginForm() {
       <div className="w-full max-w-lg rounded-3xl bg-card border border-border shadow-xl overflow-hidden">
         <div className="bg-primary text-primary-foreground px-8 py-6">
           <p className="text-xs uppercase tracking-[0.15em] opacity-80">
-            Mosam · Direction Générale des Douanes
+            Mosam · Classification tarifaire CEDEAO
           </p>
           <h1 className="mt-2 text-2xl font-semibold">
-            Connexion à l&apos;espace douanier
+            Connexion à votre espace Mosam
           </h1>
           <p className="mt-1 text-sm text-primary-foreground/80 max-w-md">
             Authentifiez-vous pour accéder à l&apos;assistant de classification
-            tarifaire CEDEAO.
+            tarifaire Mosam.
           </p>
         </div>
 
@@ -96,7 +96,7 @@ function LoginForm() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/70"
-                placeholder="prenom.nom@douane.ci"
+                placeholder="prenom.nom@exemple.com"
                 required
               />
             </div>
@@ -129,7 +129,7 @@ function LoginForm() {
           </form>
 
           <p className="text-[11px] text-muted-foreground text-center">
-            Accès réservé aux agents habilités de la douane ivoirienne.
+            Accès réservé aux utilisateurs habilités.
           </p>
         </div>
       </div>

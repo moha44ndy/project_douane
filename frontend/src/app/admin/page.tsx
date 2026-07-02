@@ -537,7 +537,7 @@ export default function AdminPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm"
-                placeholder="jean.dupont@douane.ci"
+                placeholder="jean.dupont@exemple.com"
               />
             </div>
             <div className="flex items-center gap-2 text-sm">
@@ -612,7 +612,7 @@ export default function AdminPage() {
                   value={editEmail}
                   onChange={(e) => setEditEmail(e.target.value)}
                   title="Email"
-                  placeholder="prenom.nom@douane.ci"
+                  placeholder="prenom.nom@exemple.com"
                   className="w-full rounded-2xl border border-border bg-background px-3 py-2 text-sm"
                 />
               </div>

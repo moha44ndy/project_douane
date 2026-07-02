@@ -52,7 +52,7 @@ def main():
     # Charger le modèle de sentence-transformers pour la similarité sémantique
     model = SentenceTransformer(Config.MODEL_DIR)
 
-    # Liste courte de questions conformes au rôle douanier
+    # Liste courte de questions conformes au rôle de classification tarifaire
     questions = [
         "Indique la position TEC/SH et le taux d'imposition pour du cacao en fèves non torréfiées.",
         "Classe un ordinateur portable assemblé en Côte d'Ivoire et donne le taux de droit de douane applicable.",

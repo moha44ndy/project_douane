@@ -138,13 +138,13 @@ def search_faiss_index(query, emb, index, k=5):
 def use_llm(api_url, token, model_id, prompt_text):
     try:
         system_instruction = (
-            "Tu es Mosam, un assistant douanier spécialisé dans la classification tarifaire "
+            "Tu es Mosam, un assistant logiciel spécialisé dans la classification tarifaire "
             "de la CEDEAO. Tu aides les équipes à appliquer les Règles Générales "
             "d'Interprétation (RGI), à identifier les positions du Système Harmonisé et à "
             "fournir des explications juridiques fiables. Réponds uniquement si "
             "l'information figure explicitement dans les documents fournis ou dans ta base "
             "interne. Ne divulgue jamais la provenance des documents, rappelle le périmètre "
-            "douanier quand une question en sort, reste concis et clair, et détecte "
+            "utilisateur quand une question en sort, reste concis et clair, et détecte "
             "automatiquement la langue du dernier message utilisateur pour y répondre. "
             "Pour chaque marchandise, donne la position tarifaire TEC/SH, le ou les taux "
             "d'imposition applicables (droits, TVA, autres taxes si disponibles) et une "
@@ -159,14 +159,14 @@ def use_llm(api_url, token, model_id, prompt_text):
             "Chaque fois que tu mentionnes ces sigles, écris la définition entre parenthèses, "
             "par exemple \"R.S. (régime/statistique)\". "
             "Retourne exclusivement un objet JSON unique (aucun texte hors JSON) de la forme "
-            "{\"narrative\":\"texte pour le douanier\",\"classifications\":[{\"description\":\"...\","
+            "{\"narrative\":\"texte pour l'utilisateur\",\"classifications\":[{\"description\":\"...\","
             "\"hs_code\":\"8517.13.00.00\",\"section\":\"XVI\",\"chapter\":\"85\",\"dd_rate\":\"5 %\","
             "\"rs_rate\":\"1 %\",\"us_unit\":\"PIÈCE\",\"other_taxes\":\"TVA 18 %\","
             "\"justification\":\"...\",\"excerpt\":\"...\",\"origin\":\"USA\",\"value\":\"Non renseigné\","
             "\"confidence\":90}]}. "
             "Renseigne tous ces champs (utilise \"Non renseigné\" si besoin) et assure-toi que \"chapter\" comporte deux chiffres "
             "et que \"confidence\" est un nombre entre 0 et 100. Le champ \"description\" doit correspondre au nom exact "
-            "du produit classé tel que soumis par le douanier (ou une reformulation concise utilisable telle quelle dans un tableau)."
+            "du produit classé tel que soumis par l'utilisateur (ou une reformulation concise utilisable telle quelle dans un tableau)."
         )
         payload = {
             "modelId": model_id,
@@ -240,10 +240,10 @@ def process_user_input(user_input, chunks, emb, index, token):
 
     combined_context = "\n\n".join(prompt_sections)
     enriched_prompt = (
-        "Le douanier peut avoir fourni plusieurs marchandises. "
+        "L'utilisateur peut avoir fourni plusieurs marchandises. "
         "Analyse chaque bloc ci-dessous et produis une réponse structurée avec, pour chaque marchandise, "
         "la position tarifaire, le taux d'imposition et les détails pertinents.\n\n"
-        f"{combined_context}\n\nDemande initiale du douanier:\n{user_input}"
+        f"{combined_context}\n\nDemande initiale de l'utilisateur:\n{user_input}"
     )
     print("start the send of the question")
     response = use_llm(API_URL, token, MODEL_ID, enriched_prompt)
