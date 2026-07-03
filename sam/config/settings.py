@@ -51,3 +51,18 @@ class Config:
         "MOSAM_PRODUCT_IDENTIFICATION_ENABLED", "true"
     ).strip().lower() in ("1", "true", "yes", "on")
 
+    # Recherche internet OpenAI (Responses API + outil web_search) pour l'identification.
+    MOSAM_WEB_SEARCH_ENABLED = os.getenv(
+        "MOSAM_WEB_SEARCH_ENABLED", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    MOSAM_WEB_SEARCH_MODEL = os.getenv("MOSAM_WEB_SEARCH_MODEL", "").strip() or None
+    MOSAM_WEB_SEARCH_CONTEXT_SIZE = os.getenv(
+        "MOSAM_WEB_SEARCH_CONTEXT_SIZE", "medium"
+    ).strip().lower()
+    try:
+        MOSAM_WEB_SEARCH_TIMEOUT_SECONDS = int(
+            os.getenv("MOSAM_WEB_SEARCH_TIMEOUT_SECONDS", "90")
+        )
+    except ValueError:
+        MOSAM_WEB_SEARCH_TIMEOUT_SECONDS = 90
+

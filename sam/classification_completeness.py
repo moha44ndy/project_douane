@@ -16,6 +16,7 @@ from .tariff_subposition import (
     preview_missing_discriminating_criteria,
 )
 from .classification_source import build_effective_classification_source
+from .product_identification import looks_like_structured_dossier
 
 _EXTERIOR_SURFACE_KEYWORDS = (
     "surface exterieure",
@@ -41,6 +42,80 @@ _MATERIAL_SHARE_RE = re.compile(
 def _normalize(text: str) -> str:
     normalized = unicodedata.normalize("NFD", text.lower())
     return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
+_COMMERCIAL_VALUE_HINT = re.compile(
+    r"\b(?:valeur|prix|usd|dollars?|eur|euros?|fcfa|xof|xaf|gbp|chf|cny|jpy|mad|ngn|ghs)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_commercial_field_unset(value: Any) -> bool:
+    normalized = _normalize(str(value or "").strip())
+    return not normalized or "non renseign" in normalized
+
+
+def extract_commercial_fields_from_source(source_text: str) -> dict[str, str]:
+    """Extrait origine et valeur depuis une fiche structuree ou une ligne inline."""
+    result = {"origin": "", "value": ""}
+    text = (source_text or "").replace("\r", "\n").strip()
+    if not text:
+        return result
+
+    current: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        norm = _normalize(line)
+        if norm.startswith("origine") and ":" in line:
+            current = "origin"
+            inline = line.split(":", 1)[1].strip()
+            if inline:
+                result["origin"] = inline
+                current = None
+            continue
+        if norm.startswith("valeur") and ":" in line:
+            current = "value"
+            inline = line.split(":", 1)[1].strip()
+            if inline:
+                result["value"] = inline
+                current = None
+            continue
+        if current == "origin":
+            result["origin"] = line
+            current = None
+        elif current == "value":
+            result["value"] = line
+            current = None
+
+    if not result["origin"]:
+        match = re.search(
+            r"(?i)\b(?:origine|provenant\s+de|pays\s+d['\u2019]?origine)\s*[:=]?\s*([^,\n;|]+)",
+            text,
+        )
+        if match:
+            result["origin"] = match.group(1).strip()
+    if not result["value"]:
+        match = re.search(
+            r"(?i)\b(?:valeur|prix|montant)\s*[:=]?\s*([\d\s.,]+(?:\s*(?:usd|eur|euros?|fcfa|xof|xaf|gbp|chf))?)",
+            text,
+        )
+        if match:
+            result["value"] = match.group(1).strip()
+    return result
+
+
+def backfill_commercial_fields_from_source(item: dict[str, Any], source_text: str | None = None) -> None:
+    """Reinjecte origine/valeur saisies par l'utilisateur si le LLM renvoie « Non renseigne »."""
+    source = (source_text or item.get("source_query") or item.get("description") or "").strip()
+    if not source:
+        return
+    fields = extract_commercial_fields_from_source(source)
+    if _is_commercial_field_unset(item.get("origin")) and fields.get("origin"):
+        item["origin"] = fields["origin"]
+    if _is_commercial_field_unset(item.get("value")) and fields.get("value"):
+        item["value"] = fields["value"]
 
 
 def _has_definitive_exterior_surface(text: str) -> bool:
@@ -208,9 +283,7 @@ def analyze_classification_completeness(
         _significant_materials(source_block or combined)
     )
     has_origin = "origine" in (source_norm or norm) or "provenant" in (source_norm or norm)
-    has_value = bool(
-        re.search(r"\b(?:valeur|prix|usd|dollars?|eur|fcfa)\b", source_norm or norm)
-    )
+    has_value = bool(_COMMERCIAL_VALUE_HINT.search(source_norm or norm))
     has_exterior = _has_definitive_exterior_surface(effective_source or source_block)
     has_revetement = any(
         token in (source_norm or norm)
@@ -478,13 +551,20 @@ def _extract_product_name_from_source(source_text: str) -> str:
 
 
 def _resolve_product_label(item: dict[str, Any]) -> str:
-    for candidate in (
-        item.get("product_name"),
-        _extract_product_name_from_source(str(item.get("source_query") or "")),
-        _extract_product_name_from_source(str(item.get("description") or "")),
-        _truncate_product_label(str(item.get("description") or "")),
-        item.get("classification_analysis", {}).get("product_identified"),
-    ):
+    source_query = str(item.get("source_query") or "")
+    candidates: list[Any] = []
+    if looks_like_structured_dossier(source_query):
+        candidates.append(_extract_product_name_from_source(source_query))
+    candidates.extend(
+        [
+            item.get("product_name"),
+            _extract_product_name_from_source(source_query),
+            _extract_product_name_from_source(str(item.get("description") or "")),
+            _truncate_product_label(str(item.get("description") or "")),
+            item.get("classification_analysis", {}).get("product_identified"),
+        ]
+    )
+    for candidate in candidates:
         short = _truncate_product_label(str(candidate or ""))
         if short and short.lower() not in {"non precise", "l'article"}:
             return short
@@ -562,6 +642,11 @@ def _sanitize_provisional_item_text(
         item["product_name"] = _extract_product_name_from_source(source_block) or _truncate_product_label(
             rebuilt.split(" — ", 1)[0]
         )
+    elif looks_like_structured_dossier(source_block):
+        product = _extract_product_name_from_source(source_block)
+        if product:
+            item["product_name"] = product
+            item["description"] = product
     else:
         description = str(item.get("description") or "")
         if description and (
@@ -575,9 +660,39 @@ def _sanitize_provisional_item_text(
     item["justification"] = justification
 
 
+def apply_early_subposition_gate(item: dict[str, Any], source_text: str | None = None) -> None:
+    """
+    Première passe TEC avant les RGI : le code renvoyé par le LLM n'est qu'une hypothèse.
+    Tronque au dernier niveau justifiable si la sous-position n'est pas confirmable.
+    """
+    source = (source_text or item.get("source_query") or item.get("description") or "").strip()
+    hs = str(item.get("hs_code") or "").strip()
+    if not hs or not source:
+        return
+
+    from .tariff_subposition import apply_subposition_resolution
+
+    if _hs_digit_count(hs) > 4:
+        item.setdefault("hs_code_suggested", hs)
+
+    apply_subposition_resolution(item, source_text=source)
+
+    resolution = item.get("subposition_resolution")
+    if isinstance(resolution, dict) and resolution.get("status") != "confirmed":
+        item["classification_status"] = "provisoire"
+        cap = resolution.get("confidence_cap")
+        if isinstance(cap, (int, float)):
+            try:
+                current = int(round(float(item.get("confidence") or 90)))
+            except (TypeError, ValueError):
+                current = 90
+            item["confidence"] = min(current, int(cap))
+
+
 def apply_completeness_adjustments(item: dict[str, Any], source_text: str | None = None) -> None:
     """Enrichit la classification et ajuste confiance/statut si informations critiques manquent."""
     source = (source_text or item.get("source_query") or item.get("description") or "").strip()
+    backfill_commercial_fields_from_source(item, source)
     original_hs = _prepare_item_for_criteria_reevaluation(item, source)
     analysis = analyze_classification_completeness(source_text=source, item=item)
     item["completeness_checklist"] = analysis["checklist"]

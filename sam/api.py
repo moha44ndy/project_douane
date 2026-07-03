@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from fastapi import FastAPI, HTTPException, Response, Header, Request, Depends
 from fastapi import UploadFile, File
@@ -28,6 +28,7 @@ import requests
 import io
 import csv
 import re
+import queue
 import unicodedata
 from difflib import SequenceMatcher
 from pypdf import PdfReader
@@ -74,6 +75,8 @@ from .rag import (
 )
 from .config.settings import Config
 from .product_identification import product_identification_enabled
+from .openai_web_search import openai_web_search_enabled
+from .classification_progress import ClassificationProgressReporter, sse_event, sse_init_event
 from .app_logger import get_logger
 
 logger = get_logger(__name__)
@@ -377,7 +380,11 @@ def _normalize_section_chapter_from_hs(hs_code: str | None) -> dict[str, str]:
     }
 
 
-def _normalize_classifications_response(raw_text: str) -> str:
+def _normalize_classifications_response(
+    raw_text: str,
+    progress: ClassificationProgressReporter | None = None,
+    product_identifications: list[dict[str, Any]] | None = None,
+) -> str:
     """
     Parse la réponse JSON du LLM, corrige section/chapitre à partir du code SH pour chaque
     classification, puis resérialise. Limite le nombre de lignes pour éviter les décompositions abusives.
@@ -399,6 +406,11 @@ def _normalize_classifications_response(raw_text: str) -> str:
     classifications = data.get("classifications")
     if not isinstance(classifications, list):
         return raw_text
+
+    from .candidate_set_enforcer import attach_candidates_to_classifications
+
+    attach_candidates_to_classifications(classifications, product_identifications)
+
     for item in classifications:
         if not isinstance(item, dict):
             continue
@@ -466,7 +478,20 @@ def _normalize_classifications_response(raw_text: str) -> str:
                 item[k] = _strip_accents_ascii(item[k])
 
     data["classifications"] = _filter_phantom_classifications(classifications)
+    if progress:
+        progress.start("subposition")
+    for item in data["classifications"]:
+        if isinstance(item, dict):
+            source = item.get("source_query") or item.get("description")
+            from .classification_completeness import apply_early_subposition_gate
+
+            apply_early_subposition_gate(item, source_text=source)
+    if progress:
+        progress.complete("subposition")
+        progress.start("rgi")
     data = apply_rgi_pipeline_to_response(data)
+    if progress:
+        progress.complete("rgi")
     for item in data["classifications"]:
         if isinstance(item, dict):
             source = item.get("source_query") or item.get("description")
@@ -490,13 +515,22 @@ def _normalize_classifications_response(raw_text: str) -> str:
                     heading = get_position_heading(str(hs))
                     if heading:
                         item["position_label"] = heading
+    if progress:
+        progress.start("duties")
+    for item in data["classifications"]:
+        if isinstance(item, dict):
             enrich_item_tariff_rates(item)
+    if progress:
+        progress.complete("duties")
+        progress.start("report")
     if isinstance(data.get("narrative"), str) and data.get("narrative"):
         data["narrative"] = sanitize_provisional_narrative(
             data["narrative"],
             [item for item in data["classifications"] if isinstance(item, dict)],
         )
     enrich_classifications_with_risk(data["classifications"])
+    if progress:
+        progress.complete("report")
 
     return json.dumps(data, ensure_ascii=False)
 
@@ -732,16 +766,37 @@ def _attach_product_identification(
         entry = product_identifications[index]
         if isinstance(entry, dict) and not entry.get("skipped"):
             item["product_identification"] = entry
+            web_sources = entry.get("web_sources") or []
+            if isinstance(web_sources, list) and web_sources:
+                item["web_sources"] = web_sources
+            web_search_queries = entry.get("web_search_queries") or []
+            if isinstance(web_search_queries, list) and web_search_queries:
+                item["web_search_queries"] = web_search_queries
+            if entry.get("web_search_used"):
+                item["web_search_used"] = True
+            candidates = entry.get("tec_position_candidates")
+            if isinstance(candidates, list) and candidates:
+                item["tec_position_candidates"] = candidates
             enriched = str(entry.get("enriched_description") or "").strip()
-            if enriched:
+            existing = str(item.get("source_query") or "").strip()
+            if enriched and not (
+                _is_structured_product_dossier_text(existing)
+                or re.search(r"(?i)\borigine\s*:", existing)
+                or re.search(r"(?i)\bvaleur\s*:", existing)
+            ):
                 item["source_query"] = enriched
 
 
 def _finalize_classification_response(
     raw_text: str,
     product_identifications: list[dict[str, Any]] | None = None,
+    progress: ClassificationProgressReporter | None = None,
 ) -> str:
-    normalized = _normalize_classifications_response(raw_text)
+    normalized = _normalize_classifications_response(
+        raw_text,
+        progress=progress,
+        product_identifications=product_identifications,
+    )
     if not product_identifications:
         return normalized
     try:
@@ -1686,6 +1741,8 @@ def startup_event() -> None:
     logger.info("%s positions sensibles a la surface exterieure (TEC)", len(surface_sensitive_positions))
     if product_identification_enabled():
         logger.info("Agent d'identification produit active (OpenAI)")
+        if openai_web_search_enabled():
+            logger.info("Recherche internet OpenAI active (Responses API web_search)")
     else:
         logger.info("Agent d'identification produit desactive")
     # Index FAISS dedie aux classifications validées (apprentissage par exemples).
@@ -1825,7 +1882,13 @@ def _filter_candidate_lines(lines: list[str], max_items: int) -> list[str]:
         "quantites",
         "valeur",
         "origine",
+        "devise",
     }
+    section_header_re = re.compile(
+        r"^(?:produit|marchandise|article|designation|composition|caracteristique|"
+        r"specification|usage|capacite|quantite|origine|valeur|devise)\s*:?\s*$",
+        re.IGNORECASE,
+    )
     for line in lines:
         line = _clean_text_line(line)
         if not line:
@@ -1834,6 +1897,10 @@ def _filter_candidate_lines(lines: list[str], max_items: int) -> list[str]:
             continue
         line_norm = unicodedata.normalize("NFKD", line).encode("ascii", "ignore").decode("ascii").lower()
         line_norm = re.sub(r"\s+", " ", line_norm).strip()
+        if section_header_re.match(line_norm):
+            continue
+        if re.fullmatch(r"\d+\s+(?:pce|pcs|pc|u|unite|kg|g|l|ml|m2|m3|eur|usd|xof|fcfa|gbp|chf)\b", line_norm):
+            continue
         # Ignore les lignes purement numériques (prix/quantité isolés)
         if re.fullmatch(r"[\d\s,.\-/%]+", line_norm):
             continue
@@ -1872,7 +1939,17 @@ _META_QUESTION_LINE = re.compile(
     r"(?:code\s*sh|position\s*tarifaire|classif|quel\s+est\s+le\s+code)",
     re.IGNORECASE | re.UNICODE,
 )
-_DOSSIER_SECTION_KEYWORDS = ("composition", "caracteristique", "specification", "usage", "capacite")
+_DOSSIER_SECTION_KEYWORDS = (
+    "composition",
+    "caracteristique",
+    "specification",
+    "usage",
+    "capacite",
+    "quantite",
+    "origine",
+    "valeur",
+    "devise",
+)
 _COMMERCIAL_METADATA_ONLY = re.compile(
     r"^(?:"
     r"(?:provenant\s+de|origine)\s+(?:la\s+|le\s+|l')?[\w\s'-]+"
@@ -2953,8 +3030,23 @@ def _is_noise_item_text(text: str) -> bool:
         "quantites",
         "valeur",
         "origine",
+        "devise",
+        "pce",
+        "pcs",
+        "pc",
+        "u",
+        "unite",
+        "eur",
+        "usd",
+        "xof",
+        "fcfa",
+        "gbp",
+        "chf",
     }
     if t in generic:
+        return True
+
+    if re.fullmatch(r"[a-z]{3}", t) and t in {"eur", "usd", "xof", "gbp", "chf", "cny", "jpy", "cad"}:
         return True
 
     if is_ui_boilerplate_line(text):
@@ -2982,6 +3074,36 @@ def _is_noise_item_text(text: str) -> bool:
     return False
 
 
+def _extract_structured_dossier_quantity(dossier: str) -> tuple[int, str, str, int]:
+    """Extrait la quantite d'une fiche Produit structuree (section « Quantite : »)."""
+    qty = 1
+    raw_qty = ""
+    in_section = False
+    for raw_line in (dossier or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.match(r"(?i)^quantit[eé]\s*:", line):
+            in_section = True
+            inline = line.split(":", 1)[1].strip() if ":" in line else ""
+            if inline:
+                match = re.match(r"(?i)^(\d+)\s*(\S+)?", inline)
+                if match:
+                    qty = max(1, int(match.group(1)))
+                    raw_qty = inline
+                in_section = False
+            continue
+        if in_section:
+            match = re.match(r"(?i)^(\d+)\s*(\S+)?", line)
+            if match:
+                qty = max(1, int(match.group(1)))
+                raw_qty = line
+            in_section = False
+    if not raw_qty and qty > 1:
+        raw_qty = str(qty)
+    return qty, raw_qty, "explicit", 95
+
+
 def _aggregate_items_with_quantities(
     items: list[str], max_items: int
 ) -> tuple[list[str], dict[str, int], int, dict[str, dict[str, Any]]]:
@@ -2999,11 +3121,48 @@ def _aggregate_items_with_quantities(
     item_meta: dict[str, dict[str, Any]] = {}
 
     for raw_item in items:
-        # Fiche produit structuree : ne pas decouper sur « et » (origine/valeur).
+        # Fiche produit structuree : conserver le dossier complet (origine, valeur, etc.).
         if _is_structured_product_dossier_text(raw_item):
-            sub_items = [raw_item]
-        else:
-            sub_items = _split_multi_article_entry(raw_item)
+            dossier_text = raw_item.strip()
+            qty, raw_qty, source, qty_conf = _extract_structured_dossier_quantity(dossier_text)
+            norm_key = _normalize_item_key(dossier_text)
+            if not norm_key:
+                continue
+            display_text = dossier_text
+            if norm_key not in key_to_display:
+                key_to_display[norm_key] = display_text
+            display_text = key_to_display[norm_key]
+            item_counts[display_text] = int(item_counts.get(display_text, 0)) + int(qty)
+            meta = item_meta.get(display_text) or {
+                "line_count": 0,
+                "explicit_count": 0,
+                "implicit_count": 0,
+                "range_upper_count": 0,
+                "word_number_count": 0,
+                "lot_count": 0,
+                "quantity_raw_samples": [],
+                "confidence_weighted_sum": 0.0,
+                "confidence_weight_sum": 0,
+            }
+            meta["line_count"] += 1
+            if source == "explicit":
+                meta["explicit_count"] += 1
+            elif source == "implicit":
+                meta["implicit_count"] += 1
+            elif source == "range_upper":
+                meta["range_upper_count"] += 1
+            elif source == "word_number":
+                meta["word_number_count"] += 1
+            elif source == "lot":
+                meta["lot_count"] += 1
+            if raw_qty and len(meta["quantity_raw_samples"]) < 3:
+                meta["quantity_raw_samples"].append(raw_qty)
+            meta["confidence_weighted_sum"] += float(qty_conf) * int(qty)
+            meta["confidence_weight_sum"] += int(qty)
+            item_meta[display_text] = meta
+            continue
+
+        sub_items = _split_multi_article_entry(raw_item)
         if not sub_items:
             continue
         for sub in sub_items:
@@ -3137,6 +3296,305 @@ def _extract_items_from_pdf(pdf_bytes: bytes, max_items: int, max_chars: int) ->
     return effective_query, items
 
 
+_SUPPORTED_UPLOAD_EXTENSIONS = frozenset(
+    {"txt", "text", "pdf", "csv", "xlsx", "xlsm", "xls", "docx", "doc"}
+)
+
+_UPLOAD_MIME_TO_EXT: dict[str, str] = {
+    "application/pdf": "pdf",
+    "text/plain": "txt",
+    "text/csv": "csv",
+    "application/csv": "csv",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/msword": "doc",
+}
+
+
+def _resolve_upload_extension(filename: str, content_type: str | None) -> str:
+    ext = ""
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[-1].lower()
+    if ext in _SUPPORTED_UPLOAD_EXTENSIONS:
+        return ext
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    return _UPLOAD_MIME_TO_EXT.get(ct, ext)
+
+
+def _cell_to_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _normalize_header_label(label: str) -> str:
+    ascii_norm = unicodedata.normalize("NFKD", label or "").encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_norm.lower()).strip()
+
+
+def _header_matches_alias(header: str, alias: str) -> bool:
+    if not header or not alias:
+        return False
+    if header == alias:
+        return True
+    if len(alias) <= 3:
+        return header == alias
+    return alias in header
+
+
+_TABULAR_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "designation": (
+        "description",
+        "libelle",
+        "designation",
+        "produit",
+        "marchandise",
+        "article",
+        "intitule",
+        "nom",
+        "details",
+    ),
+    "material": ("matiere", "composition", "matiere principale"),
+    "usage": ("usage", "fonction", "utilisation", "emploi"),
+    "characteristics": ("caracteristique", "specification", "spec"),
+    "quantity": ("qte", "quantite", "qty", "quantity", "nombre"),
+    "unit": ("unite", "unite de mesure", "u.s.", "us"),
+    "origin": ("origine", "pays d'origine", "pays origine", "provenance", "pays"),
+    "value": ("valeur", "montant", "prix"),
+    "currency": ("devise", "monnaie", "currency"),
+}
+
+
+def _detect_tabular_columns(header_row: list[str]) -> dict[str, int | None]:
+    norm_headers = [_normalize_header_label(h) for h in header_row]
+    col_map: dict[str, int | None] = {field: None for field in _TABULAR_FIELD_ALIASES}
+    for field, aliases in _TABULAR_FIELD_ALIASES.items():
+        for i, h in enumerate(norm_headers):
+            if not h:
+                continue
+            if any(_header_matches_alias(h, alias) for alias in aliases):
+                col_map[field] = i
+                break
+    return col_map
+
+
+def _tabular_header_detected(header_row: list[str]) -> bool:
+    norm = [_normalize_header_label(c) for c in header_row]
+    hits = 0
+    for h in norm:
+        if not h:
+            continue
+        for aliases in _TABULAR_FIELD_ALIASES.values():
+            if any(_header_matches_alias(h, alias) for alias in aliases):
+                hits += 1
+                break
+    has_designation = any(
+        any(_header_matches_alias(norm[i] or "", alias) for alias in _TABULAR_FIELD_ALIASES["designation"])
+        for i in range(len(norm))
+    )
+    return has_designation or hits >= 2
+
+
+def _build_structured_merchandise_item(
+    designation: str,
+    material: str = "",
+    usage: str = "",
+    characteristics: str = "",
+    quantity: str = "",
+    unit: str = "",
+    origin: str = "",
+    value: str = "",
+    currency: str = "",
+) -> str:
+    designation = _clean_text_line(designation)
+    if not designation:
+        return ""
+    material = _clean_text_line(material)
+    usage = _clean_text_line(usage)
+    characteristics = _clean_text_line(characteristics)
+    quantity = _clean_text_line(quantity)
+    unit = _clean_text_line(unit)
+    origin = _clean_text_line(origin)
+    value = _clean_text_line(value)
+    currency = _clean_text_line(currency)
+    quantity_display = f"{quantity} {unit}".strip() if quantity or unit else ""
+    if not any((material, usage, characteristics, quantity_display, origin, value, currency)):
+        return designation
+    lines = [f"Produit : {designation}"]
+    if material:
+        lines.append(f"Composition :\n- {material}")
+    if usage:
+        lines.append(f"Usage :\n{usage}")
+    if characteristics:
+        lines.append(f"Caractéristiques :\n- {characteristics}")
+    if quantity_display:
+        lines.append(f"Quantité :\n{quantity_display}")
+    if origin:
+        lines.append(f"Origine :\n{origin}")
+    if value:
+        value_line = f"{value} {currency}".strip() if currency else value
+        lines.append(f"Valeur :\n{value_line}")
+    elif currency:
+        lines.append(f"Devise :\n{currency}")
+    return "\n".join(lines)
+
+
+def _item_text_from_tabular_row(
+    row: list[str],
+    col_map: dict[str, int | None] | None,
+) -> str | None:
+    non_empty = [c for c in row if c.strip()]
+    if not non_empty:
+        return None
+
+    def cell_at(field: str) -> str:
+        if not col_map:
+            return ""
+        idx = col_map.get(field)
+        if idx is None or idx >= len(row):
+            return ""
+        return row[idx].strip()
+
+    if col_map:
+        designation = cell_at("designation") or next((c for c in row if c.strip()), "")
+        material = cell_at("material")
+        usage = cell_at("usage")
+        characteristics = cell_at("characteristics")
+        quantity = cell_at("quantity")
+        unit = cell_at("unit")
+        origin = cell_at("origin")
+        value = cell_at("value")
+        currency = cell_at("currency")
+    else:
+        designation = non_empty[0]
+        material = row[1].strip() if len(row) > 1 else ""
+        usage = row[2].strip() if len(row) > 2 else ""
+        characteristics = row[3].strip() if len(row) > 3 else ""
+        quantity = row[4].strip() if len(row) > 4 else ""
+        unit = row[5].strip() if len(row) > 5 else ""
+        origin = row[6].strip() if len(row) > 6 else ""
+        value = row[7].strip() if len(row) > 7 else ""
+        currency = row[8].strip() if len(row) > 8 else ""
+
+    item = _build_structured_merchandise_item(
+        designation,
+        material,
+        usage,
+        characteristics,
+        quantity,
+        unit,
+        origin,
+        value,
+        currency,
+    )
+    return item or None
+
+
+def _extract_items_from_tabular_rows(
+    rows: list[list[Any]],
+    max_items: int,
+) -> tuple[str, list[str]]:
+    str_rows: list[list[str]] = []
+    for row in rows:
+        cells = [_clean_text_line(_cell_to_str(c)) for c in row]
+        if any(cells):
+            str_rows.append(cells)
+    if not str_rows:
+        return "", []
+
+    first = str_rows[0]
+    header_detected = _tabular_header_detected(first)
+    col_map = _detect_tabular_columns(first) if header_detected else None
+    data_rows = str_rows[1:] if header_detected else str_rows
+
+    items: list[str] = []
+    for row in data_rows:
+        item = _item_text_from_tabular_row(row, col_map)
+        if item:
+            items.append(item[:1200])
+        if len(items) >= max_items:
+            break
+
+    effective_query = "\n".join([f"- {it}" for it in items]) if items else ""
+    return effective_query, items
+
+
+def _extract_items_from_xlsx(xlsx_bytes: bytes, max_items: int) -> tuple[str, list[str]]:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+    items: list[str] = []
+    try:
+        for sheet in wb.worksheets:
+            rows: list[list[Any]] = []
+            for row in sheet.iter_rows(values_only=True):
+                rows.append(list(row))
+            if not rows:
+                continue
+            _, sheet_items = _extract_items_from_tabular_rows(rows, max_items - len(items))
+            items.extend(sheet_items)
+            if len(items) >= max_items:
+                break
+    finally:
+        wb.close()
+
+    items = items[:max_items]
+    effective_query = "\n".join([f"- {it}" for it in items]) if items else ""
+    return effective_query, items
+
+
+def _extract_items_from_xls(xls_bytes: bytes, max_items: int) -> tuple[str, list[str]]:
+    import xlrd
+
+    book = xlrd.open_workbook(file_contents=xls_bytes)
+    items: list[str] = []
+    for sheet in book.sheets():
+        rows: list[list[Any]] = []
+        for rx in range(sheet.nrows):
+            rows.append([sheet.cell_value(rx, cx) for cx in range(sheet.ncols)])
+        if not rows:
+            continue
+        _, sheet_items = _extract_items_from_tabular_rows(rows, max_items - len(items))
+        items.extend(sheet_items)
+        if len(items) >= max_items:
+            break
+
+    items = items[:max_items]
+    effective_query = "\n".join([f"- {it}" for it in items]) if items else ""
+    return effective_query, items
+
+
+def _extract_items_from_docx(docx_bytes: bytes, max_items: int) -> tuple[str, list[str]]:
+    from docx import Document
+
+    doc = Document(io.BytesIO(docx_bytes))
+    items: list[str] = []
+
+    for table in doc.tables:
+        rows: list[list[str]] = []
+        for row in table.rows:
+            rows.append([_clean_text_line(cell.text) for cell in row.cells])
+        if not rows:
+            continue
+        _, table_items = _extract_items_from_tabular_rows(rows, max_items - len(items))
+        items.extend(table_items)
+        if len(items) >= max_items:
+            break
+
+    if len(items) < max_items:
+        para_text = "\n".join(p.text for p in doc.paragraphs if (p.text or "").strip())
+        if para_text.strip():
+            _, txt_items = _extract_items_from_txt(para_text, max_items - len(items))
+            items.extend(txt_items)
+
+    items = items[:max_items]
+    effective_query = "\n".join([f"- {it}" for it in items]) if items else ""
+    return effective_query, items
+
+
 def _sniff_csv_dialect(sample: str) -> csv.Dialect:
     # Petit sniffing de séparateurs fréquent.
     try:
@@ -3169,83 +3627,7 @@ def _extract_items_from_csv(csv_text: str, max_items: int) -> tuple[str, list[st
     if not rows:
         return "", []
 
-    header = rows[0]
-    header_lower = [(_clean_text_line(h).lower()) for h in header]
-    candidate_keys = [
-        "description",
-        "libelle",
-        "libellé",
-        "libellé",
-        "marchandise",
-        "produit",
-        "nom",
-        "intitule",
-        "libelle produit",
-        "détails",
-        "details",
-    ]
-    chosen_idx = None
-    for i, h in enumerate(header_lower):
-        if not h:
-            continue
-        if any(k in h for k in candidate_keys):
-            chosen_idx = i
-            break
-    header_detected = chosen_idx is not None
-    if chosen_idx is None:
-        chosen_idx = 0
-
-    items: list[str] = []
-    # Si on n'a detecte aucun en-tête (aucune cellule ressemble a "produit/qte/description"),
-    # on traite la 1ère ligne comme une donnée.
-    rows_iter = rows[1:] if header_detected else rows
-    for row in rows_iter:
-        if chosen_idx >= len(row):
-            continue
-        cell = _clean_text_line(row[chosen_idx])
-        if not cell:
-            continue
-        # Découpe par ';' si la cellule contient plusieurs éléments.
-        parts = [p.strip() for p in cell.split(";") if p.strip()]
-        if len(parts) > 1:
-            for p in parts:
-                if p and len(p) <= 500:
-                    items.append(p)
-                    if len(items) >= max_items:
-                        break
-            if len(items) >= max_items:
-                break
-        else:
-            if len(cell) <= 500:
-                items.append(cell)
-        if len(items) >= max_items:
-            break
-
-    # Fallback : certains CSV n'ont pas d'en-tête ou ont un en-tête non détecté.
-    if not items and len(rows) >= 1:
-        for row in (rows_iter if rows_iter else rows):
-            if chosen_idx >= len(row):
-                continue
-            cell = _clean_text_line(row[chosen_idx])
-            if not cell:
-                continue
-            parts = [p.strip() for p in cell.split(";") if p.strip()]
-            if len(parts) > 1:
-                for p in parts:
-                    if p and len(p) <= 500:
-                        items.append(p)
-                        if len(items) >= max_items:
-                            break
-                if len(items) >= max_items:
-                    break
-            else:
-                if len(cell) <= 500:
-                    items.append(cell)
-            if len(items) >= max_items:
-                break
-
-    effective_query = "\n".join(items)
-    return effective_query, items
+    return _extract_items_from_tabular_rows(rows, max_items)
 
 
 def _extract_items_from_json(json_text: str, max_items: int) -> tuple[str, list[str]]:
@@ -3330,7 +3712,7 @@ async def classify_file(
     max_chars: int = 20000,
 ) -> ClassifyFileResponse:
     """
-    Classe des produits à partir d'un fichier (txt/pdf).
+    Classe des produits à partir d'un fichier (txt, pdf, csv, excel, word).
 
     Note: le cache de classification est alimenté uniquement lors de la validation
     (voir POST /classifications/validate).
@@ -3355,15 +3737,7 @@ async def classify_file(
         raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 10MB)")
 
     filename = (file.filename or "").strip()
-    ext = ""
-    if "." in filename:
-        ext = filename.rsplit(".", 1)[-1].lower()
-    if not ext and file.content_type:
-        ct = (file.content_type or "").lower()
-        if "pdf" in ct:
-            ext = "pdf"
-        elif "text" in ct or "plain" in ct:
-            ext = "txt"
+    ext = _resolve_upload_extension(filename, file.content_type)
 
     logger.debug(
         "[classify-file %s] filename=%r content_type=%r ext=%r",
@@ -3373,7 +3747,7 @@ async def classify_file(
         ext,
     )
 
-    # Extraction d'items à partir du fichier (TXT ou PDF).
+    # Extraction d'items à partir du fichier.
     # On garde une liste d'items "bruts", puis on va les dédupliquer
     # pour compter les quantités par produit.
     effective_query = ""
@@ -3382,14 +3756,34 @@ async def classify_file(
         if ext in {"txt", "text"}:
             text_content = raw_bytes.decode("utf-8", errors="ignore")
             effective_query, items = _extract_items_from_txt(text_content, max_items=max_items)
-        elif ext in {"pdf"}:
+        elif ext == "pdf":
             effective_query, items = _extract_items_from_pdf(
                 raw_bytes, max_items=max_items, max_chars=max_chars
+            )
+        elif ext == "csv":
+            text_content = raw_bytes.decode("utf-8", errors="ignore")
+            effective_query, items = _extract_items_from_csv(text_content, max_items=max_items)
+        elif ext in {"xlsx", "xlsm"}:
+            effective_query, items = _extract_items_from_xlsx(raw_bytes, max_items=max_items)
+        elif ext == "xls":
+            effective_query, items = _extract_items_from_xls(raw_bytes, max_items=max_items)
+        elif ext == "docx":
+            effective_query, items = _extract_items_from_docx(raw_bytes, max_items=max_items)
+        elif ext == "doc":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Le format Word .doc (ancien) n'est pas supporté. "
+                    "Enregistrez le fichier au format .docx ou exportez en PDF/Excel."
+                ),
             )
         else:
             raise HTTPException(
                 status_code=400,
-                detail="Type de fichier non supporté. Utilise uniquement: txt, pdf",
+                detail=(
+                    "Type de fichier non supporté. Formats acceptés : "
+                    "txt, pdf, csv, xlsx, xls, docx"
+                ),
             )
     except HTTPException:
         raise
@@ -3700,29 +4094,29 @@ async def classify_file(
     )
 
 
-@app.post("/classify", response_model=ClassifyResponse, tags=["classification"])
-def classify(payload: ClassifyRequest) -> ClassifyResponse:
-    """
-    Classe une ou plusieurs marchandises.
+def _classify_text_query(
+    query: str,
+    *,
+    request_id: str,
+    progress: ClassificationProgressReporter | None = None,
+) -> str:
+    """Exécute le pipeline de classification texte et retourne le JSON brut final."""
 
-    - `query` : texte libre saisi par l'utilisateur (peut contenir plusieurs articles).
-    - Retourne la chaîne brute produite par le modèle (JSON sérialisé) dans le champ `raw`.
-    - Le résultat n'est mis en cache que lorsqu'une classification est validée (voir POST /classifications/validate).
-    """
-
-    request_id = uuid.uuid4().hex[:8]
-
-    # Questions sur l'assistant : réponse immédiate (sans Redis, sans extraction multi-lignes, sans LLM).
-    if is_assistant_meta_query(payload.query or ""):
+    if is_assistant_meta_query(query or ""):
+        if progress:
+            progress.start("merchandise")
+            progress.complete("merchandise")
+            progress.skip("identification")
+            progress.skip("tec_context")
         raw_out = _normalize_classifications_response(
-            build_assistant_meta_response_json(payload.query or "")
+            build_assistant_meta_response_json(query or ""),
+            progress=progress,
         )
-        return ClassifyResponse(raw=_ensure_json_raw(raw_out))
+        return _ensure_json_raw(raw_out)
 
-    # Vérifier si une réponse a déjà été mise en cache (sauf si le cache est désactivé)
-    cache_key = _classify_cache_key(payload.query)
+    cache_key = _classify_cache_key(query)
     cache_disabled = cache_classify_is_disabled()
-    preview = (payload.query or "").strip().replace("\n", " ")
+    preview = (query or "").strip().replace("\n", " ")
     preview = preview[:60] + ("…" if len(preview) > 60 else "")
     logger.debug(
         "[classify %s] cache_disabled=%s key=%s query_preview=%r",
@@ -3735,7 +4129,15 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     if not cache_disabled:
         cached_raw = cache_get(cache_key)
         if cached_raw is not None:
-            raw_out = _normalize_classifications_response(_ensure_json_raw(cached_raw))
+            if progress:
+                progress.start("merchandise")
+                progress.complete("merchandise")
+                progress.skip("identification")
+                progress.skip("tec_context")
+            raw_out = _normalize_classifications_response(
+                _ensure_json_raw(cached_raw),
+                progress=progress,
+            )
             logger.debug(
                 "[classify %s] cache HIT raw_len=%s raw_preview=%r",
                 request_id,
@@ -3743,7 +4145,7 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
                 raw_out[:80],
             )
             _inspect_raw_json(raw_out, request_id, "HIT")
-            return ClassifyResponse(raw=raw_out)
+            return raw_out
         logger.debug("[classify %s] cache MISS", request_id)
 
     try:
@@ -3752,16 +4154,14 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     except AttributeError as exc:
         raise HTTPException(status_code=503, detail="Moteur RAG non initialisé") from exc
 
-    # Aligne le comportement "copier-coller" avec celui des fichiers :
-    # - extraction de produits ligne par ligne
-    # - déduplication des produits identiques
-    # - ajout d'une quantité par classification
-    classify_input = payload.query
+    classify_input = query
     unique_items: list[str] = []
     item_counts: dict[str, int] = {}
     item_meta: dict[str, dict[str, Any]] = {}
+    if progress:
+        progress.start("merchandise")
     try:
-        _, extracted_items = _extract_items_from_txt(payload.query, max_items=500)
+        _, extracted_items = _extract_items_from_txt(query, max_items=500)
         if extracted_items:
             unique_items, item_counts, _, item_meta = _aggregate_items_with_quantities(
                 extracted_items, max_items=500
@@ -3769,40 +4169,44 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
             if unique_items:
                 classify_input = "\n".join([f"- {it}" for it in unique_items])
     except Exception:
-        # Garde-fou : en cas d'erreur d'extraction, on retombe sur le texte brut.
-        classify_input = payload.query
+        classify_input = query
         unique_items = []
         item_counts = {}
         item_meta = {}
+    if progress:
+        progress.complete("merchandise")
 
     try:
         pipeline = _unwrap_pipeline_result(
             process_user_input(
-            classify_input,
-            chunks,
-            index,
-            validated_index=getattr(app.state, "classifications_index", None),
-            validated_meta=getattr(app.state, "classifications_meta", None),
+                classify_input,
+                chunks,
+                index,
+                validated_index=getattr(app.state, "classifications_index", None),
+                validated_meta=getattr(app.state, "classifications_meta", None),
+                progress=progress,
             )
         )
     except Exception as exc:  # pragma: no cover - garde-fou
-        import traceback
-
         logger.exception("[classify %s] process_user_input failed", request_id)
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
         raise HTTPException(status_code=500, detail=detail) from exc
 
-    # Corriger section/chapitre à partir du code SH pour chaque classification
+    source_for_response = (
+        query
+        if _is_structured_product_dossier_text(query or "")
+        else (classify_input or (query or ""))
+    )
     result = _inject_source_query_into_llm_response(
-        pipeline.llm_raw, classify_input or (payload.query or "")
+        pipeline.llm_raw, source_for_response
     )
     result = _finalize_classification_response(
         result,
         pipeline.product_identifications,
+        progress=progress,
     )
     raw_out = _ensure_json_raw(result)
 
-    # Injecte une quantité par classification quand on a pu extraire des items.
     if unique_items and item_counts:
         try:
             parsed = json.loads(raw_out)
@@ -3827,19 +4231,16 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
                         if item.get("description_quality") is None:
                             enrich_item_description_quality(item, source_text=src)
                         item["source_query"] = src
-                    # Fusionne les doublons quasi-identiques renvoyés par le LLM.
                     parsed["classifications"] = _merge_duplicate_classifications(cls)
                     for item in parsed["classifications"]:
                         if isinstance(item, dict) and not item.get("source_query"):
-                            item["source_query"] = classify_input or (payload.query or "")
-                    raw_out = _normalize_classifications_response(_ensure_json_raw(parsed))
+                            item["source_query"] = classify_input or (query or "")
+                    raw_out = _normalize_classifications_response(
+                        _ensure_json_raw(parsed),
+                        progress=progress,
+                    )
         except Exception:
-            # Si on ne peut pas enrichir la réponse, on conserve `raw_out` tel quel.
             pass
-
-    # Ne pas mettre en cache ici : le cache est alimenté uniquement lors d'une validation
-    # (POST /classifications/validate avec query + raw_response), pour ne pas retenir
-    # les réponses non validées.
 
     logger.debug(
         "[classify %s] fresh generation done raw_len=%s raw_preview=%r",
@@ -3848,7 +4249,87 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
         raw_out[:80],
     )
     _inspect_raw_json(raw_out, request_id, "FRESH")
+    return raw_out
+
+
+def _classification_sse_response(worker) -> StreamingResponse:
+    """Encapsule une classification synchrone dans un flux SSE."""
+
+    event_queue: queue.Queue[Any] = queue.Queue()
+
+    def emit(event: dict[str, Any]) -> None:
+        event_queue.put(event)
+
+    progress = ClassificationProgressReporter(emit)
+
+    def run() -> None:
+        try:
+            result = worker(progress)
+            event_queue.put({"type": "result", "payload": result})
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            event_queue.put({"type": "error", "detail": detail, "status": exc.status_code})
+        except Exception as exc:  # pragma: no cover - garde-fou
+            logger.exception("[classify-stream] worker failed")
+            event_queue.put(
+                {
+                    "type": "error",
+                    "detail": f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+                    "status": 500,
+                }
+            )
+        finally:
+            event_queue.put(None)
+
+    threading.Thread(target=run, daemon=True).start()
+
+    def generate():
+        yield sse_init_event()
+        while True:
+            item = event_queue.get()
+            if item is None:
+                break
+            yield sse_event(item)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/classify", response_model=ClassifyResponse, tags=["classification"])
+def classify(payload: ClassifyRequest) -> ClassifyResponse:
+    """
+    Classe une ou plusieurs marchandises.
+
+    - `query` : texte libre saisi par l'utilisateur (peut contenir plusieurs articles).
+    - Retourne la chaîne brute produite par le modèle (JSON sérialisé) dans le champ `raw`.
+    - Le résultat n'est mis en cache que lorsqu'une classification est validée (voir POST /classifications/validate).
+    """
+    request_id = uuid.uuid4().hex[:8]
+    raw_out = _classify_text_query(payload.query or "", request_id=request_id)
     return ClassifyResponse(raw=raw_out)
+
+
+@app.post("/classify/stream", tags=["classification"])
+def classify_stream(payload: ClassifyRequest) -> StreamingResponse:
+    """Classification avec progression SSE alignée sur le pipeline Mosam."""
+    request_id = uuid.uuid4().hex[:8]
+
+    def worker(progress: ClassificationProgressReporter) -> dict[str, str]:
+        raw_out = _classify_text_query(
+            payload.query or "",
+            request_id=request_id,
+            progress=progress,
+        )
+        return {"raw": raw_out}
+
+    return _classification_sse_response(worker)
 
 
 @app.post(

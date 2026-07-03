@@ -35,7 +35,7 @@ class TestRgiJournal(unittest.TestCase):
         self.assertIn("RGI appliquees", text)
         self.assertIn("+ RGI 1", text)
         self.assertIn("+ RGI 6", text)
-        self.assertIn("- RGI 3", text)
+        self.assertNotIn("non evaluee", text.lower())
         self.assertNotIn("RGI 3 b", item["justification"])
 
     def test_journal_ne_depend_pas_du_texte_llm(self) -> None:
@@ -105,6 +105,35 @@ class TestRgiJournal(unittest.TestCase):
         self.assertIn("RGI appliquees", item["justification"])
         self.assertNotIn("RGI 3 b invente", item["justification"])
         self.assertIn("[TEC]", item["justification"])
+
+    def test_narrative_does_not_duplicate_rgi_journal(self) -> None:
+        from sam.decision_engine import build_narrative_from_classifications
+        from sam.rgi.journal import attach_rgi_journal_to_item
+
+        item = {
+            "hs_code": "8528.52.00.00",
+            "chapter": "85",
+            "description": "6AV2124-0QC02-0AX",
+            "source_query": "Produit : 6AV2124-0QC02-0AX",
+            "classification_status": "confirmee",
+            "confidence": 95,
+            "subposition_resolution": {
+                "status": "confirmed",
+                "matched_code": "8528.52.00.00",
+                "explanation": "Une seule sous-position confirmee.",
+            },
+            "rgi_pipeline": {
+                "stopped_at": "RGI 6",
+                "applied_rules": [
+                    {"rule": "RGI 1", "applied": True, "reason": "Position retenue."},
+                    {"rule": "RGI 6", "applied": True, "reason": "Sous-position confirmee."},
+                ],
+            },
+        }
+        attach_rgi_journal_to_item(item)
+        narrative = build_narrative_from_classifications([item])
+        self.assertEqual(narrative.count("RGI appliquees"), 1)
+        self.assertNotIn("RGI appliquees |  | +", narrative)
 
 
 if __name__ == "__main__":

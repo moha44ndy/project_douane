@@ -15,6 +15,7 @@ from typing import Any
 from openai import OpenAI
 
 from .config.settings import Config
+from .openai_web_search import identify_with_openai_web_search, openai_web_search_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,9 @@ class ProductIdentification:
     identification_confidence: int = 0
     enriched_description: str = ""
     notes: str = ""
+    web_search_used: bool = False
+    web_sources: list[dict[str, str]] = field(default_factory=list)
+    web_search_queries: list[str] = field(default_factory=list)
     skipped: bool = False
     skip_reason: str = ""
 
@@ -107,16 +111,26 @@ class ProductIdentification:
             "identification_confidence": self.identification_confidence,
             "enriched_description": self.enriched_description,
             "notes": self.notes,
+            "web_search_used": self.web_search_used,
+            "web_sources": self.web_sources,
+            "web_search_queries": self.web_search_queries,
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
         }
 
 
-def _identification_system_prompt() -> str:
+def _identification_system_prompt(*, use_web: bool = False) -> str:
+    web_clause = (
+        "Tu peux consulter internet via l'outil de recherche pour identifier le produit "
+        "(fiche fabricant, usage courant, materiaux). "
+        "N'utilise pas internet pour deviner un code douanier. "
+        if use_web
+        else "Tu t'appuies sur ta connaissance generale du produit. "
+    )
     return (
         "Tu es l'agent d'identification marchandise de Mosam (douane CEDEAO). "
-        "Ta mission : comprendre ce qu'est le produit decrit par l'utilisateur, comme le ferait ChatGPT, "
-        "en t'appuyant uniquement sur ta connaissance generale du produit. "
+        "Ta mission : comprendre ce qu'est le produit decrit par l'utilisateur, comme le ferait ChatGPT. "
+        f"{web_clause}"
         "Tu produis une fiche technique structuree pour un classificateur douanier humain ou un second moteur. "
         "INTERDICTIONS ABSOLUES : "
         "- ne jamais proposer, suggerer ou mentionner de code SH, position tarifaire, chapitre HS ou taux de droits ; "
@@ -159,11 +173,11 @@ def _parse_identification_json(raw: str, *, fallback_query: str) -> dict[str, An
     }
 
 
-def _call_identification_llm(user_prompt: str) -> str:
+def _call_identification_llm(user_prompt: str, *, use_web: bool = False) -> str:
     response = _client.chat.completions.create(
         model=Config.MOSAM_MODEL or "gpt-4.1-mini",
         messages=[
-            {"role": "system", "content": _identification_system_prompt()},
+            {"role": "system", "content": _identification_system_prompt(use_web=use_web)},
             {"role": "user", "content": user_prompt},
         ],
         max_tokens=1200,
@@ -171,6 +185,21 @@ def _call_identification_llm(user_prompt: str) -> str:
     )
     content = response.choices[0].message.content
     return content or ""
+
+
+def _call_identification_with_optional_web(user_prompt: str) -> tuple[str, list[dict[str, str]], list[str], bool]:
+    """Retourne (texte brut, sources web, requetes web, web_search_used)."""
+    if openai_web_search_enabled():
+        try:
+            raw, sources, queries = identify_with_openai_web_search(
+                instructions=_identification_system_prompt(use_web=True),
+                user_input=user_prompt,
+            )
+            return raw, sources, queries, True
+        except Exception as exc:
+            logger.warning("[product_identification] recherche web OpenAI echouee: %s", exc)
+    raw = _call_identification_llm(user_prompt, use_web=False)
+    return raw, [], [], False
 
 
 def identify_product(query: str) -> ProductIdentification:
@@ -202,7 +231,7 @@ def identify_product(query: str) -> ProductIdentification:
     )
 
     try:
-        raw = _call_identification_llm(user_prompt)
+        raw, web_sources, web_search_queries, web_search_used = _call_identification_with_optional_web(user_prompt)
     except Exception as exc:
         logger.warning("[product_identification] echec LLM: %s", exc)
         return ProductIdentification(
@@ -217,6 +246,9 @@ def identify_product(query: str) -> ProductIdentification:
 
     parsed = _parse_identification_json(raw, fallback_query=original)
     enriched = str(parsed.get("enriched_description") or "").strip() or original
+    notes = str(parsed.get("notes") or "").strip()
+    if web_search_used and (web_sources or web_search_queries):
+        notes = (notes + " Recherche internet OpenAI consultee.").strip()
 
     return ProductIdentification(
         original_query=original,
@@ -239,7 +271,10 @@ def identify_product(query: str) -> ProductIdentification:
             min(100, int(parsed.get("identification_confidence") or 0)),
         ),
         enriched_description=enriched,
-        notes=str(parsed.get("notes") or "").strip(),
+        notes=notes,
+        web_search_used=web_search_used,
+        web_sources=web_sources,
+        web_search_queries=web_search_queries,
     )
 
 

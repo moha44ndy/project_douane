@@ -318,6 +318,32 @@ Question
 
 Quel est le code SH ?"""
 
+    def test_table_row_dossier_with_qty_unit_origin_value_stays_single(self) -> None:
+        text = """Produit : 6AV2124-0QC02-0A
+Quantité :
+3 PCE
+Origine :
+Allemagne
+Valeur :
+4800 EUR"""
+        self.assertTrue(api_mod._is_structured_product_dossier_text(text))
+        _, items = api_mod._extract_items_from_txt(text, max_items=50)
+        self.assertEqual(len(items), 1)
+        unique, counts, _, _ = api_mod._aggregate_items_with_quantities(items, max_items=50)
+        self.assertEqual(len(unique), 1)
+        self.assertIn("6AV2124", unique[0])
+        self.assertIn("Allemagne", unique[0])
+        self.assertIn("4800", unique[0])
+        self.assertNotIn("PCE", unique[0].splitlines()[0])
+        self.assertEqual(counts[unique[0]], 3)
+        from sam.rag import split_user_queries
+
+        self.assertEqual(len(split_user_queries(text)), 1)
+
+    def test_noise_unit_and_currency_tokens(self) -> None:
+        self.assertTrue(api_mod._is_noise_item_text("PCE"))
+        self.assertTrue(api_mod._is_noise_item_text("EUR"))
+
     def test_dossier_detected_as_single_item(self) -> None:
         _, items = api_mod._extract_items_from_txt(self.HANDBAG, max_items=50)
         self.assertEqual(len(items), 1)

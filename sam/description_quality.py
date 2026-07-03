@@ -66,7 +66,7 @@ def assess_description_quality(
             score += 4
         if re.search(r"\b(?:origine|provenant)\b", norm):
             score += 4
-        if re.search(r"\b(?:valeur|prix|dollars?|usd|eur|fcfa)\b", norm):
+        if re.search(r"\b(?:valeur|prix|dollars?|usd|eur|fcfa|xof|xaf)\b", norm):
             score += 4
         return min(95, score)
 

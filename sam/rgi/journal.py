@@ -206,6 +206,8 @@ def format_rgi_journal_text(journal: dict[str, Any]) -> str:
         if not rule:
             continue
         status = str(entry.get("status") or "not_evaluated")
+        if status == "not_evaluated":
+            continue
         reason = str(entry.get("reason") or "").strip()
         mark = "+" if status == "applied" else "-"
         if reason:

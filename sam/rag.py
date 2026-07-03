@@ -25,6 +25,11 @@ import urllib3
 import json
 from openai import OpenAI
 from .product_identification import prepare_query_for_classification
+from .candidate_set_enforcer import (
+    attach_candidates_to_classifications,
+    retrieve_locked_tec_context,
+)
+from .classification_progress import ClassificationProgressReporter
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1063,6 +1068,12 @@ def use_llm(prompt_text):
             "11bis) Une « Description enrichie pour classification » peut résulter d'un agent d'identification préalable : utilise ces éléments (nature, usage, matériaux) pour le raisonnement RGI, mais le code SH doit toujours reposer sur le contexte TEC local ci-dessous, jamais sur la seule connaissance générale ou internet. "
             "12) Sous-position (RGI 6) : ne jamais inventer un code a 8 ou 10 chiffres. Les criteres de subdivision sont lus dans les libelles TEC de la position retenue ; "
             "n'arreter au dernier niveau justifiable ; si une information juridiquement indispensable manque, le signaler et limiter la confiance. "
+            "Ton hs_code est une HYPOTHESE : Mosam applique ensuite la discrimination TEC complete avant de confirmer ou tronquer le code. "
+            "13) Positions TEC candidates : si un bloc « POSITIONS TEC CANDIDATES (VERROUILLAGE OBLIGATOIRE) » est present, "
+            "tu DOIS choisir hs_code uniquement parmi ces positions (XX.XX ou sous-code de l'une d'elles). "
+            "Justifie explicitement pourquoi les autres candidates sont ecartees. "
+            "Tout code hors liste sera rejete par Mosam. "
+            "Si un bloc « Avertissement discrimination TEC » est present, respecte-le strictement. "
             "Abréviations: D.D. = droits de douane, R.S. = régime statistique, U.S. = unité de mesure. "
             "Retourne exclusivement un objet JSON (aucun texte hors JSON) de la forme: "
             "{\"narrative\":\"texte pour l'utilisateur (avec rappel: proposition indicative, à faire valider avant toute utilisation officielle)\",\"classifications\":[{"
@@ -1160,7 +1171,10 @@ def split_user_queries(raw_text):
     """Découpe l'entrée utilisateur si plusieurs articles sont fournis d'un coup."""
     if not raw_text:
         return []
-    normalized = raw_text.replace("\r", "\n")
+    normalized = raw_text.replace("\r", "\n").strip()
+    if _is_single_structured_dossier(normalized):
+        return [normalized]
+
     raw_lines = normalized.split("\n")
     list_line_re = re.compile(r"^\s*(?:[-*•]|\d+[\.\)])\s+")
 
@@ -1199,13 +1213,76 @@ def split_user_queries(raw_text):
     return [one.strip()] if one.strip() else []
 
 
+def _is_single_structured_dossier(text: str) -> bool:
+    """Une fiche Produit + sections (composition, quantite, origine, etc.) = une seule marchandise."""
+    normalized = (text or "").replace("\r", "\n").strip()
+    if not normalized:
+        return False
+    if not re.search(
+        r"(?im)^(?:produit|marchandise|article|designation)\s*:\s*.+",
+        normalized,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"(?im)^(?:composition|caracteristique|specification|usage|capacite|"
+            r"quantite|origine|valeur|devise)\s*:",
+            normalized,
+        )
+    )
+
+
 def build_context_for_query(query, chunks, index):
-    """Génère un contexte documentaire pour une requête précise."""
-    indices, _ = search_faiss_index(query, index)
-    context = ""
-    for idx in indices[0]:
-        context += chunks[idx].page_content + "\n"
-    return context
+    """Génère un contexte documentaire pour une requête précise (legacy / tests)."""
+    locked_context, _ = retrieve_locked_tec_context(
+        query,
+        chunks,
+        index,
+        search_fn=search_faiss_index,
+    )
+    return locked_context
+
+
+def _build_tec_discrimination_hint(
+    source_text: str,
+    candidate_dicts: list[dict[str, Any]] | None = None,
+) -> str:
+    """
+    Signale au LLM les critères discriminants TEC non vérifiables pour les positions candidates.
+    """
+    from .tariff_subposition import (
+        position_has_discriminating_subpositions,
+        preview_missing_discriminating_criteria,
+    )
+
+    positions: list[str] = []
+    if candidate_dicts:
+        for entry in candidate_dicts:
+            pos = str(entry.get("position_code") or "").strip()
+            if pos and pos not in positions:
+                positions.append(pos)
+    if not positions:
+        return ""
+
+    lines = [
+        "Avertissement discrimination TEC (hypothèse seulement — le moteur Mosam tranchera après) :"
+    ]
+    any_hint = False
+    for position in positions[:3]:
+        if not position_has_discriminating_subpositions(position):
+            continue
+        missing = preview_missing_discriminating_criteria(position, source_text)
+        if not missing:
+            continue
+        any_hint = True
+        preview = "; ".join(missing[:3])
+        lines.append(
+            f"- Position {position} : critères discriminants manquants ou non vérifiables ({preview}). "
+            "Si tu retiens cette position, limite hs_code au niveau 4 chiffres."
+        )
+    if not any_hint:
+        return ""
+    return "\n" + "\n".join(lines) + "\n"
 
 
 @dataclass
@@ -1222,6 +1299,7 @@ def process_user_input(
     index,
     validated_index: faiss.Index | None = None,
     validated_meta: list[dict[str, object]] | None = None,
+    progress: ClassificationProgressReporter | None = None,
 ) -> ClassificationPipelineResult:
     if is_assistant_meta_query(user_input):
         logger.debug("meta query about assistant; skip RAG/LLM classification")
@@ -1235,13 +1313,31 @@ def process_user_input(
             llm_raw="Merci de préciser au moins une marchandise à classifier."
         )
 
-    prompt_sections = []
+    if progress:
+        progress.start("identification")
+
+    prepared: list[tuple[str, str, Any]] = []
     product_identifications: list[dict[str, Any]] = []
-    for i, query in enumerate(queries, start=1):
+    for query in queries:
         classification_query, identification = prepare_query_for_classification(query)
         product_identifications.append(identification.to_dict())
+        prepared.append((query, classification_query, identification))
 
-        context = build_context_for_query(classification_query, chunks, index)
+    if progress:
+        progress.complete("identification")
+        progress.start("tec_context")
+
+    prompt_sections = []
+    for i, (query, classification_query, identification) in enumerate(prepared, start=1):
+        locked_context, candidate_dicts = retrieve_locked_tec_context(
+            classification_query,
+            chunks,
+            index,
+            search_fn=search_faiss_index,
+        )
+        if i - 1 < len(product_identifications):
+            product_identifications[i - 1]["tec_position_candidates"] = candidate_dicts
+
         examples_context = build_validated_examples_context(
             classification_query,
             validated_index,
@@ -1253,22 +1349,48 @@ def process_user_input(
         if identification.enriched_description.strip() and identification.enriched_description.strip() != query.strip():
             original_note = f"\nSaisie utilisateur initiale : {query.strip()}"
 
+        web_block = ""
+        if getattr(identification, "web_search_used", False):
+            source_lines = [
+                "Complement internet (sources consultees — ne pas imposer de code SH ni de taux) :"
+            ]
+            for source in getattr(identification, "web_sources", None) or []:
+                title = str(source.get("title") or source.get("url") or "").strip()
+                url = str(source.get("url") or "").strip()
+                if url:
+                    source_lines.append(f"- {title}: {url}")
+            for query_term in getattr(identification, "web_search_queries", None) or []:
+                q = str(query_term).strip()
+                if q:
+                    source_lines.append(f"- Recherche effectuee : {q}")
+            if len(source_lines) > 1:
+                web_block = "\n" + "\n".join(source_lines) + "\n"
+
+        tec_hint = _build_tec_discrimination_hint(classification_query, candidate_dicts)
+
         prompt_sections.append(
             f"[MARCHANDISE {i}]\nDescription enrichie pour classification :\n{classification_query}"
-            f"{original_note}\nContexte documentaire (TEC local):\n{context}"
-            f"{examples_block}"
+            f"{original_note}{web_block}{tec_hint}\n{locked_context}{examples_block}"
         )
 
     combined_context = "\n\n".join(prompt_sections)
     enriched_prompt = (
         "L'utilisateur peut avoir fourni plusieurs marchandises. "
         "Analyse chaque bloc ci-dessous et produis une réponse structurée avec, pour chaque marchandise, "
-        "la position tarifaire, le taux d'imposition et les détails pertinents.\n\n"
+        "une hypothèse de position tarifaire (pas une classification définitive — la discrimination TEC "
+        "des sous-positions est appliquée ensuite par Mosam), le taux d'imposition indicatif et les détails pertinents.\n\n"
         f"{combined_context}\n\nDemande initiale de l'utilisateur:\n{user_input}"
     )
     logger.debug("start the send of the question")
+    if progress:
+        progress.complete("tec_context")
+        progress.start("position_hypothesis")
     response = use_llm(enriched_prompt)
     logger.debug("finish the send of the question")
+
+    if progress:
+        progress.complete("position_hypothesis")
+
     return ClassificationPipelineResult(
         llm_raw=response,
         product_identifications=product_identifications,

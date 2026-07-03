@@ -258,7 +258,33 @@ class TestClassificationCompleteness(unittest.TestCase):
         self.assertIn("Produit analyse\nSac a dos de randonnee", narrative)
         self.assertNotIn("45 % polyester", narrative)
 
-    def test_risk_provisoire_is_yellow_not_red(self) -> None:
+    def test_backfill_origin_value_from_structured_source(self) -> None:
+        source = """Produit : 6AV2124-0QC02-0AX
+Quantite :
+3 PCE
+Origine :
+Allemagne
+Valeur :
+4800 XOF"""
+        item = {
+            "description": "6AV2124-0QC02-0AX",
+            "origin": "Non renseigne",
+            "value": "Non renseigne",
+            "hs_code": "8524",
+            "source_query": source,
+        }
+        apply_completeness_adjustments(item, source_text=source)
+        self.assertEqual(item["origin"], "Allemagne")
+        self.assertEqual(item["value"], "4800 XOF")
+        origin_entry = next(
+            entry for entry in item["completeness_checklist"] if entry["field"] == "origin"
+        )
+        value_entry = next(
+            entry for entry in item["completeness_checklist"] if entry["field"] == "value"
+        )
+        self.assertEqual(origin_entry["status"], "ok")
+        self.assertEqual(value_entry["status"], "ok")
+
         item = {
             "hs_code": "4202.22.90.00",
             "chapter": "42",

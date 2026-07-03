@@ -349,6 +349,7 @@ def build_justification_from_decision(
     decision: ClassificationDecision,
     *,
     item: dict[str, Any] | None = None,
+    include_rgi_journal: bool = True,
 ) -> str:
     """
     Reformule uniquement des decisions deja tracees dans le referentiel.
@@ -356,7 +357,7 @@ def build_justification_from_decision(
     """
     parts: list[str] = []
     journal_text = str((item or {}).get("rgi_journal_text") or "").strip()
-    if journal_text:
+    if include_rgi_journal and journal_text:
         parts.append(journal_text.replace("\n", " | "))
 
     resolution = decision.subposition_resolution or {}
@@ -600,7 +601,11 @@ def build_narrative_from_classifications(classifications: list[dict[str, Any]]) 
         else:
             product = from_label
         journal_text = str(item.get("rgi_journal_text") or "").strip()
-        body = build_justification_from_decision(decision, item=item)
+        body = build_justification_from_decision(
+            decision,
+            item=item,
+            include_rgi_journal=not bool(journal_text),
+        )
         blocks.extend(["", "Produit analyse", product, ""])
         if journal_text:
             blocks.append(journal_text)
