@@ -8,10 +8,14 @@ from typing import Any
 
 from .brand_messaging import INDICATIVE_DISCLAIMER_ASCII
 
-from .tariff_labels import get_tariff_label_index
+from .tariff_labels import get_tariff_label_index, lookup_position_label
 from .tariff_metadata import get_position_heading
-from .tariff_notes import get_chapter_explanatory_notes
-from .tariff_position_rules import is_subposition_sensitive_position, position_code_from_hs
+from .tariff_position_rules import position_code_from_hs
+from .tariff_subposition import (
+    position_has_discriminating_subpositions,
+    preview_missing_discriminating_criteria,
+)
+from .classification_source import build_effective_classification_source
 
 _EXTERIOR_SURFACE_KEYWORDS = (
     "surface exterieure",
@@ -111,24 +115,6 @@ def _is_mixed_composition(text: str) -> bool:
     return kinds >= 2 or len(materials) >= 2
 
 
-def _position_requires_subposition_detail(hs_code: str, chapter: str) -> bool:
-    """Detecte via l'index TEC si la position exige un critere de sous-position (ex. surface exterieure)."""
-    if is_subposition_sensitive_position(hs_code):
-        return True
-    position = position_code_from_hs(hs_code)
-    heading = get_position_heading(position)
-    if heading and "surface exterieure" in _normalize(heading):
-        return True
-    try:
-        ch = int(str(chapter).lstrip("0") or "0")
-    except ValueError:
-        ch = 0
-    for note in get_chapter_explanatory_notes(ch):
-        if "surface exterieure" in _normalize(note):
-            return True
-    return False
-
-
 def _tec_labels_for_position(hs_code: str) -> list[str]:
     position = position_code_from_hs(hs_code)
     prefix = position.replace(".", "")
@@ -140,24 +126,45 @@ def _tec_labels_for_position(hs_code: str) -> list[str]:
     return labels
 
 
-def _infer_missing_subposition_field(hs_code: str, chapter: str) -> str:
-    position = position_code_from_hs(hs_code)
-    heading = get_position_heading(position)
-    if heading and "surface exterieure" in _normalize(heading):
-        return "Surface exterieure (matiere apparente, selon libelle TEC)"
+def _tec_position_mentions_surface(hs_code: str) -> bool:
     for label in _tec_labels_for_position(hs_code):
         if "surface exterieure" in _normalize(label):
-            return "Surface exterieure (matiere apparente, selon nomenclature TEC)"
-    try:
-        ch = int(str(chapter).lstrip("0") or "0")
-    except ValueError:
-        ch = 0
-    for note in get_chapter_explanatory_notes(ch):
-        if "surface exterieure" in _normalize(note):
-            return "Surface exterieure (selon notes du chapitre TEC)"
-    if is_subposition_sensitive_position(hs_code):
-        return "Surface exterieure (matiere apparente, selon nomenclature TEC)"
-    return "Information complementaire requise pour la sous-position (voir TEC)"
+            return True
+    position = position_code_from_hs(hs_code)
+    heading = get_position_heading(position)
+    return bool(heading and "surface exterieure" in _normalize(heading))
+
+
+def _hs_digit_count(hs_code: str) -> int:
+    return len(re.sub(r"\D", "", str(hs_code or "")))
+
+
+def _prepare_item_for_criteria_reevaluation(
+    item: dict[str, Any],
+    source_text: str | None,
+) -> str:
+    """
+    Reévalue la description courante sans hériter d'un blocage antérieur.
+    Si un code plus précis était suggéré et que les critères TEC sont désormais satisfaits,
+    reprend la résolution à ce niveau.
+    """
+    for key in ("subposition_status", "subposition_label", "subposition_resolution"):
+        item.pop(key, None)
+
+    hs = str(item.get("hs_code") or "").strip()
+    suggested = str(item.get("hs_code_suggested") or "").strip()
+    source = (source_text or item.get("source_query") or item.get("description") or "").strip()
+
+    if suggested and _hs_digit_count(suggested) > _hs_digit_count(hs) and source:
+        from .tariff_subposition import resolve_subposition_from_tec
+
+        preview = resolve_subposition_from_tec(suggested, source)
+        if preview.status == "confirmed":
+            item["hs_code"] = preview.matched_code or suggested
+            return item["hs_code"]
+        item["hs_code"] = suggested
+        return suggested
+    return hs
 
 
 def analyze_classification_completeness(
@@ -165,19 +172,25 @@ def analyze_classification_completeness(
     source_text: str | None = None,
     item: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """
+    Analyse les informations disponibles pour la description courante uniquement.
+    Les critères manquants d'une classification antérieure ne bloquent pas si la
+    description actuelle les fournit désormais.
+    """
     item = item or {}
     source_block = (source_text or "").strip()
+    effective_source, _trusted = build_effective_classification_source(source_block, item)
     combined = "\n".join(
         part
         for part in (
-            source_block,
+            effective_source,
             str(item.get("description") or ""),
             str(item.get("justification") or ""),
         )
         if part
     )
     norm = _normalize(combined)
-    source_norm = _normalize(source_block)
+    source_norm = _normalize(effective_source)
     hs_code = str(item.get("hs_code") or "")
     chapter = str(item.get("chapter") or "").strip()
 
@@ -198,15 +211,16 @@ def analyze_classification_completeness(
     has_value = bool(
         re.search(r"\b(?:valeur|prix|usd|dollars?|eur|fcfa)\b", source_norm or norm)
     )
-    has_exterior = _has_definitive_exterior_surface(source_block)
+    has_exterior = _has_definitive_exterior_surface(effective_source or source_block)
     has_revetement = any(
         token in (source_norm or norm)
         for token in ("revetement", "recouvert", "doublure", "interieur")
     )
     has_brand = any(token in (source_norm or norm) for token in ("marque", "brand", "fabricant"))
 
-    subposition_detail_required = _position_requires_subposition_detail(hs_code, chapter)
+    subposition_detail_required = position_has_discriminating_subpositions(hs_code)
     mixed = _is_mixed_composition(source_block or combined)
+    tec_missing = preview_missing_discriminating_criteria(hs_code, effective_source, item) if hs_code else []
 
     checklist: list[dict[str, str]] = [
         {"field": "function", "label": "Fonction / usage", "status": "ok" if has_function else "missing"},
@@ -225,18 +239,14 @@ def analyze_classification_completeness(
         },
     ]
 
-    missing_critical: list[str] = []
+    missing_critical: list[str] = list(tec_missing)
     missing_optional: list[str] = []
 
-    if subposition_detail_required:
-        exterior_status = "ok" if has_exterior else ("missing" if mixed else "optional_missing")
+    if subposition_detail_required and _tec_position_mentions_surface(hs_code):
+        exterior_status = "ok" if has_exterior else ("missing" if "surface exterieure" in _normalize(" ".join(tec_missing)) else "optional_missing")
         checklist.append(
             {"field": "exterior_surface", "label": "Surface exterieure", "status": exterior_status}
         )
-        if mixed and not has_exterior:
-            missing_critical.append(_infer_missing_subposition_field(hs_code, chapter))
-            missing_optional.append("Presence eventuelle d'un revetement")
-            missing_optional.append("Cuir apparent ou textile apparent")
         checklist.append(
             {
                 "field": "revetement",
@@ -244,9 +254,14 @@ def analyze_classification_completeness(
                 "status": "ok" if has_revetement else "optional_missing",
             }
         )
-
-    if not has_function and subposition_detail_required:
-        missing_optional.append("Usage / fonction principale")
+    elif has_revetement:
+        checklist.append(
+            {
+                "field": "revetement",
+                "label": "Revetement / doublure",
+                "status": "ok",
+            }
+        )
 
     score = 40
     if has_function:
@@ -257,8 +272,6 @@ def analyze_classification_completeness(
         score += 10
     if has_exterior:
         score += 20
-    elif subposition_detail_required and mixed:
-        score -= 10
     if has_origin:
         score += 5
     if has_value:
@@ -274,7 +287,9 @@ def analyze_classification_completeness(
     else:
         status = "confirmee" if can_confirm else "provisoire"
 
-    requires_exterior_surface = bool(subposition_detail_required and mixed and not has_exterior)
+    requires_exterior_surface = any(
+        "surface exterieure" in _normalize(field) for field in missing_critical
+    )
 
     return {
         "checklist": checklist,
@@ -299,14 +314,19 @@ def _subposition_code_pattern(position: str) -> re.Pattern[str]:
 
 
 def _apply_provisional_position_level(item: dict[str, Any], analysis: dict[str, Any]) -> None:
-    """Si la sous-position n'est pas confirmable, ne garder que la position."""
-    hs = str(item.get("hs_code") or "").strip()
-    digits = re.sub(r"\D", "", hs)
-    if len(digits) <= 4:
-        return
-    position = position_code_from_hs(hs)
-    item["hs_code_suggested"] = hs
-    item["hs_code"] = position
+    """Si la sous-position n'est pas confirmable, garder le dernier niveau TEC justifiable."""
+    resolution = item.get("subposition_resolution")
+    if isinstance(resolution, dict) and resolution.get("hs_code"):
+        justified = str(resolution["hs_code"]).strip()
+    else:
+        justified = position_code_from_hs(str(item.get("hs_code") or ""))
+
+    current = str(item.get("hs_code") or "").strip()
+    current_digits = len(re.sub(r"\D", "", current))
+    justified_digits = len(re.sub(r"\D", "", justified))
+    if current_digits > justified_digits and justified_digits >= 4:
+        item.setdefault("hs_code_suggested", current)
+    item["hs_code"] = justified
     item["subposition_status"] = "a_determiner"
     missing = analysis.get("missing_critical") or []
     if missing:
@@ -315,13 +335,9 @@ def _apply_provisional_position_level(item: dict[str, Any], analysis: dict[str, 
         item["subposition_label"] = (
             "Sous-position a determiner apres validation des informations manquantes"
         )
-    heading = get_position_heading(position)
-    if heading:
-        item["position_label"] = heading
-
-    justification = str(item.get("justification") or "")
-    justification = _subposition_code_pattern(position).sub(position, justification)
-    item["justification"] = justification.strip()
+    label = lookup_position_label(justified) or get_position_heading(position_code_from_hs(justified))
+    if label:
+        item["position_label"] = label
 
 
 _EXTERIOR_HALLUCINATION_RE = re.compile(
@@ -342,6 +358,11 @@ _SURFACE_MIXTE_CLAUSE_RE = re.compile(
 )
 _PROPOSITION_BOILERPLATE_RE = re.compile(
     r"Proposition indicative[^.!?]*[.!?]\s*",
+    re.IGNORECASE,
+)
+_INCOMPLETE_NARRATIVE_TAIL_RE = re.compile(
+    r"\s+(?:cette classification est indicative et|proposition indicative et|"
+    r"doit etre validee et|a faire valider et)\s*$",
     re.IGNORECASE,
 )
 
@@ -484,42 +505,19 @@ def _rebuild_description_from_source(source_text: str) -> str:
 
 
 def build_provisional_ch42_narrative(classifications: list[dict[str, Any]]) -> str:
-    product_label = "l'article"
-    position_code = "la position retenue"
-    chapter = ""
-    for item in classifications:
-        if not isinstance(item, dict) or not item.get("requires_exterior_surface"):
-            continue
-        product_label = _resolve_product_label(item)
-        hs = str(item.get("hs_code") or "").strip()
-        if hs:
-            digits = re.sub(r"\D", "", hs)
-            if len(digits) >= 4:
-                position_code = f"{digits[:2]}.{digits[2:4]}"
-            else:
-                position_code = hs
-        chapter = str(item.get("chapter") or "").strip()
-        break
-    chapter_part = f"du chapitre {chapter}" if chapter else "du chapitre concerne"
-    return (
-        f"{INDICATIVE_DISCLAIMER_ASCII}\n\n"
-        "Produit analyse\n"
-        f"{product_label}\n\n"
-        "La matiere de la surface exterieure n'est pas precisee dans la description fournie. "
-        "Les pourcentages de composition globale ne suffisent pas a determiner la sous-position "
-        f"{chapter_part}. Position retenue : {position_code}, sous-position a confirmer. "
-        "RGI 1 appliquee. RGI 3 non applicable faute d'information suffisante."
-    )
+    """Alias retro-compatible : narrative derivee du moteur de decision."""
+    from .decision_engine import build_narrative_from_classifications
+
+    return build_narrative_from_classifications(classifications)
 
 
 def sanitize_provisional_narrative(narrative: str, classifications: list[dict[str, Any]]) -> str:
-    """Nettoie le narrative global : texte canonique provisoire, sinon dedoublonnage."""
-    needs_provisional_narrative = any(
-        isinstance(item, dict) and item.get("requires_exterior_surface")
-        for item in classifications
-    )
-    if needs_provisional_narrative:
-        return build_provisional_ch42_narrative(classifications)
+    """Remplace le narrative LLM par une reformulation des decisions structurees."""
+    items = [item for item in classifications if isinstance(item, dict)]
+    if items:
+        from .decision_engine import build_narrative_from_classifications
+
+        return build_narrative_from_classifications(items)
 
     text = (narrative or "").strip()
     if not text:
@@ -527,6 +525,7 @@ def sanitize_provisional_narrative(narrative: str, classifications: list[dict[st
 
     body = _PROPOSITION_BOILERPLATE_RE.sub("", text).strip()
     body = re.sub(r"\s{2,}", " ", body).strip()
+    body = _INCOMPLETE_NARRATIVE_TAIL_RE.sub("", body).strip()
     prefix = f"{INDICATIVE_DISCLAIMER_ASCII}"
     return f"{prefix} {body}".strip() if body else prefix
 
@@ -573,26 +572,45 @@ def _sanitize_provisional_item_text(
 
     justification = str(item.get("justification") or "")
     justification = _strip_false_rgi3_claims(justification)
-    missing = (analysis or {}).get("missing_critical") or []
-    if missing:
-        rgi3_note = (
-            "RGI 3 non applicable : information insuffisante pour appliquer un critere de sous-position "
-            f"({'; '.join(missing)})."
-        )
-        if rgi3_note.lower() not in justification.lower():
-            justification = f"{justification} {rgi3_note}".strip()
     item["justification"] = justification
 
 
 def apply_completeness_adjustments(item: dict[str, Any], source_text: str | None = None) -> None:
     """Enrichit la classification et ajuste confiance/statut si informations critiques manquent."""
-    analysis = analyze_classification_completeness(source_text=source_text, item=item)
+    source = (source_text or item.get("source_query") or item.get("description") or "").strip()
+    original_hs = _prepare_item_for_criteria_reevaluation(item, source)
+    analysis = analyze_classification_completeness(source_text=source, item=item)
     item["completeness_checklist"] = analysis["checklist"]
     item["missing_fields"] = analysis["missing_fields"]
     item["completeness_score"] = analysis["completeness_score"]
     item["classification_status"] = analysis["classification_status"]
     item["requires_exterior_surface"] = analysis["requires_exterior_surface"]
     item["subposition_detail_required"] = analysis["subposition_detail_required"]
+
+    from .tariff_subposition import apply_subposition_resolution
+
+    subdivision = apply_subposition_resolution(item, source_text=source)
+    subdivision_confirmed = subdivision.status == "confirmed"
+
+    if subdivision.missing_criteria and not subdivision_confirmed:
+        analysis["missing_critical"] = subdivision.missing_criteria
+        analysis["can_classify_confidently"] = False
+        analysis["classification_status"] = "provisoire"
+        analysis["requires_exterior_surface"] = any(
+            "surface exterieure" in _normalize(field) for field in subdivision.missing_criteria
+        )
+        item["missing_fields"] = subdivision.missing_criteria + analysis.get("missing_optional", [])
+        item["classification_status"] = "provisoire"
+        item["requires_exterior_surface"] = analysis["requires_exterior_surface"]
+    elif subdivision_confirmed:
+        analysis["missing_critical"] = []
+        analysis["can_classify_confidently"] = True
+        analysis["requires_exterior_surface"] = False
+        item["missing_fields"] = analysis.get("missing_optional", [])
+        item.pop("requires_exterior_surface", None)
+
+    if subdivision_confirmed and not analysis["missing_critical"]:
+        item["classification_status"] = "confirmee"
 
     if not analysis["can_classify_confidently"]:
         confidence = item.get("confidence")
@@ -602,29 +620,23 @@ def apply_completeness_adjustments(item: dict[str, Any], source_text: str | None
             current_conf = 90
         item["confidence"] = min(current_conf, 65)
 
-        justification = str(item.get("justification") or "").strip()
-        if analysis["missing_critical"]:
-            note = (
-                "Information insuffisante pour determiner avec certitude la sous-position : "
-                + "; ".join(analysis["missing_critical"])
-            )
-            if note.lower() not in justification.lower():
-                item["justification"] = f"{justification} {note}".strip() if justification else note
-
-        hs_digits = re.sub(r"\D", "", str(item.get("hs_code") or ""))
-        if analysis["requires_exterior_surface"] or (
-            analysis["subposition_detail_required"] and len(hs_digits) > 4
-        ):
+    hs_digits = re.sub(r"\D", "", str(item.get("hs_code") or ""))
+    if not subdivision_confirmed:
+        original_digits = re.sub(r"\D", "", original_hs)
+        if len(original_digits) > 4:
+            item["hs_code_suggested"] = original_hs
+        if len(hs_digits) > 4:
             _apply_provisional_position_level(item, analysis)
-            _sanitize_provisional_item_text(item, source_text=source_text, analysis=analysis)
+        _sanitize_provisional_item_text(item, source_text=source, analysis=analysis)
+    else:
+        item.pop("hs_code_suggested", None)
+        _sanitize_provisional_item_text(item, source_text=source, analysis=analysis)
 
-    from .classification_analysis import build_structured_classification_analysis
+    from .classification_coherence import enforce_classification_coherence
+    from .decision_engine import render_outputs_from_decision
 
-    item["classification_analysis"] = build_structured_classification_analysis(
-        source_text=source_text,
-        item=item,
-        completeness=analysis,
-    )
+    enforce_classification_coherence(item)
+    render_outputs_from_decision(item, source)
 
     if item.get("description_quality") is not None and analysis["requires_exterior_surface"]:
         try:

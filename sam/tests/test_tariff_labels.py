@@ -2,7 +2,7 @@ import json
 import unittest
 
 from sam import api as api_mod
-from sam.tariff_labels import build_tariff_label_index, lookup_position_label
+from sam.tariff_labels import build_tariff_label_index, lookup_position_label, resolve_hs_code_to_tec
 
 
 class TestTariffLabels(unittest.TestCase):
@@ -54,6 +54,25 @@ class TestTariffLabels(unittest.TestCase):
         obj = json.loads(out)
         self.assertIn("position_label", obj["classifications"][0])
         self.assertIn("cuir", obj["classifications"][0]["position_label"].lower())
+
+    def test_resolve_hs_code_replaces_placeholder_subposition(self) -> None:
+        from sam.tariff_labels import build_tariff_label_index, set_tariff_label_index
+
+        chunk = type("C", (), {"page_content": (
+            "8471.30.10.00 -- Presentes demontes importes pour l'industrie du montage u 5 1\n"
+            "8471.30.90.00 -- Autres u 5 1"
+        )})()
+        set_tariff_label_index(build_tariff_label_index([chunk]))
+        rate_index = {
+            "8471.30.10.00": {"us_unit": "u", "dd_rate": "5", "rs_rate": "1"},
+            "8471.30.90.00": {"us_unit": "u", "dd_rate": "5", "rs_rate": "1"},
+        }
+        resolved = resolve_hs_code_to_tec(
+            "8471.30.00.00",
+            description="Ordinateur portable livre monte et neuf",
+            rate_index=rate_index,
+        )
+        self.assertEqual(resolved, "8471.30.90.00")
 
 
 if __name__ == "__main__":

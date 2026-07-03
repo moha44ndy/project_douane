@@ -46,3 +46,8 @@ class Config:
     UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
     UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
+    # Agent d'identification produit (OpenAI) avant classification TEC.
+    MOSAM_PRODUCT_IDENTIFICATION_ENABLED = os.getenv(
+        "MOSAM_PRODUCT_IDENTIFICATION_ENABLED", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+

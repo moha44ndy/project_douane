@@ -231,7 +231,21 @@ def build_structured_classification_analysis(
     position_code = _format_retained_position_code(str(item.get("hs_code") or ""))
 
     rgi_applied = _extract_rgi_tokens(justification)
+    rgi_3b_meta = item.get("rgi_3b") if isinstance(item.get("rgi_3b"), dict) else {}
+    rgi_pipeline_meta = item.get("rgi_pipeline") if isinstance(item.get("rgi_pipeline"), dict) else {}
+    rgi_not_applicable_early = None
+    if rgi_3b_meta.get("applied"):
+        if "RGI 3 b" not in rgi_applied and "RGI 3" not in rgi_applied:
+            rgi_applied = ["RGI 3 b"] + [r for r in rgi_applied if not re.match(r"RGI\s*3", r, re.I)]
+    elif rgi_3b_meta.get("not_applicable_reason"):
+        rgi_not_applicable_early = {
+            "rule": "RGI 3 b",
+            "reason": str(rgi_3b_meta.get("not_applicable_reason") or ""),
+        }
+
     rgi_not_applicable: list[dict[str, str]] = []
+    if rgi_not_applicable_early:
+        rgi_not_applicable.append(rgi_not_applicable_early)
     if completeness.get("requires_exterior_surface"):
         rgi_applied = [r for r in rgi_applied if not re.match(r"RGI\s*3", r, re.I)]
         if not rgi_applied:
@@ -298,6 +312,8 @@ def build_structured_classification_analysis(
         "missing_information": completeness.get("missing_critical", []),
         "rgi_applied": [r for r in rgi_applied if r not in {x["rule"] for x in rgi_not_applicable}],
         "rgi_not_applicable": rgi_not_applicable,
+        "rgi_3b": rgi_3b_meta,
+        "rgi_pipeline": rgi_pipeline_meta,
         "decision": decision,
         "facts": facts,
         "hypotheses": hypotheses,

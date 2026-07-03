@@ -59,6 +59,68 @@ def _looks_like_tariff_label_line(line: str) -> bool:
     return False
 
 
+def _looks_like_table_header_line(line: str) -> bool:
+    """Exclut les en-tetes de colonnes du tableau tarifaire (N.T.S., U.S., D.D., etc.)."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if re.match(r"^[_\-\s]+$", stripped):
+        return True
+    norm = re.sub(r"\s+", " ", stripped).lower()
+    if re.match(r"^n°\s*de\s*$", norm):
+        return True
+    compact = re.sub(r"[^a-z0-9°.]", "", norm)
+    if "nts" in compact and ("designation" in norm or "position" in norm):
+        return True
+    if "designation des marchandises" in norm:
+        return True
+    if re.search(r"u\.s\.\s+d\.d\.\s+r\.s", norm):
+        return True
+    return False
+
+
+def _score_chapter_title(title: str) -> int:
+    if not title or _looks_like_table_header_line(title):
+        return 0
+    stripped = title.strip()
+    if re.match(r"^[_\-\s]+$", stripped):
+        return 0
+
+    lower = stripped.lower()
+    if re.match(r"^[a-z]\)", stripped):
+        return 0
+    if re.match(r"^\d+\s*\.-", stripped):
+        return 0
+    if re.search(r"\bn°\s*\d", lower):
+        return 0
+    if re.search(r"\d{4}\.\d{2}", stripped[:24]):
+        return 0
+    if any(
+        phrase in lower
+        for phrase in (
+            "sont rangees",
+            "sont rangées",
+            "classées sous",
+            "classes sous",
+            "aux fins du",
+            "au sens du",
+            "sous reserve",
+        )
+    ):
+        return 0
+
+    score = min(len(stripped), 140)
+    if re.match(r"^[A-ZÉÈÀÂÎÔÙÜÇ]", stripped):
+        score += 35
+    if ";" in stripped and len(stripped) < 220:
+        score += 25
+    if len(stripped) <= 200:
+        score += 15
+    if re.match(r"^(aussi|celle|cela|cette|ou |et les|sous |dans |pour )", lower):
+        score -= 120
+    return max(score, 0)
+
+
 def build_chapter_titles_index(chunks: Iterable) -> dict[int, str]:
     """Extrait les titres de chapitre depuis les en-tetes des chunks TEC."""
     index: dict[int, str] = {}
@@ -81,11 +143,13 @@ def build_chapter_titles_index(chunks: Iterable) -> dict[int, str]:
                     continue
                 if re.match(r"^Chapitre\s+\d", follow, re.IGNORECASE):
                     break
-                if re.match(r"^N°\s*de\s*position", follow, re.IGNORECASE):
+                if re.match(r"^N°\s*de", follow, re.IGNORECASE):
                     break
                 if re.match(r"^Notes\.?", follow, re.IGNORECASE):
                     break
                 if re.match(r"^\d+\s*\.-", follow):
+                    break
+                if _looks_like_table_header_line(follow):
                     break
                 if _looks_like_tariff_label_line(follow):
                     break
@@ -93,7 +157,9 @@ def build_chapter_titles_index(chunks: Iterable) -> dict[int, str]:
                     continue
                 title_parts.append(re.sub(r"\s+", " ", follow))
             if title_parts:
-                index[chapter] = " ".join(title_parts)[:500]
+                candidate = " ".join(title_parts)[:500]
+                if _score_chapter_title(candidate) > _score_chapter_title(index.get(chapter, "")):
+                    index[chapter] = candidate
     return index
 
 

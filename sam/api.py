@@ -43,8 +43,16 @@ from .db import get_db
 from .brand_messaging import INDICATIVE_DISCLAIMER_FR
 from .classification_completeness import apply_completeness_adjustments, sanitize_provisional_narrative
 from .classification_risk import enrich_classifications_with_risk
+from .rgi import apply_rgi_pipeline_to_response
 from .description_quality import assess_description_quality, enrich_item_description_quality
-from .tariff_labels import build_tariff_label_index, lookup_position_label, set_tariff_label_index
+from .tariff_labels import (
+    build_heading_narrative_index,
+    build_tariff_label_index,
+    lookup_position_label,
+    resolve_hs_code_to_tec,
+    set_heading_narrative_index,
+    set_tariff_label_index,
+)
 from .tariff_metadata import get_full_chapter_name, get_full_section_name, get_position_heading
 from .tariff_rates import build_tariff_rate_index, enrich_item_tariff_rates, set_tariff_rate_index
 from .tariff_notes import (
@@ -55,6 +63,7 @@ from .tariff_notes import (
 )
 from .tariff_position_rules import build_surface_sensitive_positions, set_surface_sensitive_positions
 from .rag import (
+    ClassificationPipelineResult,
     add_validated_classification_example_to_index,
     build_assistant_meta_response_json,
     initialize_chatbot,
@@ -64,6 +73,7 @@ from .rag import (
     process_user_input,
 )
 from .config.settings import Config
+from .product_identification import product_identification_enabled
 from .app_logger import get_logger
 
 logger = get_logger(__name__)
@@ -395,6 +405,11 @@ def _normalize_classifications_response(raw_text: str) -> str:
         hs = item.get("hs_code")
         if not hs:
             continue
+        source_text = str(item.get("source_query") or item.get("description") or "")
+        resolved_hs = resolve_hs_code_to_tec(str(hs), description=source_text)
+        if resolved_hs and resolved_hs != str(hs).strip():
+            item["hs_code"] = resolved_hs
+            hs = resolved_hs
         s = str(hs).strip().upper()
         if s in ("NON APPLICABLE", "NON RENSEIGNÉ", "N/A", "NA") or len(s) < 4:
             continue
@@ -451,6 +466,7 @@ def _normalize_classifications_response(raw_text: str) -> str:
                 item[k] = _strip_accents_ascii(item[k])
 
     data["classifications"] = _filter_phantom_classifications(classifications)
+    data = apply_rgi_pipeline_to_response(data)
     for item in data["classifications"]:
         if isinstance(item, dict):
             source = item.get("source_query") or item.get("description")
@@ -683,6 +699,59 @@ def _ensure_json_raw(raw: Any) -> str:
         return json.dumps(obj, ensure_ascii=False)
     except Exception:
         return json.dumps({"error": "json_serialize_failed", "raw_preview": s[:200]}, ensure_ascii=False)
+
+
+def _unwrap_pipeline_result(
+    result: ClassificationPipelineResult | str,
+) -> ClassificationPipelineResult:
+    if isinstance(result, ClassificationPipelineResult):
+        return result
+    return ClassificationPipelineResult(llm_raw=str(result))
+
+
+def _attach_product_identification(
+    data: dict[str, Any],
+    product_identifications: list[dict[str, Any]] | None,
+) -> None:
+    if not product_identifications:
+        return
+    active = [
+        entry
+        for entry in product_identifications
+        if isinstance(entry, dict) and not entry.get("skipped")
+    ]
+    if not active:
+        return
+    data["product_identification"] = active
+    classifications = data.get("classifications")
+    if not isinstance(classifications, list):
+        return
+    for index, item in enumerate(classifications):
+        if not isinstance(item, dict) or index >= len(product_identifications):
+            continue
+        entry = product_identifications[index]
+        if isinstance(entry, dict) and not entry.get("skipped"):
+            item["product_identification"] = entry
+            enriched = str(entry.get("enriched_description") or "").strip()
+            if enriched:
+                item["source_query"] = enriched
+
+
+def _finalize_classification_response(
+    raw_text: str,
+    product_identifications: list[dict[str, Any]] | None = None,
+) -> str:
+    normalized = _normalize_classifications_response(raw_text)
+    if not product_identifications:
+        return normalized
+    try:
+        data = json.loads(_ensure_json_raw(normalized))
+    except Exception:
+        return normalized
+    if isinstance(data, dict):
+        _attach_product_identification(data, product_identifications)
+        return _ensure_json_raw(data)
+    return normalized
 
 
 def _inspect_raw_json(raw_out: str, request_id: str, when: str) -> None:
@@ -1595,6 +1664,9 @@ def startup_event() -> None:
     tariff_label_index = build_tariff_label_index(chunks)
     set_tariff_label_index(tariff_label_index)
     app.state.tariff_label_index = tariff_label_index
+    heading_narrative_index = build_heading_narrative_index(chunks)
+    set_heading_narrative_index(heading_narrative_index)
+    app.state.heading_narrative_index = heading_narrative_index
     tariff_rate_index = build_tariff_rate_index(chunks)
     set_tariff_rate_index(tariff_rate_index)
     app.state.tariff_rate_index = tariff_rate_index
@@ -1612,6 +1684,10 @@ def startup_event() -> None:
     logger.info("%s chapitres avec notes TEC indexes", len(chapter_notes_index))
     logger.info("%s titres de chapitres indexes depuis les chunks TEC", len(chapter_titles_index))
     logger.info("%s positions sensibles a la surface exterieure (TEC)", len(surface_sensitive_positions))
+    if product_identification_enabled():
+        logger.info("Agent d'identification produit active (OpenAI)")
+    else:
+        logger.info("Agent d'identification produit desactive")
     # Index FAISS dedie aux classifications validées (apprentissage par exemples).
     classifications_index, classifications_meta = initialize_validated_classifications_index()
     app.state.classifications_index = classifications_index
@@ -3410,14 +3486,19 @@ async def classify_file(
                 len(batch_items),
             )
 
-            batch_raw = process_user_input(
+            batch_pipeline = _unwrap_pipeline_result(
+                process_user_input(
                 batch_input,
                 chunks,
                 index,
                 validated_index=getattr(app.state, "classifications_index", None),
                 validated_meta=getattr(app.state, "classifications_meta", None),
+                )
             )
-            normalized_batch = _normalize_classifications_response(batch_raw)
+            normalized_batch = _finalize_classification_response(
+                batch_pipeline.llm_raw,
+                batch_pipeline.product_identifications,
+            )
             batch_raw_out = _ensure_json_raw(normalized_batch)
             _inspect_raw_json(batch_raw_out, request_id, f"FRESH_BATCH_{batch_idx}")
 
@@ -3468,14 +3549,19 @@ async def classify_file(
                             continue
 
                         single_input = f"- {it}"
-                        single_raw = process_user_input(
+                        single_pipeline = _unwrap_pipeline_result(
+                            process_user_input(
                             single_input,
                             chunks,
                             index,
                             validated_index=getattr(app.state, "classifications_index", None),
                             validated_meta=getattr(app.state, "classifications_meta", None),
+                            )
                         )
-                        normalized_single = _normalize_classifications_response(single_raw)
+                        normalized_single = _finalize_classification_response(
+                            single_pipeline.llm_raw,
+                            single_pipeline.product_identifications,
+                        )
                         single_raw_out = _ensure_json_raw(normalized_single)
                         _inspect_raw_json(
                             single_raw_out,
@@ -3690,12 +3776,14 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
         item_meta = {}
 
     try:
-        result = process_user_input(
+        pipeline = _unwrap_pipeline_result(
+            process_user_input(
             classify_input,
             chunks,
             index,
             validated_index=getattr(app.state, "classifications_index", None),
             validated_meta=getattr(app.state, "classifications_meta", None),
+            )
         )
     except Exception as exc:  # pragma: no cover - garde-fou
         import traceback
@@ -3706,9 +3794,12 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
 
     # Corriger section/chapitre à partir du code SH pour chaque classification
     result = _inject_source_query_into_llm_response(
-        result, classify_input or (payload.query or "")
+        pipeline.llm_raw, classify_input or (payload.query or "")
     )
-    result = _normalize_classifications_response(result)
+    result = _finalize_classification_response(
+        result,
+        pipeline.product_identifications,
+    )
     raw_out = _ensure_json_raw(result)
 
     # Injecte une quantité par classification quand on a pu extraire des items.

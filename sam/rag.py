@@ -6,7 +6,9 @@ import requests
 import os
 import re
 import unicodedata
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from typing import Any
 from .config.settings import Config
 from .app_logger import get_logger
 from dotenv import load_dotenv
@@ -22,6 +24,7 @@ from .db import get_db
 import urllib3
 import json
 from openai import OpenAI
+from .product_identification import prepare_query_for_classification
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1028,14 +1031,13 @@ def use_llm(prompt_text):
     try:
         system_instruction = (
             "Tu es Mosam, un assistant logiciel pour la classification tarifaire TEC/SH CEDEAO. "
-            "Règles générales d'interprétation (RGI): "
-            "RGI 1: Les titres des sections, chapitres et sous-chapitres n'ont qu'une valeur indicative. "
-            "RGI 2: Marchandises incomplètes ou non finies classées comme complètes. "
-            "RGI 3: Mélange ou assemblage classé selon la matière prépondérante; la RGI 3 b) porte sur le caractère essentiel "
-            "(fonction, usage, valeur, présentation, matière dominante, surface extérieure, etc.), pas sur un simple pourcentage de composition. "
-            "RGI 4: Sinon, position la plus analogue. "
-            "RGI 5: Les emballages sont classés avec les marchandises qu'ils contiennent (ne pas créer de ligne séparée pour l'emballage primaire: flacon, gobelet doseur, etc.). "
-            "RGI 6: Sous-positions selon les termes des sous-positions. "
+            "Regles generales d'interpretation (RGI) — ordre obligatoire : "
+            "RGI 1 (position decrivant directement le produit + Notes legales) ; "
+            "RGI 2 a (incomplet/demonte/non monte) ; RGI 2 b (melange de matieres → conflit possible) ; "
+            "RGI 3 uniquement si plusieurs positions restent possibles : 3 a plus specifique, 3 b caractere essentiel "
+            "(assortiment ou produit integre, jamais sur simple % matiere), 3 c dernier recours numerique ; "
+            "RGI 4 analogie en dernier recours ; RGI 5 emballages/etuis seulement ; RGI 6 sous-position. "
+            "Le post-traitement Mosam applique ce pipeline : ne decompose pas un assortiment en lignes separees. "
             "Réponds uniquement aux questions posées. Priorise la clarté et la concision. "
             "Ne mentionne jamais les documents sources; fais comme si les infos étaient internes. "
             "Réponds dans la langue du prompt. "
@@ -1057,6 +1059,10 @@ def use_llm(prompt_text):
             "8) N'ajoute jamais de lignes pour des termes non-marchandise ou méta-informations isolées (ex: « Qte », « Valeur », « Origine », nombres seuls, pays seuls). Si une entrée est non classifiable, n'invente pas de code précis: garde un code non renseigné et une confiance très basse. "
             "9) Pour des variantes proches (singulier/pluriel, accents, alias simples), privilégie l'interprétation métier la plus naturelle et évite de multiplier des lignes quasi identiques inutilement. "
             "10) Si la demande porte sur Mosam (identité, aide, rôle, fonctionnement, règles d'utilisation, origine du projet, etc.) et non sur une marchandise, réponds brièvement dans narrative et mets classifications exactement à []. N'invente pas de lignes produit à partir du contexte documentaire. Si tu ne connais pas un fait (ex. auteur du logiciel), dis-le clairement. "
+            "11) Un bloc « Complement internet » peut être fourni : utilise-le seulement pour mieux identifier le produit ou des usages courants, jamais pour imposer un code SH ou un taux si le TEC local ne le confirme pas. En cas de conflit, le contexte TEC local et les notes de chapitre priment toujours. "
+            "11bis) Une « Description enrichie pour classification » peut résulter d'un agent d'identification préalable : utilise ces éléments (nature, usage, matériaux) pour le raisonnement RGI, mais le code SH doit toujours reposer sur le contexte TEC local ci-dessous, jamais sur la seule connaissance générale ou internet. "
+            "12) Sous-position (RGI 6) : ne jamais inventer un code a 8 ou 10 chiffres. Les criteres de subdivision sont lus dans les libelles TEC de la position retenue ; "
+            "n'arreter au dernier niveau justifiable ; si une information juridiquement indispensable manque, le signaler et limiter la confiance. "
             "Abréviations: D.D. = droits de douane, R.S. = régime statistique, U.S. = unité de mesure. "
             "Retourne exclusivement un objet JSON (aucun texte hors JSON) de la forme: "
             "{\"narrative\":\"texte pour l'utilisateur (avec rappel: proposition indicative, à faire valider avant toute utilisation officielle)\",\"classifications\":[{"
@@ -1086,6 +1092,7 @@ def use_llm(prompt_text):
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt_text},
             ],
+            max_tokens=2048,
         )
 
         return response.choices[0].message.content
@@ -1201,28 +1208,55 @@ def build_context_for_query(query, chunks, index):
     return context
 
 
+@dataclass
+class ClassificationPipelineResult:
+    """Reponse LLM + identification produit par marchandise."""
+
+    llm_raw: str
+    product_identifications: list[dict[str, Any]] = field(default_factory=list)
+
+
 def process_user_input(
     user_input,
     chunks,
     index,
     validated_index: faiss.Index | None = None,
     validated_meta: list[dict[str, object]] | None = None,
-):
+) -> ClassificationPipelineResult:
     if is_assistant_meta_query(user_input):
         logger.debug("meta query about assistant; skip RAG/LLM classification")
-        return build_assistant_meta_response_json(user_input)
+        return ClassificationPipelineResult(
+            llm_raw=build_assistant_meta_response_json(user_input)
+        )
 
     queries = split_user_queries(user_input)
     if not queries:
-        return "Merci de préciser au moins une marchandise à classifier."
+        return ClassificationPipelineResult(
+            llm_raw="Merci de préciser au moins une marchandise à classifier."
+        )
 
     prompt_sections = []
+    product_identifications: list[dict[str, Any]] = []
     for i, query in enumerate(queries, start=1):
-        context = build_context_for_query(query, chunks, index)
-        examples_context = build_validated_examples_context(query, validated_index, validated_meta)
+        classification_query, identification = prepare_query_for_classification(query)
+        product_identifications.append(identification.to_dict())
+
+        context = build_context_for_query(classification_query, chunks, index)
+        examples_context = build_validated_examples_context(
+            classification_query,
+            validated_index,
+            validated_meta,
+        )
         examples_block = f"\n{examples_context}" if examples_context else ""
+
+        original_note = ""
+        if identification.enriched_description.strip() and identification.enriched_description.strip() != query.strip():
+            original_note = f"\nSaisie utilisateur initiale : {query.strip()}"
+
         prompt_sections.append(
-            f"[MARCHANDISE {i}]\nDescription: {query}\nContexte documentaire:\n{context}{examples_block}"
+            f"[MARCHANDISE {i}]\nDescription enrichie pour classification :\n{classification_query}"
+            f"{original_note}\nContexte documentaire (TEC local):\n{context}"
+            f"{examples_block}"
         )
 
     combined_context = "\n\n".join(prompt_sections)
@@ -1235,4 +1269,7 @@ def process_user_input(
     logger.debug("start the send of the question")
     response = use_llm(enriched_prompt)
     logger.debug("finish the send of the question")
-    return response
+    return ClassificationPipelineResult(
+        llm_raw=response,
+        product_identifications=product_identifications,
+    )

@@ -104,7 +104,9 @@ def _hs_digit_count(hs_code: str | None) -> int:
 def _requires_provisional_taxes(item: dict[str, Any]) -> bool:
     if item.get("subposition_status") == "a_determiner":
         return True
-    if item.get("classification_status") == "provisoire" and _hs_digit_count(item.get("hs_code")) <= 4:
+    if str(item.get("classification_status") or "").strip().lower() == "provisoire":
+        return True
+    if _hs_digit_count(item.get("hs_code")) < 8:
         return True
     return False
 

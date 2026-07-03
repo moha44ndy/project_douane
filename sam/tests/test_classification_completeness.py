@@ -37,15 +37,18 @@ class TestClassificationCompleteness(unittest.TestCase):
             {
                 "page_content": (
                     "42.02 -- Sacs a main et contenants similaires, a surface exterieure en cuir\n"
+                    "4202.91.90.00 -- Sacs a dos -- A surface exterieure en cuir naturel kg 20 1\n"
                     "4202.92.90.00 -- Sacs a dos -- A surface exterieure en cuir naturel kg 20 1"
                 )
             },
         )()
         label_index = build_tariff_label_index([sample])
+        cls.label_index = label_index
         set_tariff_label_index(label_index)
         set_surface_sensitive_positions(build_surface_sensitive_positions(label_index))
 
-    def test_mixed_backpack_requires_exterior_surface(self) -> None:
+    def test_mixed_backpack_confirms_without_surface_when_not_discriminant(self) -> None:
+        """Si toutes les sous-positions candidates partagent le meme critere surface, ne pas bloquer."""
         analysis = analyze_classification_completeness(
             source_text=BACKPACK,
             item={
@@ -55,9 +58,39 @@ class TestClassificationCompleteness(unittest.TestCase):
                 "confidence": 90,
             },
         )
+        self.assertEqual(analysis["classification_status"], "confirmee")
+        self.assertFalse(analysis["requires_exterior_surface"])
+        self.assertEqual(analysis["missing_critical"], [])
+
+    def test_mixed_backpack_requires_surface_when_discriminant(self) -> None:
+        discriminant_index = build_tariff_label_index(
+            [
+                type(
+                    "Doc",
+                    (),
+                    {
+                        "page_content": (
+                            "4202.91.90.00 -- Sacs a dos -- A surface exterieure en cuir naturel kg 20 1\n"
+                            "4202.92.90.00 -- Sacs a dos -- A surface exterieure en matieres textiles kg 20 1"
+                        )
+                    },
+                )()
+            ]
+        )
+        set_tariff_label_index(discriminant_index)
+        analysis = analyze_classification_completeness(
+            source_text=BACKPACK,
+            item={
+                "hs_code": "4202",
+                "chapter": "42",
+                "description": "Sac a dos de randonnee",
+                "confidence": 90,
+            },
+        )
         self.assertEqual(analysis["classification_status"], "provisoire")
-        self.assertTrue(analysis["requires_exterior_surface"])
+        self.assertTrue(analysis["missing_critical"])
         self.assertIn("Surface exterieure", analysis["missing_critical"][0])
+        set_tariff_label_index(self.label_index)
 
     def test_exterior_surface_allows_confirmed_status(self) -> None:
         analysis = analyze_classification_completeness(
@@ -72,7 +105,7 @@ class TestClassificationCompleteness(unittest.TestCase):
         self.assertEqual(analysis["classification_status"], "confirmee")
         self.assertFalse(analysis["requires_exterior_surface"])
 
-    def test_apply_completeness_caps_confidence(self) -> None:
+    def test_apply_completeness_confirms_precise_code_without_discriminant_gap(self) -> None:
         item = {
             "hs_code": "4202.22.90.00",
             "chapter": "42",
@@ -81,16 +114,33 @@ class TestClassificationCompleteness(unittest.TestCase):
             "justification": "RGI 3 : predominance cuir. Codes 4202.31 (cuir) ou 4202.32 (textile).",
         }
         apply_completeness_adjustments(item, source_text=BACKPACK)
-        self.assertEqual(item["classification_status"], "provisoire")
-        self.assertLessEqual(item["confidence"], 65)
-        self.assertEqual(item["hs_code"], "42.02")
-        self.assertEqual(item["hs_code_suggested"], "4202.22.90.00")
-        self.assertEqual(item["subposition_status"], "a_determiner")
-        self.assertIn("surface exterieure", item["justification"].lower())
+        self.assertEqual(item["classification_status"], "confirmee")
+        self.assertGreater(item["confidence"], 65)
+        self.assertEqual(item["hs_code"], "4202.91.90.00")
+        self.assertNotIn("hs_code_suggested", item)
+        self.assertNotIn("subposition_status", item)
         self.assertNotIn("4202.31", item["justification"])
         self.assertNotIn("sac a dos releve", item["justification"].lower())
         self.assertIn("classification_analysis", item)
         self.assertEqual(item["classification_analysis"]["chapter_retained"], "42")
+
+    def test_enriched_description_unblocks_stale_provisional_state(self) -> None:
+        item = {
+            "hs_code": "42.02",
+            "hs_code_suggested": "4202.91.90.00",
+            "chapter": "42",
+            "description": "Sac a dos de randonnee",
+            "confidence": 65,
+            "classification_status": "provisoire",
+            "requires_exterior_surface": True,
+            "subposition_status": "a_determiner",
+            "subposition_detail_required": True,
+        }
+        apply_completeness_adjustments(item, source_text=BACKPACK_WITH_EXTERIOR)
+        self.assertEqual(item["classification_status"], "confirmee")
+        self.assertEqual(item["hs_code"], "4202.91.90.00")
+        self.assertNotIn("subposition_status", item)
+        self.assertFalse(item.get("requires_exterior_surface"))
 
     def test_confirmed_backpack_keeps_full_code(self) -> None:
         item = {
@@ -104,7 +154,7 @@ class TestClassificationCompleteness(unittest.TestCase):
         self.assertEqual(item["hs_code"], "4202.91.90.00")
         self.assertNotIn("subposition_status", item)
 
-    def test_llm_surface_hallucination_still_flags_missing(self) -> None:
+    def test_llm_surface_hallucination_does_not_block_when_not_discriminant(self) -> None:
         analysis = analyze_classification_completeness(
             source_text=BACKPACK,
             item={
@@ -114,8 +164,8 @@ class TestClassificationCompleteness(unittest.TestCase):
                 "confidence": 65,
             },
         )
-        self.assertEqual(analysis["classification_status"], "provisoire")
-        self.assertTrue(analysis["requires_exterior_surface"])
+        self.assertEqual(analysis["classification_status"], "confirmee")
+        self.assertFalse(analysis["requires_exterior_surface"])
 
     def test_sanitize_removes_hallucinated_surface_from_description(self) -> None:
         item = {
@@ -131,8 +181,9 @@ class TestClassificationCompleteness(unittest.TestCase):
         apply_completeness_adjustments(item, source_text=BACKPACK)
         self.assertNotIn("surface exterieure mixte", item["description"].lower())
         self.assertIn("randonnee", item["description"].lower())
-        self.assertIn("RGI 3 non applicable", item["justification"])
-        self.assertNotIn("RGI 3 b", item["justification"])
+        self.assertNotIn("RGI 3 b appliquee", item["justification"])
+        self.assertNotIn("+ RGI 3 b", item["justification"])
+        self.assertIn("[TEC]", item["justification"])
 
     def test_sanitize_narrative_uses_canonical_ch42_text(self) -> None:
         from sam.classification_completeness import sanitize_provisional_narrative
@@ -150,7 +201,9 @@ class TestClassificationCompleteness(unittest.TestCase):
         )
         self.assertIn("42.02", cleaned)
         self.assertNotIn("matiere de la,", cleaned.lower())
-        self.assertEqual(cleaned.count("RGI 3 non applicable"), 1)
+        self.assertIn("[TEC]", cleaned)
+        self.assertNotIn("RGI 3 non applicable", cleaned)
+        self.assertNotIn("surface exterieure mixte", cleaned.lower())
 
     def test_description_rebuilt_with_composition_from_source(self) -> None:
         item = {

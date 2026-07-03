@@ -88,7 +88,15 @@ def assess_contestation_risk(item: dict[str, Any]) -> dict[str, str]:
     if _is_hs_code_missing(hs_code):
         return {"risk_level": "high", "risk_label": "Classement incertain."}
 
-    if classification_status == "provisoire":
+    if classification_status == "provisoire" or item.get("subposition_status") == "a_determiner":
+        missing = item.get("missing_fields") if isinstance(item.get("missing_fields"), list) else []
+        if missing:
+            first = str(missing[0]).strip()
+            if first:
+                return {
+                    "risk_level": "medium",
+                    "risk_label": f"Information insuffisante : {first[:140]}.",
+                }
         return {
             "risk_level": "medium",
             "risk_label": "Information insuffisante pour classer avec certitude.",

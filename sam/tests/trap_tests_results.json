@@ -1,0 +1,366 @@
+[
+  {
+    "test": "TEST 1",
+    "ok": true,
+    "elapsed_s": 88.0,
+    "count": 1,
+    "rows": [
+      {
+        "hs_code": "6403.40.90.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Chaussure de securite industrielle a coquille de protection en metal, semelle en caoutchouc, tige cuir et textile techni",
+        "justification": "RGI 1 : La fonction principale est une chaussure de securite industrielle avec embout metallique (coquille de protection) a semelle exterieure en caoutchouc. RGI 3 b) : Le caractere essentiel est la fonction de protection, soutenue par la presence de l'embout acier et la semelle en caoutchouc. Les autres positions comme 6401 (chaussures etanches en caoutchouc) sont ecartees car il s'agit d'une cha"
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. Classification indicative basee sur la composition et l'usage du produit, a valider avant toute utilisation officielle. La chaussure est un equipement de protection industrielle conformement a la norme EN ISO 20345, avec embout acier metallique."
+  },
+  {
+    "test": "TEST 2",
+    "ok": false,
+    "error": "timed out",
+    "elapsed_s": 180.0
+  },
+  {
+    "test": "TEST 3",
+    "ok": true,
+    "elapsed_s": 41.0,
+    "count": 1,
+    "rows": [
+      {
+        "hs_code": "8806.30.00.00",
+        "confidence": 85,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Drone agricole professionnel multifonction (pulverisation pesticides, cartographie thermique, surveillance cultures, pri",
+        "justification": "RGI 1 : la fonction principale et le caractere essentiel de ce produit sont ceux d'un vehicule aerien sans pilote, utilise pour des fonctions utilitaires agricoles complexes incluant pulverisation et surveillance. Malgre la presence de composants varies (aluminium, carbone, electronique, batterie, camera), ils concourent tous a la fonction determinante. Le chapitre 88, position 8806 relative aux v"
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. A valider avant toute utilisation officielle."
+  },
+  {
+    "test": "TEST 4",
+    "ok": true,
+    "elapsed_s": 102.7,
+    "count": 9,
+    "rows": [
+      {
+        "hs_code": "3006.93.00.00",
+        "confidence": 85,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Kit medical d'urgence scelle",
+        "justification": "RGI 1 : Le produit est un kit medical d'urgence scelle, assimilable a une trousse pour essais cliniques masques ou preparations pharmaceutiques presentees sous forme de doses, donc classe au 3006.93.0000 conformement au contexte TEC local qui precise cette position pour trousses medicales ou preparations considerees comme telles. Les autres postes comme 3006.10 (catguts, ligatures) ou 3005 (ouates"
+      },
+      {
+        "hs_code": "0000",
+        "confidence": 10,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Contenu (description vague et sans precision)",
+        "justification": "Classification impossible avec les seules informations fournies  Contenu . Description trop vague, sans indication de nature ni d'usage, donc pas de code SH determinable. Confidence faible."
+      },
+      {
+        "hs_code": "9018.31.00.00",
+        "confidence": 95,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Seringues steriles",
+        "justification": "RGI 1 : La marchandise est des seringues steriles, clairement identifiees comme instruments medicaux de la position 9018.31.0000 pour seringues avec/sans aiguilles. Les autres positions du chapitre 90 sont ecartees car specifiques a d'autres instruments ou accessoires."
+      },
+      {
+        "hs_code": "3005.90.00.00",
+        "confidence": 85,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Compresses",
+        "justification": "RGI 1 : Les compresses sont des articles analogues aux ouates ou pansements, classes sous 3005.90 (autres categories d'articles similaires), compte tenu que 3005.10 est reserve aux pansements adhesifs et articles avec couche adhesive, ce qui n'est pas precise ici. Les autres positions comme 3006 (preparations pharmaceutiques) sont ecartees car la nature est plus textile/absorbante que preparation "
+      },
+      {
+        "hs_code": "4015.19.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Gants latex",
+        "justification": "RGI 1 : Les gants en latex sont des ouvrages en caoutchouc, generalement classes sous 4015.19 (gants en caoutchouc non vulcanise et autres types de gants en caoutchouc non specifies autrement). Les positions 4002 (latex naturel ou synthetique) concernent les matieres premieres plutot que les produits finis. Pas de precision sur usage medical, mais generalement les gants latex medicaux sont en 4015"
+      },
+      {
+        "hs_code": "3808.94.90.00",
+        "confidence": 85,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Antiseptique",
+        "justification": "RGI 1 : L'antiseptique est un desinfectant, classe en 3808.94 (Desinfectants), sous-position 90 (autres). Les autres positions chimiques du chapitre 33 concernant produits cosmetiques ou de toilette sont ecartees car antiseptique est traitement medical. Position 3003 (medicaments) est ecartee car antiseptique non specifie comme medicament mais produit chimique."
+      },
+      {
+        "hs_code": "8213.00.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Ciseaux chirurgicaux",
+        "justification": "RGI 1 : Ciseaux chirurgicaux sont des ciseaux a doubles branches classes en 8213.0000 conformement au contexte TEC local qui donne ce code pour ciseaux a doubles branches. Les autres positions du chapitre 90 (instruments medicaux) sont moins adaptees au materiel de coupe manuel."
+      },
+      {
+        "hs_code": "3919.90.00.00",
+        "confidence": 80,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Plastique (matiere premiere ou forme plastique)",
+        "justification": "RGI 1 : Plastique en plaques, feuilles, bandes, non renforcees ni combinees precise dans le contexte TEC comme position 3919.90 pour autres types de plaques, feuilles et bandes plastiques. Pas de precisions sur polymere exact ni usage, donc sous-position a 6 chiffres seul fournie. RGI 1 appliquee car description precise la nature plastique. Autres chapitres ecartes (ex. 40 pour caoutchouc)."
+      },
+      {
+        "hs_code": "0000",
+        "confidence": 5,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Vendu comme ensemble unique",
+        "justification": "Description insuffisante pour determiner la nature de la marchandise (seule indication \"vendu comme ensemble unique\" sans nature ou vocation), classification non realisable. Confidence tres faible."
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. Les classifications suivantes sont des propositions indicatives basees sur les descriptions fournies et le contexte TEC CEDEAO local, a valider avant toute utilisation officielle."
+  },
+  {
+    "test": "TEST 5",
+    "ok": true,
+    "elapsed_s": 106.9,
+    "count": 10,
+    "rows": [
+      {
+        "hs_code": "8443.31.00.00",
+        "confidence": 95,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Imprimante multifonction combinant impression, copie, telecopie, connectable a un reseau",
+        "justification": "RGI 1 : La marchandise est une imprimante multifonction assurant au moins deux fonctions parmi impression, copie, telecopie, connectable a un reseau, correspondant a la definition de la position 8443.31 (autres imprimantes, machines a copier et machines a telecopier, meme combinees). Les autres positions relevant de l'impression exclusivement (chapitre 32) ou de machines offset (8443.11 a 8443.16)"
+      },
+      {
+        "hs_code": "Non renseigné",
+        "confidence": 40,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Fonctions (non classables en l'etat, description insuffisante)",
+        "justification": "Description vague et ne correspondant a aucune marchandise identifiee. Position du chapitre 29 evoquee pour fonctions organiques chimiques, mais absence d'elements precis pour classifier. Classification provisoire requerant plus d'information."
+      },
+      {
+        "hs_code": "4811.10.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Produits imprimes (papiers ou cartons imprimes)",
+        "justification": "RGI 1 : La description indique des produits d'impression sur supports papiers/cartons relevant du chapitre 48, notamment position 4811.10 (imprimes publicitaires, catalogues commerciaux). Les chapitres relatifs aux films photographiques ou cinematographiques (37.05, 37.06) sont ecartes. La position retenue correspond aux impressions commerciales standards."
+      },
+      {
+        "hs_code": "8471.60.00.00",
+        "confidence": 80,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Scanner (appareil pour la numerisation d'images ou documents)",
+        "justification": "RGI 1 : Le scanner est une machine automatique de traitement de l'information relevant du chapitre 84, position 8471.60 couvrant autres machines automatiques de traitement de l'information et leurs unites. Positions du chapitre 90 (appareils de diagnostic) sont ecartees car non adaptees. La sous-position precise ne peut etre determinee sans plus d'informations, classification au niveau 4 chiffres."
+      },
+      {
+        "hs_code": "8443.31.10.00",
+        "confidence": 95,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Photocopieur (machine a copier)",
+        "justification": "RGI 1 : Photocopieur incorporant fonction copie, classe sous 8443.31.10.00 (imprimantes, machines a copier et telecopieurs incorporant une fonction de copie). Les autres positions d'imprimantes (8443.16 ou 8443.19) sont ecartees car ne correspondant pas a une fonction de copie seule. Le code correspond a un appareil combinant impression et copie."
+      },
+      {
+        "hs_code": "8443.31.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Fax (appareil de transmission telephonique pour telecopie)",
+        "justification": "RGI 1 : Le fax est un appareil servant a la transmission de telecopies, classe avec les machines combinees d'impression, copie ou telecopie sous 8443.31.00.00. Positions de telephones (chapitre 85, 8517) sont ecartees car non pertinente pour cette fonction specifique. La classification retenue couvre les machines a telecopier meme combinees entre elles."
+      },
+      {
+        "hs_code": "Non renseigné",
+        "confidence": 30,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Technologie (description trop vague pour classification precise)",
+        "justification": "Description tres vague et generale sur technologie, semi-conducteurs sans indication de produit ou fonction definie. Impossible de classifier sans plus de details. Classification provisoire avec confiance faible."
+      },
+      {
+        "hs_code": "8443.32.00.00",
+        "confidence": 95,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Imprimante a jet d'encre (imprimantes utilisant l'encre liquide en jet)",
+        "justification": "RGI 1 : L'imprimante a jet d'encre est classee sous 8443.32 (imprimantes a jet d'encre) conformement a la description fonctionnelle. Positions relatives aux encres seules (chapitre 32.15) sont ecartees car ce sont matieres consommables, non l'appareil. Position choisie correspond a la fonction essentielle d'impression par jet d'encre."
+      },
+      {
+        "hs_code": "8517.62.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Equipement Wi-Fi (appareil de communication sans fil)",
+        "justification": "RGI 1 : L'equipement Wi-Fi, en tant qu'appareil pour reception, conversion, emission, transmission ou regeneration de voix, images ou donnees dans un reseau, est classe sous 8517.62.00.00. Positions de telephones et stations base (8517.11, 8517.61) sont ecartees car le Wi-Fi n'est pas un telephone ni une station de base mais un appareil pour reseaux locaux ou etendus, ce qui correspond a la sous-p"
+      },
+      {
+        "hs_code": "8524.14.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Ecran tactile (module daffichage a ecran plat dote dune surface tactile)",
+        "justification": "RGI 1 : L'ecran tactile est un module daffichage a ecran plat dote d'une fonction tactile, classe selon la note en 8524.14.00.00 (modules daffichage a ecran plat tactiles). Positions relatives aux modules daffichage non tactiles ou autres ecrans sont ecartees. Le code est au niveau 8 chiffres mais correspond a la description fonctionnelle donnee."
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. Propositions indicatives de classification tarifaire pour chaque produit, a valider avant toute utilisation officielle."
+  },
+  {
+    "test": "TEST 6",
+    "ok": true,
+    "elapsed_s": 28.2,
+    "count": 1,
+    "rows": [
+      {
+        "hs_code": "4202.29.90.00",
+        "confidence": 85,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Valise connectee intelligente multifonction (GPS, verrouillage digital, USB, balance integree)",
+        "justification": "RGI 1 : La marchandise est identifiee comme une valise, donc relevant du chapitre 42 (articles de voyage). RGI 3 b) : bien que la valise contienne des composants electroniques, la fonction dominante est celle d'un bagage. Les sous-positions du chapitre 42 relatives aux sacs a main et articles similaires ont ete examinees. Le code 4202.29.90.00 couvre les autres valises non specifiquement en cuir o"
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. A valider avant toute utilisation officielle."
+  },
+  {
+    "test": "TEST 7",
+    "ok": true,
+    "elapsed_s": 21.6,
+    "count": 1,
+    "rows": [
+      {
+        "hs_code": "6211.33.00.00",
+        "confidence": 85,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Veste militaire tactique en tissu composite (kevlar, nylon, coton, membrane impermeable) avec fonctions de protection (a",
+        "justification": "RGI 1 : Le titre de chapitre 62 inclut les vetements confectionnes, ce qui correspond a la nature de la marchandise decrite (veste). RGI 3 b : la matiere preponderante est un melange synthetique-majoritairement, mais la fonction essentielle determinante est la veste militaire de protection avec proprietes techniques (anti-coupure, anti-feu, impermeable). Le tissu technique (avec kevlar) et les fon"
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. La classification proposee doit etre validee avant toute utilisation officielle."
+  },
+  {
+    "test": "TEST 8",
+    "ok": true,
+    "elapsed_s": 45.2,
+    "count": 5,
+    "rows": [
+      {
+        "hs_code": "4202.19",
+        "confidence": 65,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Produit importe en kit",
+        "justification": "RGI 1 : La marchandise est presentee comme  produit importe en kit . Selon le contexte documentaire, de nombreuses positions du chapitre 42 concernent les articles en cuir, matieres plastiques ou textiles, en kit ou demontes pour l'industrie du montage. En l'absence de precision sur la nature exacte du produit (matiere de surface exterieure, usage, type), la position doit etre retenue a 4 chiffres"
+      },
+      {
+        "hs_code": "8501.40",
+        "confidence": 70,
+        "status": "confirmee",
+        "risk": null,
+        "description": "moteur electrique",
+        "justification": "RGI 1 : La description  moteur electrique  correspond au chapitre 85, principalement au code 8501 relatif aux moteurs electriques. Le contexte documentaire mentionne des positions liees aux moteurs pour propulsion et autres, mais pour un moteur electrique simple, la position 8501.40 (moteurs electriques a courant alternatif) est la plus adaptee. Les sous-positions precises dependent de caracterist"
+      },
+      {
+        "hs_code": "8413.50",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "pompe hydraulique",
+        "justification": "RGI 1 : La pompe hydraulique est classee au chapitre 84, position 8413 qui regroupe les pompes pour liquides. Plus precisement, les pompes volumetriques alternatives (incluant les pompes hydrauliques) sont au 8413.50.00. La description ne mentionne pas d'autres caracteristiques (pompes centrifuges, a beton, etc.). D'ou la position 8413.50 retenue avec confiance elevee."
+      },
+      {
+        "hs_code": "7301.20",
+        "confidence": 75,
+        "status": "confirmee",
+        "risk": null,
+        "description": "chassis acier",
+        "justification": "RGI 1 : Le chassis en acier est un profile metallique, relevant du chapitre 73 sur produits en fer ou acier. Le contexte donne la position 7301.20.00 'Profiles' qui correspond aux elements de formes diverses en acier, y compris en chassis. Les aciers inoxydables et allies sont distingues selon les notes, mais en absence d'information precise, la position generale 7301.20 est retenue avec confiance"
+      },
+      {
+        "hs_code": "8537.10",
+        "confidence": 85,
+        "status": "confirmee",
+        "risk": null,
+        "description": "tableau de commande electronique",
+        "justification": "RGI 1 : Le  tableau de commande electronique  correspond aux tableaux, panneaux, consoles et pupitres pour la commande ou distribution electrique du chapitre 85, position 8537.10.00 qui couvre les tableaux, panneaux, consoles pour une tension n'excedant pas 1000 V. L'absence de precision sur tension ne permet pas de preciser plus. Le code 8537.10 est retenu pour cette marchandise specifique avec c"
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. Propositions indicatives de classification pour les marchandises listees, a valider avant toute utilisation officielle."
+  },
+  {
+    "test": "TEST 9",
+    "ok": true,
+    "elapsed_s": 57.9,
+    "count": 7,
+    "rows": [
+      {
+        "hs_code": "1806.32.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Coffret cadeau premium contenant chocolat et preparation alimentaire a base de cacao",
+        "justification": "RGI 1 : La marchandise est un coffret cadeau premium contenant des preparations alimentaires contenant du cacao. La position precisee pour chocolat en boite cadeau est le chapitre 18, position 1806.32. La sous-position precise ingredients et forme. Aucune information sur composition precise ne justifie un autre code. Chapitres sur feves de cacao (1801) ou beurre de cacao (1804) ecartes car ce n'es"
+      },
+      {
+        "hs_code": "4901.99",
+        "confidence": 50,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Contenu (description trop vague pour classification precise)",
+        "justification": "La description est trop vague et ne permet pas de determiner precisement la marchandise. RGI 1 pour indication de chapitres 48 et 49; en l'absence de precisions, ecart du chapitre 20 car description non clairement alimentaire; RGI 4 appliquee pour classification la plus analogue au chapitre 49 pour produits d'edition. Confiance limitee en raison du manque total de details precis."
+      },
+      {
+        "hs_code": "2204.21.00.00",
+        "confidence": 95,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Bouteille de vin",
+        "justification": "RGI 1 : Le produit est une bouteille de vin classe sous le chapitre 22 section IV. Le code 2204.21.00.00 couvre les autres vins en recipients ne depassant pas 2 litres, ce qui correspond a une bouteille classique. Les autres sous-positions sont ecartees car non pertinentes (autres contenants)."
+      },
+      {
+        "hs_code": "7013.33.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Verre cristal (objet en cristal au plomb)",
+        "justification": "RGI 1 : La marchandise est un objet en verre cristal au plomb, sont couverts dans la sous-position 7013.33.00.00, pour verres a boire en cristal au plomb. Chapitre 70 cible pour verre. RGI 5 appliquee pour l'emballage inclus dans la marchandise."
+      },
+      {
+        "hs_code": "8214.10.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Tire-bouchon en acier",
+        "justification": "RGI 1 : Le tire-bouchon est un outil menager en acier, classe en 8214.10.00.00, chapitre 82, correspondant aux outils manuels pour le travail du bois ou bien les outils divers y compris tire-bouchons. Les positions traitant de visserie en acier (73.18) sont ecartees car le tire-bouchon n'est pas un article de fixation (vis, boulons...)."
+      },
+      {
+        "hs_code": "4420.90.00.00",
+        "confidence": 90,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Coffret en bois",
+        "justification": "RGI 1 : Le coffret en bois correspond a un ouvrage en bois non specifie sinon 'autres' dans le chapitre 44. Positions relatives aux cadres ou caisses en bois sont ecartees car le produit est simplement un coffret en bois, non un cadre ou un emballage industriel. La sous-position 4420.90.00.00 couvre les ouvrages en bois divers non classes ailleurs. Confiance elevee grace aux descriptions de nomenc"
+      },
+      {
+        "hs_code": "6211.00",
+        "confidence": 60,
+        "status": "confirmee",
+        "risk": null,
+        "description": "Ensemble vendu pour cadeau premium (possible assortiment d'articles divers)",
+        "justification": "RGI 1 : Le descriptif vague 'vendu ensemble pour cadeau premium' suggere un ensemble textile ou assortiment d'articles confectionnes, potentiellement a classifier au chapitre 62 ou 63. En l'absence de details specifiques sur la nature des articles composant le lot, application de RGI 4 pour la position la plus analogue. Les codes mentionnent les positions 8528.72 et 8703.22 sont inadaptees car ell"
+      }
+    ],
+    "narrative": "Proposition indicative, a faire valider avant toute utilisation officielle. Propositions indicatives a valider avant toute utilisation officielle. Les classifications sont fondees sur les descriptions fournies et le contexte tarifaire CEDEAO local."
+  },
+  {
+    "test": "TEST 10",
+    "ok": false,
+    "error": "[WinError 10054] Une connexion existante a dû être fermée par l’hôte distant",
+    "elapsed_s": 147.8
+  }
+]

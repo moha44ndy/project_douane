@@ -34,6 +34,23 @@ class TestTariffNotes(unittest.TestCase):
         self.assertIn("ouvrages en cuir", index[42].lower())
         self.assertNotIn("surface exterieure", index[42].lower())
 
+    def test_chapter_title_skips_table_header_and_prefers_real_title(self) -> None:
+        chunks = [
+            _Chunk(
+                "Chapitre 84\n"
+                "Reacteurs nucleaires, chaudieres, machines, appareils et engins mecaniques\n"
+            ),
+            _Chunk(
+                "Section XVI\nChapitre 84\n84.862/87\n395 F\nN° de\n"
+                "position N.T.S. Designation des marchandises U.S. D.D. R.S.\n"
+                "8404.90.00.00 - Parties kg 5 1"
+            ),
+        ]
+        index = build_chapter_titles_index(chunks)
+        self.assertIn(84, index)
+        self.assertIn("reacteurs", index[84].lower())
+        self.assertNotIn("n.t.s", index[84].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
