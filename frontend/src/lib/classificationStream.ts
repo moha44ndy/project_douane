@@ -121,6 +121,42 @@ export type MerchandiseItemPayload = {
   currency: string;
 };
 
+async function classifyWithoutStream(
+  body: Record<string, unknown>,
+  handlers: StreamHandlers
+): Promise<ClassifyStreamResult> {
+  const steps = DEFAULT_CLASSIFICATION_STEPS.map((step) => ({ ...step }));
+  handlers.onInit?.(steps);
+
+  for (const step of steps) {
+    handlers.onStep?.({ ...step, status: "active" });
+    handlers.onStep?.({ ...step, status: "done" });
+  }
+
+  const response = await fetch(`${API_BASE_URL}/classify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Erreur HTTP ${response.status}`);
+  }
+  const data = (await response.json()) as Record<string, unknown>;
+  const result: ClassifyStreamResult = {
+    raw: String(data.raw ?? ""),
+    effective_query:
+      typeof data.effective_query === "string" ? data.effective_query : undefined,
+    items_count:
+      typeof data.items_count === "number" ? data.items_count : undefined,
+  };
+  if (!result.raw) {
+    throw new Error("Réponse de classification incomplète.");
+  }
+  handlers.onResult?.(result);
+  return result;
+}
+
 export async function streamClassifyQuery(
   query: string,
   userId: string | null,
@@ -136,6 +172,11 @@ export async function streamClassifyQuery(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+
+  if (response.status === 404 || response.status === 405) {
+    return classifyWithoutStream(body, handlers);
+  }
+
   return consumeClassifyStream(response, handlers);
 }
 
