@@ -58,6 +58,10 @@ type ClassificationItem = {
   risk_level?: "low" | "medium" | "high";
   risk_label?: string;
   classification_status?: "confirmee" | "provisoire";
+  classification_confidence?: number;
+  identification_confidence?: number;
+  product_identification?: Record<string, unknown>;
+  source_query?: string;
   completeness_checklist?: Array<{
     field: string;
     label: string;
@@ -96,6 +100,51 @@ type ClassificationItem = {
     confidence?: number;
   };
 };
+
+function buildValidatePayload(
+  item: ClassificationItem,
+  userId: string,
+  quantity: number,
+  extras?: {
+    dossier_name?: string;
+    query?: string;
+    raw_response?: string;
+  }
+) {
+  const section = item.section_name
+    ? `${item.section ?? "N/A"} - ${item.section_name}`
+    : item.section ?? "N/A";
+  const chapter = item.chapter_name
+    ? `${item.chapter ?? "N/A"} - ${item.chapter_name}`
+    : item.chapter ?? "N/A";
+
+  return {
+    description: item.description ?? "",
+    section,
+    chapter,
+    hs_code: item.hs_code ?? "",
+    confidence: item.classification_confidence ?? item.confidence ?? null,
+    quantity,
+    dd_rate: item.dd_rate ?? null,
+    rs_rate: item.rs_rate ?? null,
+    other_taxes: item.other_taxes ?? null,
+    us_unit: item.us_unit ?? null,
+    origin: item.origin ?? null,
+    value: item.value ?? null,
+    user_id: userId,
+    justification: item.justification ?? null,
+    risk_level: item.risk_level ?? null,
+    risk_label: item.risk_label ?? null,
+    position_label: item.position_label ?? null,
+    classification_status: item.classification_status ?? null,
+    identification_confidence: item.identification_confidence ?? null,
+    product_identification: item.product_identification ?? null,
+    source_query: item.source_query ?? null,
+    dossier_name: extras?.dossier_name,
+    query: extras?.query,
+    raw_response: extras?.raw_response,
+  };
+}
 
 type ApiPayload = {
   narrative?: string;
@@ -977,28 +1026,13 @@ export default function HomePage() {
           "Content-Type": "application/json",
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
-        body: JSON.stringify({
-          description: item.description ?? "",
-          section: item.section_name
-            ? `${item.section ?? "N/A"} - ${item.section_name}`
-            : item.section ?? "N/A",
-          chapter: item.chapter_name
-            ? `${item.chapter ?? "N/A"} - ${item.chapter_name}`
-            : item.chapter ?? "N/A",
-          hs_code: item.hs_code ?? "",
-          confidence: item.confidence ?? null,
-          quantity: quantityToSend,
-          dd_rate: item.dd_rate ?? null,
-          rs_rate: item.rs_rate ?? null,
-          other_taxes: item.other_taxes ?? null,
-          us_unit: item.us_unit ?? null,
-          origin: item.origin ?? null,
-          value: item.value ?? null,
-          user_id: userId,
-          dossier_name: dossierName.trim() || undefined,
-          query: classifyQueryForCache || undefined,
-          raw_response: raw || undefined,
-        }),
+        body: JSON.stringify(
+          buildValidatePayload(item, userId, quantityToSend, {
+            dossier_name: dossierName.trim() || undefined,
+            query: classifyQueryForCache || undefined,
+            raw_response: raw || undefined,
+          })
+        ),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -1040,28 +1074,9 @@ export default function HomePage() {
 
         const quantityToSend = getItemQuantity(item, i);
 
-        const section = item.section_name
-          ? `${item.section ?? "N/A"} - ${item.section_name}`
-          : item.section ?? "N/A";
-        const chapter = item.chapter_name
-          ? `${item.chapter ?? "N/A"} - ${item.chapter_name}`
-          : item.chapter ?? "N/A";
-
-        itemsToValidate.push({
-          description: item.description ?? "",
-          section,
-          chapter,
-          hs_code: item.hs_code ?? "",
-          confidence: item.confidence ?? null,
-          quantity: quantityToSend,
-          dd_rate: item.dd_rate ?? null,
-          rs_rate: item.rs_rate ?? null,
-          other_taxes: item.other_taxes ?? null,
-          us_unit: item.us_unit ?? null,
-          origin: item.origin ?? null,
-          value: item.value ?? null,
-          user_id: userId,
-        });
+        itemsToValidate.push(
+          buildValidatePayload(item, userId, quantityToSend)
+        );
 
         keysToMark.push(rowKey);
       }

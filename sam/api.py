@@ -324,6 +324,86 @@ class ValidateClassificationRequest(BaseModel):
     # Optionnel : associe la classification à un "dossier" (ex: entreprise / société).
     # Si aucun dossier n'est fourni => classification non associée.
     dossier_name: str | None = None
+    # Metadonnees Mosam (persistees a la validation pour l'historique et l'audit).
+    justification: str | None = None
+    risk_level: Literal["low", "medium", "high"] | None = None
+    risk_label: str | None = None
+    position_label: str | None = None
+    classification_status: Literal["confirmee", "provisoire"] | None = None
+    identification_confidence: float | None = None
+    product_identification: dict[str, Any] | None = None
+    source_query: str | None = None
+
+
+_CLASSIFICATION_ENRICHMENT_SELECT = """
+          c.justification,
+          c.risk_level,
+          c.risk_label,
+          c.position_label,
+          c.classification_mode,
+          c.identification_confidence,
+          c.product_identification,
+          c.source_query,"""
+
+_HISTORY_CSV_EXTRA_HEADERS = [
+    "justification",
+    "risk_level",
+    "risk_label",
+    "position_label",
+    "classification_mode",
+    "identification_confidence",
+    "source_query",
+]
+
+
+def _classification_history_select_sql() -> str:
+    return f"""
+        select
+          c.id,
+          c.description_produit,
+          c.section_produit,
+          c.chapitre_produit,
+          c.code_tarifaire,
+          c.classification_confidence,
+          c.quantity,
+          c.dd_rate,
+          c.rs_rate,
+          c.other_taxes,
+          c.us_unit,
+          c.origin,
+          c.value,
+          c.statut_validation,
+          c.created_at as date_classification,
+          c.user_id,
+{_CLASSIFICATION_ENRICHMENT_SELECT}
+          d.id::text as dossier_id,
+          d.name as dossier_name,
+          u.nom_user as agent_name,
+          u.id as agent_id
+        from public.classifications c
+        left join public.users u on u.id = c.user_id
+        left join public.classification_dossiers d on d.id = c.dossier_id
+    """
+
+
+def _classification_enrichment_params(payload: ValidateClassificationRequest) -> dict[str, Any]:
+    product_id = payload.product_identification
+    product_id_json: str | None = None
+    if isinstance(product_id, dict) and product_id:
+        try:
+            product_id_json = json.dumps(product_id, ensure_ascii=False)
+        except Exception:
+            product_id_json = None
+    return {
+        "justification": (payload.justification or "").strip() or None,
+        "risk_level": payload.risk_level,
+        "risk_label": (payload.risk_label or "").strip() or None,
+        "position_label": (payload.position_label or "").strip() or None,
+        "classification_mode": payload.classification_status,
+        "identification_confidence": payload.identification_confidence,
+        "product_identification": product_id_json,
+        "source_query": (payload.source_query or "").strip() or None,
+    }
 
 
 class ValidateClassificationBulkRequest(BaseModel):
@@ -1824,6 +1904,11 @@ def startup_event() -> None:
     except Exception:
         logger.warning("[dossiers] impossible d'assurer les tables", exc_info=True)
 
+    try:
+        _ensure_classification_schema()
+    except Exception:
+        logger.warning("[schema] impossible d'assurer les colonnes classifications", exc_info=True)
+
     chunks, index = initialize_chatbot()
     app.state.chunks = chunks
     app.state.index = index
@@ -1935,6 +2020,55 @@ def _ensure_dossier_tables() -> None:
         except Exception:
             logger.warning("[dossiers] migration items->classifications.dossier_id failed", exc_info=True)
 
+        db.commit()
+
+
+def _ensure_classification_schema() -> None:
+    """Colonnes enrichies (risque, justification, identification) + correctifs schema."""
+    enrichment_columns: tuple[tuple[str, str], ...] = (
+        ("justification", "text"),
+        ("risk_level", "text"),
+        ("risk_label", "text"),
+        ("position_label", "text"),
+        ("classification_mode", "text"),
+        ("identification_confidence", "numeric"),
+        ("product_identification", "jsonb"),
+        ("source_query", "text"),
+    )
+    with get_db() as db:
+        for column_name, column_type in enrichment_columns:
+            db.execute(
+                text(
+                    f"""
+                    alter table public.classifications
+                    add column if not exists {column_name} {column_type}
+                    """
+                )
+            )
+        try:
+            db.execute(
+                text(
+                    """
+                    alter table public.audit_logs
+                    alter column id set default gen_random_uuid()
+                    """
+                )
+            )
+        except Exception:
+            logger.debug("[schema] audit_logs id default deja present ou indisponible", exc_info=True)
+        try:
+            db.execute(
+                text(
+                    """
+                    alter table public.classification_dossiers
+                    add constraint classification_dossiers_owner_user_id_fkey
+                    foreign key (owner_user_id) references public.users(id)
+                    on delete cascade
+                    """
+                )
+            )
+        except Exception:
+            logger.debug("[schema] FK classification_dossiers.owner_user_id deja presente", exc_info=True)
         db.commit()
 
 
@@ -4640,7 +4774,15 @@ def _validate_classification_one(
                  user_id,
                  statut_validation,
                  created_at,
-                 dossier_id)
+                 dossier_id,
+                 justification,
+                 risk_level,
+                 risk_label,
+                 position_label,
+                 classification_mode,
+                 identification_confidence,
+                 product_identification,
+                 source_query)
                 values (
                   :description,
                   :section,
@@ -4657,7 +4799,15 @@ def _validate_classification_one(
                   :user_id,
                   :statut,
                   :created_at,
-                  :dossier_id
+                  :dossier_id,
+                  :justification,
+                  :risk_level,
+                  :risk_label,
+                  :position_label,
+                  :classification_mode,
+                  :identification_confidence,
+                  cast(:product_identification as jsonb),
+                  :source_query
                 )
                 returning
                   id,
@@ -4675,7 +4825,15 @@ def _validate_classification_one(
                   value,
                   user_id,
                   statut_validation,
-                  created_at as date_classification
+                  created_at as date_classification,
+                  justification,
+                  risk_level,
+                  risk_label,
+                  position_label,
+                  classification_mode,
+                  identification_confidence,
+                  product_identification,
+                  source_query
                 """
             ),
             {
@@ -4695,6 +4853,7 @@ def _validate_classification_one(
                 "statut": "validé",
                 "created_at": now,
                 "dossier_id": dossier_id,
+                **_classification_enrichment_params(payload),
             },
         ).mappings().one()
         db.commit()
@@ -5034,32 +5193,7 @@ def get_history(user_id: str | None = None) -> list[dict]:
     et ne nécessite pas de droits administrateur.
     """
 
-    base_sql = """
-        select
-          c.id,
-          c.description_produit,
-          c.section_produit,
-          c.chapitre_produit,
-          c.code_tarifaire,
-          c.classification_confidence,
-          c.quantity,
-          c.dd_rate,
-          c.rs_rate,
-          c.other_taxes,
-          c.us_unit,
-          c.origin,
-          c.value,
-          c.statut_validation,
-          c.created_at as date_classification,
-          c.user_id,
-          d.id::text as dossier_id,
-          d.name as dossier_name,
-          u.nom_user as agent_name,
-          u.id as agent_id
-        from public.classifications c
-        left join public.users u on u.id = c.user_id
-        left join public.classification_dossiers d on d.id = c.dossier_id
-    """
+    base_sql = _classification_history_select_sql()
 
     params: dict[str, Any] = {}
     if user_id:
@@ -5090,32 +5224,7 @@ def export_history_csv(
     # Compat : certains clients envoient `q` (search global).
     search_term = (q or search or "").strip()
 
-    base_sql = """
-        select
-          c.id,
-          c.description_produit,
-          c.section_produit,
-          c.chapitre_produit,
-          c.code_tarifaire,
-          c.classification_confidence,
-          c.quantity,
-          c.dd_rate,
-          c.rs_rate,
-          c.other_taxes,
-          c.us_unit,
-          c.origin,
-          c.value,
-          c.statut_validation,
-          c.created_at as date_classification,
-          c.user_id,
-          d.id::text as dossier_id,
-          d.name as dossier_name,
-          u.nom_user as agent_name,
-          u.id as agent_id
-        from public.classifications c
-        left join public.users u on u.id = c.user_id
-        left join public.classification_dossiers d on d.id = c.dossier_id
-    """
+    base_sql = _classification_history_select_sql()
 
     conditions: list[str] = []
     params: dict[str, Any] = {}
@@ -5176,6 +5285,7 @@ def export_history_csv(
         "value",
         "statut_validation",
         "date_classification",
+        *_HISTORY_CSV_EXTRA_HEADERS,
         "dossier_id",
         "dossier_name",
         "user_id",
@@ -5222,32 +5332,7 @@ def export_admin_history_csv(
     _rate_limit(request, "admin.history.csv.export")
     _ = admin_id
 
-    base_sql = """
-        select
-          c.id,
-          c.description_produit,
-          c.section_produit,
-          c.chapitre_produit,
-          c.code_tarifaire,
-          c.classification_confidence,
-          c.quantity,
-          c.dd_rate,
-          c.rs_rate,
-          c.other_taxes,
-          c.us_unit,
-          c.origin,
-          c.value,
-          c.statut_validation,
-          c.created_at as date_classification,
-          c.user_id,
-          d.id::text as dossier_id,
-          d.name as dossier_name,
-          u.nom_user as agent_name,
-          u.id as agent_id
-        from public.classifications c
-        left join public.users u on u.id = c.user_id
-        left join public.classification_dossiers d on d.id = c.dossier_id
-    """
+    base_sql = _classification_history_select_sql()
 
     conditions: list[str] = []
     params: dict[str, Any] = {}
@@ -5320,6 +5405,7 @@ def export_admin_history_csv(
         "value",
         "statut_validation",
         "date_classification",
+        *_HISTORY_CSV_EXTRA_HEADERS,
         "dossier_id",
         "dossier_name",
         "user_id",

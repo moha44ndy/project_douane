@@ -49,6 +49,19 @@ function formatDateTime(raw: string | null | undefined): string {
   return `${day}/${month}/${year} ${hours}h${minutes}`;
 }
 
+function riskEmoji(level?: string): string {
+  switch (level) {
+    case "low":
+      return "🟢";
+    case "medium":
+      return "🟡";
+    case "high":
+      return "🔴";
+    default:
+      return "";
+  }
+}
+
 function normalizeHistoryItem(item: HistoryItem) {
   const id = item.id as number | undefined;
 
@@ -99,6 +112,9 @@ function normalizeHistoryItem(item: HistoryItem) {
   // Statut
   const status = (item.statut_validation ?? item.statut ?? "N/A") as string;
 
+  const riskLevel = (item.risk_level ?? "") as string;
+  const riskLabel = (item.risk_label ?? "") as string;
+
   const dossierName = (item.dossier_name ?? "") as string;
 
   // Date
@@ -120,6 +136,8 @@ function normalizeHistoryItem(item: HistoryItem) {
     value,
     quantity: Math.max(1, Math.floor(quantity)),
     status,
+    riskLevel,
+    riskLabel,
     dossierName,
     dateRaw,
     dateLabel,
@@ -599,6 +617,11 @@ export default function HistoriquePage() {
                               <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
                                 {it.confidence.toFixed(1)}%
                               </span>
+                              {it.riskLabel ? (
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {riskEmoji(it.riskLevel)} {it.riskLabel}
+                                </div>
+                              ) : null}
                             </td>
                             <td className="px-3 py-2">{it.status}</td>
                           </tr>,
@@ -677,6 +700,11 @@ export default function HistoriquePage() {
                               <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
                                 {it.confidence.toFixed(1)}%
                               </span>
+                              {it.riskLabel ? (
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {riskEmoji(it.riskLevel)} {it.riskLabel}
+                                </div>
+                              ) : null}
                             </td>
                             <td className="px-3 py-2">{it.status}</td>
                           </tr>

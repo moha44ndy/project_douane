@@ -47,11 +47,12 @@ if _host.startswith("db.") and _host.endswith(".supabase.co") and "pooler" not i
             "Definis SUPABASE_DB_POOLER_URL avec le Session pooler (aws-*.pooler.supabase.com:5432).",
             _host,
         )
-    elif _port == 6543:
+    if _port == 6543:
         logger.warning(
-            "Postgres via %s:6543 (transaction pooler) : meme DNS que la connexion directe ; "
-            "souvent IPv6-only. En IPv4-only, utilise le Session pooler "
-            "(Connect → Session pooler : utilisateur postgres.VOTRE_REF, hote aws-*.pooler…, port 5432).",
+            "Postgres via %s:6543 : souvent IPv6-only (timeout sur Windows sans IPv6). "
+            "Definis SUPABASE_DB_POOLER_URL avec le Session pooler "
+            "(Connect → Session pooler : postgres.VOTRE_REF @ aws-0|aws-1-*.pooler.supabase.com:5432). "
+            "Script : python sam/scripts/fix_supabase_pooler_env.py",
             _host,
         )
 
