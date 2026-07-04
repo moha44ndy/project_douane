@@ -1033,6 +1033,38 @@ def search_faiss_index(query, index, k=5):
     return indices, distances
 
 # Use the LLM API
+def _repair_truncated_json(text: str) -> str:
+    """Tente de réparer un JSON tronqué par max_tokens.
+
+    Stratégie : fermer les crochets/accolades manquants pour que
+    json.loads puisse parser au moins la structure partielle.
+    """
+    import json as _json
+
+    text = (text or "").strip()
+    if not text:
+        return '{"narrative":"Reponse tronquee","classifications":[]}'
+
+    try:
+        _json.loads(text)
+        return text
+    except Exception:
+        pass
+
+    open_braces = text.count("{") - text.count("}")
+    open_brackets = text.count("[") - text.count("]")
+
+    repaired = text.rstrip(", \n\r\t")
+    repaired += "]" * max(open_brackets, 0)
+    repaired += "}" * max(open_braces, 0)
+
+    try:
+        _json.loads(repaired)
+        return repaired
+    except Exception:
+        return '{"narrative":"Reponse tronquee par le modele","classifications":[]}'
+
+
 def use_llm(prompt_text):
     try:
         system_instruction = (
@@ -1094,20 +1126,28 @@ def use_llm(prompt_text):
             "(fonction principale de la marchandise, caractère essentiel, chapitres ou positions étudiés et écartés avec motif, motif du code SH retenu). "
             "Mentionne explicitement les chapitres ou positions écartés (ex. « chapitre 76 écarté car… ») pour alimenter l'analyse des alternatives. "
             "Ne pas créer de champ séparé pour la RGI : tout le raisonnement juridique va dans \"justification\". "
-            "Utilise \"classification_status\" = \"confirmee\" si les informations indispensables sont présentes, sinon \"provisoire\"."
+            "Utilise \"classification_status\" = \"confirmee\" si les informations indispensables sont présentes, sinon \"provisoire\". "
+            "REGLE ABSOLUE : ne retourne JAMAIS classifications = []. Si tu ne peux pas determiner un code precis, "
+            "retourne au minimum le chapitre le plus probable (XX.XX), confidence <= 40, classification_status = provisoire."
         )
 
-        # Utilise l'API de chat du client OpenAI (SDK >= 1.x)
+        model = Config.MOSAM_MODEL or "gpt-4.1-mini"
         response = client.chat.completions.create(
-            model=Config.MOSAM_MODEL or "gpt-4.1-mini",
+            model=model,
             messages=[
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt_text},
             ],
-            max_tokens=2048,
+            max_tokens=4096,
+            response_format={"type": "json_object"},
         )
 
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+        finish = response.choices[0].finish_reason
+        if finish == "length":
+            logger.warning("[use_llm] response truncated (finish_reason=length)")
+            content = _repair_truncated_json(content or "")
+        return content
 
     except Exception as e:
         return f"Erreur lors de l'appel au modèle OpenAI : {e}"
@@ -1373,12 +1413,29 @@ def process_user_input(
         if not identification.skipped:
             ptype = (identification.product_type or "").strip()
             fusage = (identification.function_usage or "").strip()
+            manufacturer = (identification.manufacturer or "").strip()
+            commercial = (identification.commercial_name or "").strip()
+            mpn = (identification.manufacturer_part_number or "").strip()
+            family = getattr(identification, "family", "") or ""
+            family = family.strip()
+            why_not = getattr(identification, "why_not_other_products", "") or ""
+            why_not = why_not.strip()
             if ptype or fusage:
                 lines = ["IDENTIFICATION PRODUIT (prioritaire pour determiner la position) :"]
+                if manufacturer:
+                    lines.append(f"- Fabricant : {manufacturer}")
+                if commercial:
+                    lines.append(f"- Nom commercial : {commercial}")
+                if mpn:
+                    lines.append(f"- Reference fabricant : {mpn}")
                 if ptype:
                     lines.append(f"- Type de produit : {ptype}")
+                if family:
+                    lines.append(f"- Famille : {family}")
                 if fusage:
                     lines.append(f"- Fonction principale : {fusage}")
+                if why_not:
+                    lines.append(f"- Eliminations : {why_not}")
                 lines.append(
                     "Le code SH doit correspondre a la FONCTION PRINCIPALE ci-dessus, "
                     "pas a la composition physique (verre, plastique, metal, etc.)."

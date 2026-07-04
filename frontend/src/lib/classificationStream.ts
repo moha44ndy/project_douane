@@ -109,15 +109,32 @@ async function consumeClassifyStream(
   return result;
 }
 
+export type MerchandiseItemPayload = {
+  designation: string;
+  material: string;
+  usage: string;
+  characteristics: string;
+  quantity: string;
+  unit: string;
+  origin: string;
+  value: string;
+  currency: string;
+};
+
 export async function streamClassifyQuery(
   query: string,
   userId: string | null,
-  handlers: StreamHandlers
+  handlers: StreamHandlers,
+  items?: MerchandiseItemPayload[]
 ): Promise<ClassifyStreamResult> {
+  const body: Record<string, unknown> = { query, user_id: userId };
+  if (items && items.length > 0) {
+    body.items = items;
+  }
   const response = await fetch(`${API_BASE_URL}/classify/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, user_id: userId }),
+    body: JSON.stringify(body),
   });
   return consumeClassifyStream(response, handlers);
 }

@@ -162,8 +162,11 @@ def format_candidate_set_prompt(
     """Bloc prompt imposant le choix parmi les positions candidates."""
     if not candidates:
         return (
-            "Aucune position TEC candidate extraite du referentiel local pour cette requete. "
-            "Ne pas inventer de code precis ; limiter hs_code au chapitre si necessaire et confidence <= 40.\n"
+            "Aucune position TEC candidate trouvee dans l'index local pour cette requete. "
+            "Tu DOIS quand meme retourner une classification avec le chapitre le plus probable "
+            "base sur ta connaissance du produit et l'identification produit ci-dessus. "
+            "Utilise un code a 4 chiffres (XX.XX), confidence <= 40, classification_status = provisoire. "
+            "Ne retourne JAMAIS classifications = [].\n"
         )
 
     lines = [
@@ -199,8 +202,11 @@ def format_merged_candidates_prompt(candidate_dicts: list[dict[str, Any]]) -> st
     """Reconstruit le bloc prompt à partir de dicts candidats fusionnés."""
     if not candidate_dicts:
         return (
-            "Aucune position TEC candidate extraite du referentiel local pour cette requete. "
-            "Ne pas inventer de code precis ; limiter hs_code au chapitre si necessaire et confidence <= 40.\n"
+            "Aucune position TEC candidate trouvee dans l'index local pour cette requete. "
+            "Tu DOIS quand meme retourner une classification avec le chapitre le plus probable "
+            "base sur ta connaissance du produit et l'identification produit ci-dessus. "
+            "Utilise un code a 4 chiffres (XX.XX), confidence <= 40, classification_status = provisoire. "
+            "Ne retourne JAMAIS classifications = [].\n"
         )
     lines = [
         "POSITIONS TEC CANDIDATES (VERROUILLAGE OBLIGATOIRE) :",

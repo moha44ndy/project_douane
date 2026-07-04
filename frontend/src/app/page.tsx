@@ -16,6 +16,7 @@ import {
   markAllStepsDone,
   streamClassifyQuery,
   type ClassificationProgressStep,
+  type MerchandiseItemPayload,
 } from "../lib/classificationStream";
 import {
   buildMerchandiseQuery,
@@ -777,7 +778,20 @@ export default function HomePage() {
     const query = buildMerchandiseQuery(merchandiseRows);
     if (!query.trim()) return;
 
-    log.debug("[frontend submit] start query_preview=", query.slice(0, 60));
+    const activeRows = merchandiseRows.filter((r) => r.designation.trim());
+    const structuredItems: MerchandiseItemPayload[] = activeRows.map((r) => ({
+      designation: r.designation,
+      material: r.material,
+      usage: r.usage,
+      characteristics: r.characteristics,
+      quantity: r.quantity,
+      unit: r.unit,
+      origin: r.origin,
+      value: r.value,
+      currency: r.currency,
+    }));
+
+    log.debug("[frontend submit] start structured_items=", structuredItems.length);
     setClassifyQueryForCache(query.trim());
     setFileItemsCount(null);
     setValidatedKeys({});
@@ -799,7 +813,7 @@ export default function HomePage() {
           setProgressSteps((current) =>
             current ? applyProgressStep(current, step) : current
           ),
-      });
+      }, structuredItems);
       const rawText =
         typeof data.raw === "string" ? data.raw : JSON.stringify(data.raw ?? "");
       applyRawClassificationResult(rawText);

@@ -260,12 +260,25 @@ async def _handle_sqlalchemy_operational(_request: Request, exc: OperationalErro
     )
 
 
+class MerchandiseItem(BaseModel):
+    """Un article structuré tel que saisi dans le formulaire."""
+
+    designation: str
+    material: str = ""
+    usage: str = ""
+    characteristics: str = ""
+    quantity: str = ""
+    unit: str = ""
+    origin: str = ""
+    value: str = ""
+    currency: str = ""
+
+
 class ClassifyRequest(BaseModel):
     """Requête de classification d'une ou plusieurs marchandises."""
 
-    query: str
-    # Identifiant de l'utilisateur (Supabase Auth ou table users),
-    # facultatif pour compatibilité.
+    query: str = ""
+    items: list[MerchandiseItem] | None = None
     user_id: str | None = None
 
 
@@ -478,6 +491,27 @@ def _normalize_classifications_response(
                 item[k] = _strip_accents_ascii(item[k])
 
     data["classifications"] = _filter_phantom_classifications(classifications)
+
+    if not data["classifications"] and product_identifications:
+        for pid in product_identifications:
+            if not isinstance(pid, dict) or pid.get("skipped"):
+                continue
+            ptype = str(pid.get("product_type") or "").strip()
+            pname = str(pid.get("product_name") or pid.get("original_query") or "").strip()
+            if ptype or pname:
+                data["classifications"].append({
+                    "description": pname or ptype,
+                    "hs_code": "",
+                    "confidence": 20,
+                    "classification_status": "provisoire",
+                    "justification": (
+                        f"Classification automatique non resolue. "
+                        f"Produit identifie : {ptype or pname}. "
+                        f"Preciser la description pour obtenir un code SH."
+                    ),
+                    "product_identification": pid,
+                })
+                break
 
     from .functional_coherence import apply_functional_coherence_gate
 
@@ -732,6 +766,33 @@ def _extract_classifications(raw_text: str) -> list[dict]:
     return []
 
 
+def _try_repair_json(s: str) -> dict | None:
+    """Tente de réparer un JSON tronqué en fermant les délimiteurs manquants."""
+    s = s.strip()
+    if not s:
+        return None
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s.lower().startswith("json"):
+            s = s[4:]
+        s = s.strip("` \n\r")
+
+    open_braces = s.count("{") - s.count("}")
+    open_brackets = s.count("[") - s.count("]")
+    if open_braces <= 0 and open_brackets <= 0:
+        return None
+    repaired = s.rstrip(", \n\r\t")
+    repaired += "]" * max(open_brackets, 0)
+    repaired += "}" * max(open_braces, 0)
+    try:
+        obj = json.loads(repaired)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    return None
+
+
 def _ensure_json_raw(raw: Any) -> str:
     """
     Force `raw` à être une chaîne JSON valide (contrat backend => frontend).
@@ -751,6 +812,9 @@ def _ensure_json_raw(raw: Any) -> str:
     try:
         obj: object = json.loads(s)
     except Exception:
+        repaired = _try_repair_json(s)
+        if repaired is not None:
+            return json.dumps(repaired, ensure_ascii=False)
         return json.dumps(
             {"error": "invalid_json", "raw_preview": s[:200]},
             ensure_ascii=False,
@@ -822,6 +886,13 @@ def _attach_product_identification(
                 or re.search(r"(?i)\bvaleur\s*:", existing)
             ):
                 item["source_query"] = enriched
+
+            id_conf = int(entry.get("identification_confidence") or 100)
+            cls_conf = int(item.get("confidence") or item.get("classification_confidence") or 95)
+            final_conf = min(id_conf, cls_conf)
+            item["identification_confidence"] = id_conf
+            item["classification_confidence"] = cls_conf
+            item["confidence"] = final_conf
 
 
 def _finalize_classification_response(
@@ -2672,7 +2743,9 @@ def _split_leading_quantity(item: str) -> tuple[int, str, str, str, int]:
 
     # 7) Multiplicatif en fin de ligne:
     # "ordinateur * 3", "ordinateur x3", "ordinateur x 3"
-    m_mult_tail = re.match(r"^\s*(.+?)\s*(?:\*|x)\s*(\d+)\s*$", s, re.IGNORECASE)
+    # Le "x" doit être précédé d'un espace pour éviter les faux positifs
+    # sur les codes produits (ex: FP2-FX20, RX500).
+    m_mult_tail = re.match(r"^\s*(.+?)\s+(?:\*|x)\s*(\d+)\s*$", s, re.IGNORECASE)
     if m_mult_tail:
         try:
             qty = int(m_mult_tail.group(2))
@@ -4131,10 +4204,84 @@ async def classify_file(
     )
 
 
+def _structured_item_to_dossier(item: MerchandiseItem) -> str:
+    """Convertit un MerchandiseItem structuré en texte de dossier pour le pipeline."""
+    lines: list[str] = [f"Produit : {item.designation.strip()}"]
+    if item.material.strip():
+        lines.append(f"Composition :\n- {item.material.strip()}")
+    if item.usage.strip():
+        lines.append(f"Usage :\n{item.usage.strip()}")
+    if item.characteristics.strip():
+        lines.append(f"Caractéristiques :\n- {item.characteristics.strip()}")
+    if item.origin.strip():
+        lines.append(f"Origine :\n{item.origin.strip()}")
+    if item.value.strip():
+        val = item.value.strip()
+        if item.currency.strip():
+            val = f"{val} {item.currency.strip()}"
+        lines.append(f"Valeur :\n{val}")
+    elif item.currency.strip():
+        lines.append(f"Devise :\n{item.currency.strip()}")
+    return "\n".join(lines)
+
+
+def _build_structured_inputs(
+    items: list[MerchandiseItem],
+) -> tuple[str, list[str], dict[str, int], dict[str, dict[str, Any]]]:
+    """
+    Construit les entrées de classification à partir d'items structurés.
+    Retourne (classify_input, unique_items, item_counts, item_meta).
+    La quantité vient directement du champ dédié — jamais parsée depuis le texte.
+    """
+    unique_items: list[str] = []
+    item_counts: dict[str, int] = {}
+    item_meta: dict[str, dict[str, Any]] = {}
+
+    for mi in items:
+        designation = mi.designation.strip()
+        if not designation:
+            continue
+
+        has_detail = any([
+            mi.material.strip(), mi.usage.strip(), mi.characteristics.strip(),
+            mi.origin.strip(), mi.value.strip(), mi.currency.strip(),
+        ])
+        display = _structured_item_to_dossier(mi) if has_detail else designation
+
+        qty_str = mi.quantity.strip()
+        qty = 1
+        if qty_str:
+            try:
+                qty = max(1, int(qty_str))
+            except ValueError:
+                qty = 1
+
+        unique_items.append(display)
+        item_counts[display] = qty
+        item_meta[display] = {
+            "line_count": 1,
+            "explicit_count": 1,
+            "implicit_count": 0,
+            "range_upper_count": 0,
+            "word_number_count": 0,
+            "lot_count": 0,
+            "quantity_raw_samples": [qty_str] if qty_str else [],
+            "confidence_weighted_sum": 95.0 * qty,
+            "confidence_weight_sum": qty,
+            "quantity_source": "explicit",
+            "quantity_raw": qty_str,
+            "quantity_confidence": 95,
+        }
+
+    classify_input = "\n".join([f"- {it}" for it in unique_items]) if unique_items else ""
+    return classify_input, unique_items, item_counts, item_meta
+
+
 def _classify_text_query(
     query: str,
     *,
     request_id: str,
+    structured_items: list[MerchandiseItem] | None = None,
     progress: ClassificationProgressReporter | None = None,
 ) -> str:
     """Exécute le pipeline de classification texte et retourne le JSON brut final."""
@@ -4154,7 +4301,7 @@ def _classify_text_query(
     cache_key = _classify_cache_key(query)
     cache_disabled = cache_classify_is_disabled()
     preview = (query or "").strip().replace("\n", " ")
-    preview = preview[:60] + ("…" if len(preview) > 60 else "")
+    preview = preview[:60] + ("..." if len(preview) > 60 else "")
     logger.debug(
         "[classify %s] cache_disabled=%s key=%s query_preview=%r",
         request_id,
@@ -4197,19 +4344,28 @@ def _classify_text_query(
     item_meta: dict[str, dict[str, Any]] = {}
     if progress:
         progress.start("merchandise")
-    try:
-        _, extracted_items = _extract_items_from_txt(query, max_items=500)
-        if extracted_items:
-            unique_items, item_counts, _, item_meta = _aggregate_items_with_quantities(
-                extracted_items, max_items=500
-            )
-            if unique_items:
-                classify_input = "\n".join([f"- {it}" for it in unique_items])
-    except Exception:
-        classify_input = query
-        unique_items = []
-        item_counts = {}
-        item_meta = {}
+
+    if structured_items:
+        classify_input, unique_items, item_counts, item_meta = _build_structured_inputs(
+            structured_items
+        )
+        if not classify_input:
+            classify_input = query
+    else:
+        try:
+            _, extracted_items = _extract_items_from_txt(query, max_items=500)
+            if extracted_items:
+                unique_items, item_counts, _, item_meta = _aggregate_items_with_quantities(
+                    extracted_items, max_items=500
+                )
+                if unique_items:
+                    classify_input = "\n".join([f"- {it}" for it in unique_items])
+        except Exception:
+            classify_input = query
+            unique_items = []
+            item_counts = {}
+            item_meta = {}
+
     if progress:
         progress.complete("merchandise")
 
@@ -4340,17 +4496,29 @@ def _classification_sse_response(worker) -> StreamingResponse:
     )
 
 
+def _resolve_classify_query(payload: ClassifyRequest) -> str:
+    """Retourne le texte query à utiliser (fourni explicitement ou reconstruit des items)."""
+    if payload.query and payload.query.strip():
+        return payload.query.strip()
+    if payload.items:
+        parts = [mi.designation.strip() for mi in payload.items if mi.designation.strip()]
+        return ", ".join(parts)
+    return ""
+
+
 @app.post("/classify", response_model=ClassifyResponse, tags=["classification"])
 def classify(payload: ClassifyRequest) -> ClassifyResponse:
     """
     Classe une ou plusieurs marchandises.
 
-    - `query` : texte libre saisi par l'utilisateur (peut contenir plusieurs articles).
-    - Retourne la chaîne brute produite par le modèle (JSON sérialisé) dans le champ `raw`.
-    - Le résultat n'est mis en cache que lorsqu'une classification est validée (voir POST /classifications/validate).
+    - `items` : tableau structuré d'articles (recommandé).
+    - `query` : texte libre (fallback, utilisé quand items est absent).
     """
     request_id = uuid.uuid4().hex[:8]
-    raw_out = _classify_text_query(payload.query or "", request_id=request_id)
+    query = _resolve_classify_query(payload)
+    raw_out = _classify_text_query(
+        query, request_id=request_id, structured_items=payload.items,
+    )
     return ClassifyResponse(raw=raw_out)
 
 
@@ -4358,11 +4526,13 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
 def classify_stream(payload: ClassifyRequest) -> StreamingResponse:
     """Classification avec progression SSE alignée sur le pipeline Mosam."""
     request_id = uuid.uuid4().hex[:8]
+    query = _resolve_classify_query(payload)
 
     def worker(progress: ClassificationProgressReporter) -> dict[str, str]:
         raw_out = _classify_text_query(
-            payload.query or "",
+            query,
             request_id=request_id,
+            structured_items=payload.items,
             progress=progress,
         )
         return {"raw": raw_out}

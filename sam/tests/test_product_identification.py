@@ -23,7 +23,7 @@ class TestProductIdentification(unittest.TestCase):
             self.assertTrue(should_run_product_identification("MacBook Pro M4"))
 
     @patch("sam.product_identification.product_identification_enabled", return_value=True)
-    @patch("sam.product_identification._call_identification_with_optional_web")
+    @patch("sam.product_identification._call_with_optional_web")
     def test_identify_product_builds_enriched_dossier(
         self,
         mock_call,
@@ -37,6 +37,8 @@ class TestProductIdentification(unittest.TestCase):
                 '"technical_characteristics":["basket montante"],'
                 '"missing_for_customs":["poids net"],'
                 '"identification_confidence":82,'
+                '"identification_method":"connaissance generale",'
+                '"reasoning":"Chaussure Nike emblematique",'
                 '"enriched_description":"Produit : Nike Air Force 1 Low\\nUsage : chaussure",'
                 '"notes":""}'
             ),

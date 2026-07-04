@@ -174,8 +174,9 @@ def _build_description(
         ptype = str(product_identification.get("product_type") or "").strip()
         fusage = str(product_identification.get("function_usage") or "").strip()
         pname = str(product_identification.get("product_name") or "").strip()
+        commercial = str(product_identification.get("commercial_name") or "").strip()
 
-        functional = " ".join(filter(None, [ptype, fusage, pname]))
+        functional = " ".join(filter(None, [ptype, fusage, pname, commercial]))
         if functional:
             return functional
 
