@@ -285,6 +285,7 @@ def prepare_query_for_classification(query: str) -> tuple[str, ProductIdentifica
     """
     original = (query or "").strip()
     if not should_run_product_identification(original):
+        logger.debug("[prepare_query] identification SKIPPED for: %s", original[:80])
         return original, ProductIdentification(
             original_query=original,
             enriched_description=original,
@@ -294,4 +295,11 @@ def prepare_query_for_classification(query: str) -> tuple[str, ProductIdentifica
 
     identification = identify_product(original)
     text = identification.enriched_description.strip() or original
+    logger.debug(
+        "[prepare_query] identification DONE for '%s' -> product_type='%s', function='%s', enriched_len=%d",
+        original[:40],
+        identification.product_type[:40],
+        identification.function_usage[:40],
+        len(text),
+    )
     return text, identification

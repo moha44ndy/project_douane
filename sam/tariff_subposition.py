@@ -712,7 +712,13 @@ def _token_matches_source(token: str, source_norm: str) -> bool:
 
 def _heading_discriminant_tokens(heading: str, position_code: str) -> set[str]:
     narrative = lookup_heading_narrative(heading) or ""
-    heading_tokens = _significant_label_tokens(narrative)
+    cleaned_narrative = re.sub(
+        r"(?:y\s+compris|comprenant|incluant)\s+.+",
+        "",
+        narrative,
+        flags=re.IGNORECASE,
+    )
+    heading_tokens = _significant_label_tokens(cleaned_narrative)
     position_tokens = _significant_label_tokens(get_position_heading(position_code) or "")
     return {token for token in heading_tokens - position_tokens - _GENERIC_HEADING_TOKENS if len(token) >= 5}
 
@@ -967,7 +973,7 @@ def _evaluate_heading_level(
                 detail=_detail_for_subposition_status(status, profile),
             )
         )
-    final_decision = _finalize_subposition_decision(evaluations, children)
+    final_decision = _finalize_subposition_decision(evaluations, children, source)
     return SubpositionWorkflowResult(
         evaluations=evaluations,
         final_decision=final_decision,
@@ -1422,6 +1428,7 @@ def _explanation_for_outcome(outcome: str, matched_code: str = "") -> str:
 def _finalize_subposition_decision(
     evaluations: list[SubpositionEvaluation],
     candidates: list[tuple[str, str]],
+    source: str = "",
 ) -> FinalSubpositionDecision:
     """Analyse finale : departage puis decision parmi les quatre issues possibles."""
     evaluated = [
@@ -1490,6 +1497,35 @@ def _finalize_subposition_decision(
                 matched = viable[0]
                 outcome = _outcome_for_single_match(matched, excluded, candidates)
                 return _decision(outcome, matched_code=matched, viable=[matched])
+        if len(viable) > 1:
+            general_codes = set()
+            for code, label in candidates:
+                if code in viable and re.search(
+                    r"(?:y\s+compris|comprenant|incluant)",
+                    label,
+                    re.IGNORECASE,
+                ):
+                    general_codes.add(code)
+            if general_codes:
+                specific = [c for c in viable if c not in general_codes]
+                if len(specific) >= 1:
+                    viable = specific
+        if len(viable) > 1:
+            source_norm = _normalize(source) if source else ""
+            if source_norm:
+                scored: list[tuple[str, int]] = []
+                for code, label in candidates:
+                    if code not in viable:
+                        continue
+                    label_tokens = _significant_label_tokens(label)
+                    hits = sum(1 for t in label_tokens if _token_matches_source(t, source_norm))
+                    scored.append((code, hits))
+                scored.sort(key=lambda x: x[1], reverse=True)
+                if scored and scored[0][1] > 0:
+                    best_score = scored[0][1]
+                    top_codes = [c for c, s in scored if s == best_score]
+                    if len(top_codes) == 1:
+                        viable = top_codes
         if len(viable) == 1:
             matched = viable[0]
             outcome = _outcome_for_single_match(matched, excluded, candidates)
@@ -1521,6 +1557,19 @@ def _finalize_subposition_decision(
     ]
 
     if unverifiable:
+        if len(unverifiable) >= 2 and source:
+            source_norm = _normalize(source)
+            scored_unv: list[tuple[str, str, int]] = []
+            for code, label, profile in unverifiable:
+                label_tokens = _significant_label_tokens(label)
+                hits = sum(1 for t in label_tokens if _token_matches_source(t, source_norm))
+                scored_unv.append((code, label, hits))
+            scored_unv.sort(key=lambda x: x[2], reverse=True)
+            if scored_unv[0][2] > 0 and scored_unv[0][2] > scored_unv[1][2]:
+                matched = scored_unv[0][0]
+                outcome = _outcome_for_single_match(matched, excluded, candidates)
+                return _decision(outcome, matched_code=matched, viable=[matched])
+
         if autres_only and non_autres_only:
             missing_notes = _build_missing_notes_for_unverifiable(unverifiable, candidates)
             if missing_notes:
@@ -1578,7 +1627,7 @@ def _run_subposition_workflow(
         )
         for code, label in candidates
     ]
-    final_decision = _finalize_subposition_decision(evaluations, candidates)
+    final_decision = _finalize_subposition_decision(evaluations, candidates, source)
     return SubpositionWorkflowResult(
         evaluations=evaluations,
         final_decision=final_decision,

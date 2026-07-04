@@ -478,11 +478,48 @@ def _normalize_classifications_response(
                 item[k] = _strip_accents_ascii(item[k])
 
     data["classifications"] = _filter_phantom_classifications(classifications)
+
+    from .functional_coherence import apply_functional_coherence_gate
+
+    for idx, item in enumerate(data["classifications"]):
+        if not isinstance(item, dict):
+            continue
+        prod_id = None
+        if product_identifications and idx < len(product_identifications):
+            prod_id = product_identifications[idx]
+        elif isinstance(item.get("product_identification"), dict):
+            prod_id = item["product_identification"]
+        apply_functional_coherence_gate(item, prod_id)
+
+    from .position_validator import apply_position_validation
+
+    for idx, item in enumerate(data["classifications"]):
+        if not isinstance(item, dict):
+            continue
+        prod_id = None
+        if product_identifications and idx < len(product_identifications):
+            prod_id = product_identifications[idx]
+        elif isinstance(item.get("product_identification"), dict):
+            prod_id = item["product_identification"]
+        candidates = item.get("tec_position_candidates")
+        apply_position_validation(item, prod_id, candidates)
+
     if progress:
         progress.start("subposition")
-    for item in data["classifications"]:
+
+    for idx, item in enumerate(data["classifications"]):
         if isinstance(item, dict):
-            source = item.get("source_query") or item.get("description")
+            source = item.get("source_query") or item.get("description") or ""
+            prod_id = None
+            if product_identifications and idx < len(product_identifications):
+                prod_id = product_identifications[idx]
+            if isinstance(prod_id, dict) and not prod_id.get("skipped"):
+                enriched = str(prod_id.get("enriched_description") or "").strip()
+                ptype = str(prod_id.get("product_type") or "").strip()
+                fusage = str(prod_id.get("function_usage") or "").strip()
+                extra = " ".join(filter(None, [enriched, ptype, fusage]))
+                if extra and extra.casefold() != source.casefold():
+                    source = f"{source}\n{extra}".strip()
             from .classification_completeness import apply_early_subposition_gate
 
             apply_early_subposition_gate(item, source_text=source)
@@ -4238,6 +4275,7 @@ def _classify_text_query(
                     raw_out = _normalize_classifications_response(
                         _ensure_json_raw(parsed),
                         progress=progress,
+                        product_identifications=pipeline.product_identifications,
                     )
         except Exception:
             pass

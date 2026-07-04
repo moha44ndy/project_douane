@@ -793,6 +793,153 @@ a.mosam-btn-admin.mosam-header-btn {
   box-shadow: 0 0 0 3px rgba(26, 74, 46, 0.08);
 }
 
+/* Merchandise input table */
+.mosam-merchandise-table-wrap {
+  background: var(--color-surface);
+}
+
+.mosam-merchandise-table th,
+.mosam-merchandise-table td {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.mosam-merchandise-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.mosam-table-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--color-text-1);
+  line-height: 1.4;
+}
+
+.mosam-table-input::placeholder {
+  color: var(--color-text-3);
+}
+
+.mosam-table-input:hover:not(:disabled) {
+  border-color: var(--color-border);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.mosam-table-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(26, 74, 46, 0.08);
+}
+
+.mosam-table-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mosam-table-select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 8px 28px 8px 10px;
+  font-size: 13px;
+  color: var(--color-text-1);
+  line-height: 1.4;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
+}
+
+.mosam-table-select:hover:not(:disabled) {
+  border-color: var(--color-border);
+  background-color: rgba(255, 255, 255, 0.5);
+}
+
+.mosam-table-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  background-color: #fff;
+  box-shadow: 0 0 0 2px rgba(26, 74, 46, 0.08);
+}
+
+.mosam-table-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mosam-table-remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--color-text-3);
+}
+
+.mosam-table-remove-btn:hover:not(:disabled) {
+  color: #b91c1c;
+  background: rgba(185, 28, 28, 0.08);
+}
+
+/* Classification progress panel */
+.mosam-progress-panel {
+  background: linear-gradient(180deg, rgba(26, 74, 46, 0.04), rgba(255, 255, 255, 0.6));
+}
+
+.mosam-progress-step {
+  color: var(--color-text-3);
+}
+
+.mosam-progress-step-active {
+  color: var(--color-text-1);
+  font-weight: 600;
+}
+
+.mosam-progress-step-done {
+  color: var(--color-primary);
+}
+
+.mosam-progress-step-skipped {
+  color: var(--color-text-3);
+  opacity: 0.7;
+}
+
+.mosam-progress-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.mosam-progress-icon-done {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.mosam-progress-icon-pending {
+  width: 8px;
+  height: 8px;
+  margin: 6px;
+  border-radius: 999px;
+  background: var(--color-border);
+}
+
+.mosam-progress-icon-skipped {
+  color: var(--color-text-3);
+}
+
 /* Summary panel */
 .mosam-summary-card h2 {
   font-size: 16px;

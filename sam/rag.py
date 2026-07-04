@@ -27,6 +27,7 @@ from openai import OpenAI
 from .product_identification import prepare_query_for_classification
 from .candidate_set_enforcer import (
     attach_candidates_to_classifications,
+    format_merged_candidates_prompt,
     retrieve_locked_tec_context,
 )
 from .classification_progress import ClassificationProgressReporter
@@ -1335,6 +1336,25 @@ def process_user_input(
             index,
             search_fn=search_faiss_index,
         )
+
+        if not identification.skipped:
+            func_query = " ".join(filter(None, [
+                (identification.product_type or "").strip(),
+                (identification.function_usage or "").strip(),
+            ]))
+            if func_query and func_query.casefold() != classification_query.casefold():
+                func_context, func_candidates = retrieve_locked_tec_context(
+                    func_query, chunks, index, search_fn=search_faiss_index,
+                )
+                existing_positions = {d.get("position_code") for d in candidate_dicts}
+                added = False
+                for fc in func_candidates:
+                    if fc.get("position_code") not in existing_positions:
+                        candidate_dicts.append(fc)
+                        added = True
+                if added:
+                    locked_context = format_merged_candidates_prompt(candidate_dicts)
+
         if i - 1 < len(product_identifications):
             product_identifications[i - 1]["tec_position_candidates"] = candidate_dicts
 
@@ -1348,6 +1368,22 @@ def process_user_input(
         original_note = ""
         if identification.enriched_description.strip() and identification.enriched_description.strip() != query.strip():
             original_note = f"\nSaisie utilisateur initiale : {query.strip()}"
+
+        id_function_block = ""
+        if not identification.skipped:
+            ptype = (identification.product_type or "").strip()
+            fusage = (identification.function_usage or "").strip()
+            if ptype or fusage:
+                lines = ["IDENTIFICATION PRODUIT (prioritaire pour determiner la position) :"]
+                if ptype:
+                    lines.append(f"- Type de produit : {ptype}")
+                if fusage:
+                    lines.append(f"- Fonction principale : {fusage}")
+                lines.append(
+                    "Le code SH doit correspondre a la FONCTION PRINCIPALE ci-dessus, "
+                    "pas a la composition physique (verre, plastique, metal, etc.)."
+                )
+                id_function_block = "\n" + "\n".join(lines) + "\n"
 
         web_block = ""
         if getattr(identification, "web_search_used", False):
@@ -1370,7 +1406,7 @@ def process_user_input(
 
         prompt_sections.append(
             f"[MARCHANDISE {i}]\nDescription enrichie pour classification :\n{classification_query}"
-            f"{original_note}{web_block}{tec_hint}\n{locked_context}{examples_block}"
+            f"{original_note}{id_function_block}{web_block}{tec_hint}\n{locked_context}{examples_block}"
         )
 
     combined_context = "\n\n".join(prompt_sections)

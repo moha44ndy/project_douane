@@ -12,7 +12,7 @@ from .tariff_metadata import get_position_heading
 from .tariff_position_rules import position_code_from_hs
 
 _TARIFF_CODE_RE = re.compile(r"\b(\d{4}\.\d{2}(?:\.\d{2}(?:\.\d{2})?)?)\b")
-_DEFAULT_MAX_POSITIONS = 3
+_DEFAULT_MAX_POSITIONS = 5
 _EXCERPT_MAX_LEN = 320
 
 
@@ -94,7 +94,7 @@ def build_position_candidates(
     """
     chunk_list = list(chunks)
     indices = [int(i) for i in chunk_indices if i is not None and int(i) >= 0]
-    dist_list = list(distances or [])
+    dist_list = list(distances) if distances is not None else []
     if not indices:
         return []
 
@@ -195,6 +195,37 @@ def format_candidate_set_prompt(
     return "\n".join(lines)
 
 
+def format_merged_candidates_prompt(candidate_dicts: list[dict[str, Any]]) -> str:
+    """Reconstruit le bloc prompt à partir de dicts candidats fusionnés."""
+    if not candidate_dicts:
+        return (
+            "Aucune position TEC candidate extraite du referentiel local pour cette requete. "
+            "Ne pas inventer de code precis ; limiter hs_code au chapitre si necessaire et confidence <= 40.\n"
+        )
+    lines = [
+        "POSITIONS TEC CANDIDATES (VERROUILLAGE OBLIGATOIRE) :",
+        "Tu dois choisir UNIQUEMENT l'une des positions ci-dessous pour hs_code "
+        "(format XX.XX ou sous-code appartenant a cette position).",
+        "Justifie par elimination des autres candidates.",
+        "",
+    ]
+    for idx, cd in enumerate(candidate_dicts, start=1):
+        pos = cd.get("position_code", "?")
+        label = cd.get("label", "")
+        lines.append(f"{idx}. Position {pos} — {label}")
+        excerpt = cd.get("excerpt", "")
+        if excerpt:
+            lines.append(f"   Extrait TEC : {excerpt[:320]}")
+        lines.append("")
+    lines.append(
+        f"INTERDIT : hs_code en dehors de ces {len(candidate_dicts)} position(s). "
+        "Si aucune ne convient parfaitement, retiens la moins inadequate, "
+        "confidence <= 55, classification_status = provisoire, "
+        "et explique les positions ecartees dans la justification."
+    )
+    return "\n".join(lines)
+
+
 def retrieve_locked_tec_context(
     query: str,
     chunks: Iterable[Any],
@@ -206,11 +237,18 @@ def retrieve_locked_tec_context(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Recherche FAISS + construction du bloc positions candidates (sans dump brut de chunks)."""
     indices, distances = search_fn(query, index, k=k)
-    if indices is None or len(indices) == 0:
+    if indices is None:
+        return format_candidate_set_prompt([]), []
+    if hasattr(indices, "size") and indices.size == 0:
+        return format_candidate_set_prompt([]), []
+    if not hasattr(indices, "size") and len(indices) == 0:
         return format_candidate_set_prompt([]), []
 
     row_indices = indices[0]
-    row_distances = distances[0] if distances is not None and len(distances) > 0 else []
+    row_distances = distances[0] if distances is not None and (
+        (hasattr(distances, "size") and distances.size > 0) or
+        (not hasattr(distances, "size") and len(distances) > 0)
+    ) else []
     candidates = build_position_candidates(
         chunks,
         row_indices,

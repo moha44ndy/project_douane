@@ -2,12 +2,26 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Fragment, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "../lib/apiBase";
 import { httpApiErrorMessage } from "../lib/httpApiErrorMessage";
 import { supabase } from "../lib/supabaseClient";
 import { log } from "../lib/logger";
 import { ConfirmLogoutModal } from "../components/ConfirmLogoutModal";
+import { ClassificationProgressPanel } from "../components/ClassificationProgressPanel";
+import { MerchandiseTableForm } from "../components/MerchandiseTableForm";
+import {
+  applyProgressStep,
+  DEFAULT_CLASSIFICATION_STEPS,
+  markAllStepsDone,
+  streamClassifyQuery,
+  type ClassificationProgressStep,
+} from "../lib/classificationStream";
+import {
+  buildMerchandiseQuery,
+  createEmptyMerchandiseRow,
+  type MerchandiseRow,
+} from "../lib/merchandiseQuery";
 
 const INDICATIVE_DISCLAIMER =
   "Proposition indicative, à faire valider avant toute utilisation officielle.";
@@ -36,6 +50,9 @@ type ClassificationItem = {
   excerpt?: string;
   origin?: string;
   value?: string;
+  web_sources?: Array<{ title?: string; url?: string; snippet?: string }>;
+  web_search_queries?: string[];
+  web_search_used?: boolean;
   confidence?: number;
   risk_level?: "low" | "medium" | "high";
   risk_label?: string;
@@ -200,6 +217,12 @@ function polishFrenchForClipboard(s: string): string {
   return t;
 }
 
+function isCommercialFieldDisplayed(value?: string | null): value is string {
+  const trimmed = value?.trim();
+  if (!trimmed) return false;
+  return !/non renseign/i.test(trimmed);
+}
+
 function getChecklistMark(status?: string): string {
   if (status === "ok") return "✓";
   if (status === "missing") return "✗";
@@ -319,11 +342,311 @@ function formatPayloadForClipboard(
   return lines.join("\n");
 }
 
+function getClassificationStatusLabel(status?: ClassificationItem["classification_status"]): string {
+  if (status === "confirmee") return "Confirmée";
+  if (status === "provisoire") return "Provisoire";
+  return "";
+}
+
+type ClassificationDetailPanelProps = {
+  item: ClassificationItem;
+  index: number;
+  getItemQuantity: (item: ClassificationItem, index: number) => number;
+  getQuantitySourceLabel: (source?: string) => string;
+};
+
+function ClassificationDetailPanel({
+  item,
+  index,
+  getItemQuantity,
+  getQuantitySourceLabel,
+}: ClassificationDetailPanelProps) {
+  return (
+    <div className="space-y-4 text-sm leading-relaxed">
+      {(isCommercialFieldDisplayed(item.origin) || isCommercialFieldDisplayed(item.value)) && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Informations commerciales
+          </h4>
+          {isCommercialFieldDisplayed(item.origin) && <div>Origine : {item.origin}</div>}
+          {isCommercialFieldDisplayed(item.value) && <div>Valeur : {item.value}</div>}
+        </section>
+      )}
+
+      {(item.web_search_used ||
+        (item.web_sources && item.web_sources.length > 0) ||
+        (item.web_search_queries && item.web_search_queries.length > 0)) && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Recherche internet (avant classification)
+          </h4>
+          {item.web_search_queries?.map((query) => (
+            <div key={query} className="text-muted-foreground">
+              Recherche : {query}
+            </div>
+          ))}
+          {item.web_sources?.map((source, sourceIndex) => (
+            <div key={`${source.url ?? sourceIndex}-${sourceIndex}`}>
+              {source.url ? (
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline break-all"
+                >
+                  {source.title?.trim() || source.url}
+                </a>
+              ) : (
+                source.title
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+
+      {(item.classification_status ||
+        (item.completeness_checklist && item.completeness_checklist.length > 0)) && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Qualité et statut
+          </h4>
+          {item.classification_status && (
+            <div>
+              Statut : {getClassificationStatusLabel(item.classification_status)}
+            </div>
+          )}
+          {item.completeness_checklist?.map((entry) => (
+            <div key={entry.field} className={getChecklistTone(entry.status)}>
+              {getChecklistMark(entry.status)} {entry.label}
+            </div>
+          ))}
+          {typeof item.completeness_score === "number" && (
+            <div className="font-semibold">Score description : {item.completeness_score}%</div>
+          )}
+        </section>
+      )}
+
+      <section>
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+          Détail quantité
+        </h4>
+        <div>Quantité retenue : {getItemQuantity(item, index)}</div>
+        <div>
+          Source : {getQuantitySourceLabel(item.quantity_source)}
+          {item.quantity_raw ? ` (brut : ${item.quantity_raw})` : ""}
+        </div>
+        <div>
+          Fiabilité quantité :{" "}
+          {item.quantity_source === "implicit"
+            ? "implicite (1 pièce)"
+            : typeof item.quantity_confidence === "number"
+              ? `${item.quantity_confidence}%`
+              : "N/R"}
+        </div>
+      </section>
+
+      {(item.position_label || item.hs_code_suggested || item.subposition_label) && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Détail code tarifaire
+          </h4>
+          {item.subposition_label && (
+            <div className="text-amber-700 dark:text-amber-400">{item.subposition_label}</div>
+          )}
+          {item.position_label && <div>{item.position_label}</div>}
+          {item.hs_code_suggested && item.hs_code_suggested !== item.hs_code && (
+            <div>Hypothèse initiale : {item.hs_code_suggested}</div>
+          )}
+        </section>
+      )}
+
+      <section>
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+          Détail des taux
+        </h4>
+        <div>D.D. {item.dd_rate || "N/R"}</div>
+        <div>R.S. {item.rs_rate || "N/R"}</div>
+        <div>Autres taxes : {item.other_taxes || "N/R"}</div>
+        <div>Unité statistique : {item.us_unit || "N/R"}</div>
+        {item.taxes_source === "tec" && (
+          <div className="text-emerald-700 dark:text-emerald-400">
+            Source : TEC (sous-position confirmée)
+          </div>
+        )}
+        {item.taxes_source === "provisional" && (
+          <div className="text-amber-700 dark:text-amber-400">
+            {item.taxes_note || "Taux à confirmer après sous-position"}
+          </div>
+        )}
+        {item.taxes_note && item.taxes_source === "tec" && (
+          <div className="text-amber-700 dark:text-amber-400">{item.taxes_note}</div>
+        )}
+      </section>
+
+      {item.risk_label && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Risque
+          </h4>
+          <div className={getRiskToneClass(item.risk_level)}>
+            <span aria-hidden="true">{getRiskEmoji(item.risk_level)} </span>
+            {item.risk_label}
+          </div>
+        </section>
+      )}
+
+      {item.classification_analysis && (
+        <section className="border-t border-border/60 pt-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+            Analyse du classement
+          </h4>
+          <div className="text-xs text-muted-foreground leading-snug space-y-1">
+            {item.classification_analysis.product_identified && (
+              <div>
+                {getChecklistMark("ok")} Produit :{" "}
+                {item.classification_analysis.product_identified}
+              </div>
+            )}
+            {item.classification_analysis.function && (
+              <div>
+                {getChecklistMark("ok")} Fonction : {item.classification_analysis.function}
+              </div>
+            )}
+            {item.classification_analysis.composition_lines &&
+              item.classification_analysis.composition_lines.length > 0 && (
+                <div>
+                  {getChecklistMark("ok")} Composition :{" "}
+                  {item.classification_analysis.composition_lines.join(", ")}
+                </div>
+              )}
+            {item.classification_analysis.chapters_studied &&
+              item.classification_analysis.chapters_studied.length > 0 && (
+                <div>
+                  {getChecklistMark("ok")} Chapitres étudiés :{" "}
+                  {item.classification_analysis.chapters_studied.join(", ")}
+                </div>
+              )}
+            {item.classification_analysis.chapter_retained && (
+              <div>
+                {getChecklistMark("ok")} Chapitre retenu :{" "}
+                {item.classification_analysis.chapter_retained}
+                {item.classification_analysis.chapter_name
+                  ? ` — ${item.classification_analysis.chapter_name}`
+                  : ""}
+              </div>
+            )}
+            {item.classification_analysis.missing_information &&
+              item.classification_analysis.missing_information.length > 0 && (
+                <div className={getChecklistTone("missing")}>
+                  {getChecklistMark("missing")} Informations manquantes :{" "}
+                  {item.classification_analysis.missing_information.join("; ")}
+                </div>
+              )}
+            {item.classification_analysis.rgi_applied &&
+              item.classification_analysis.rgi_applied.length > 0 && (
+                <div>
+                  {getChecklistMark("ok")} RGI appliquées :{" "}
+                  {item.classification_analysis.rgi_applied.join(", ")}
+                </div>
+              )}
+            {item.classification_analysis.rgi_not_applicable?.map((entry) => (
+              <div key={entry.rule} className={getChecklistTone("optional_missing")}>
+                {getChecklistMark("optional_missing")} {entry.rule} non appliquée :{" "}
+                {entry.reason}
+              </div>
+            ))}
+            {item.classification_analysis.why_position?.reasons &&
+              item.classification_analysis.why_position.reasons.length > 0 && (
+                <div className="mt-2">
+                  <div className="font-semibold text-foreground/80">
+                    {item.classification_analysis.why_position.title ||
+                      `Pourquoi ${item.classification_analysis.position_retained || item.hs_code} ?`}
+                  </div>
+                  {item.classification_analysis.why_position.reasons.map((reason) => (
+                    <div key={reason} className="mt-0.5">
+                      {reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+            {item.classification_analysis.alternatives_studied &&
+              item.classification_analysis.alternatives_studied.length > 0 && (
+                <div className="mt-2">
+                  <div className="font-semibold text-foreground/80">Alternatives étudiées</div>
+                  {item.classification_analysis.alternatives_studied.map((alt) => (
+                    <div
+                      key={`${alt.code}-${alt.status}`}
+                      className={
+                        alt.status === "retained"
+                          ? getChecklistTone("ok")
+                          : getChecklistTone("optional_missing")
+                      }
+                    >
+                      {alt.status === "retained"
+                        ? getChecklistMark("ok")
+                        : getChecklistMark("optional_missing")}{" "}
+                      <span className="font-mono">{alt.code}</span> —{" "}
+                      {alt.status === "retained" ? "retenu" : "rejeté"} : {alt.reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+            {item.classification_analysis.explanatory_notes?.map((note) => (
+              <div key={note.text} className="mt-0.5 italic">
+                {note.text}
+              </div>
+            ))}
+            {item.classification_analysis.decision && (
+              <div className="mt-1 font-semibold text-foreground/80">
+                Décision : {item.classification_analysis.decision}
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {item.missing_fields && item.missing_fields.length > 0 && (
+        <section className="text-amber-700">
+          <h4 className="text-xs font-semibold uppercase tracking-wide mb-1">
+            Informations manquantes
+          </h4>
+          {item.missing_fields.map((field) => (
+            <div key={field}>• {field}</div>
+          ))}
+        </section>
+      )}
+
+      {item.justification && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Justification
+          </h4>
+          <p className="text-muted-foreground">{item.justification}</p>
+        </section>
+      )}
+
+      {item.excerpt && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Extrait TEC
+          </h4>
+          <p className="text-muted-foreground whitespace-pre-line">{item.excerpt}</p>
+        </section>
+      )}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const router = useRouter();
-  const [query, setQuery] = useState("");
+  const [merchandiseRows, setMerchandiseRows] = useState<MerchandiseRow[]>(() => [
+    createEmptyMerchandiseRow(),
+  ]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [progressSteps, setProgressSteps] = useState<ClassificationProgressStep[] | null>(
+    null
+  );
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState<string | null>(null);
   const [payload, setPayload] = useState<ApiPayload | null>(null);
@@ -344,6 +667,7 @@ export default function HomePage() {
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<"idle" | "ok" | "error">("idle");
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
+  const [expandedDetailKeys, setExpandedDetailKeys] = useState<Record<string, boolean>>({});
 
   // Optionnel : regroupe les validations dans un "dossier entreprise"
   // (ex: Mosam Entreprise) pour les retrouver dans l'historique.
@@ -405,7 +729,52 @@ export default function HomePage() {
     );
   }, [payload]);
 
+  const applyRawClassificationResult = (rawText: string) => {
+    setRaw(rawText);
+    setExpandedDetailKeys({});
+
+    let parsed = tryParseStructuredPayload(rawText);
+    if (!parsed && rawText.trim().startsWith('"')) {
+      try {
+        const once = JSON.parse(rawText.trim()) as unknown;
+        if (typeof once === "string") parsed = tryParseStructuredPayload(once);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!parsed) {
+      try {
+        const maybeJson = JSON.parse(rawText);
+        const obj =
+          typeof maybeJson === "string" ? JSON.parse(maybeJson) : maybeJson;
+        if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+          const hasNarrative = typeof (obj as any).narrative === "string";
+          const hasClassifications = Array.isArray((obj as any).classifications);
+          const missing = [
+            !hasNarrative ? "narrative" : null,
+            !hasClassifications ? "classifications" : null,
+          ]
+            .filter(Boolean)
+            .join(" + ");
+          setParseFailureDetail(
+            missing
+              ? `Schéma inattendu : champ(s) manquant(s) = ${missing}.`
+              : "Schéma inattendu : réponse non interprétable par l'UI."
+          );
+        } else {
+          setParseFailureDetail(
+            "Réponse JSON reçue mais structure non compatible avec l'UI."
+          );
+        }
+      } catch {
+        setParseFailureDetail("Réponse JSON invalide côté client.");
+      }
+    }
+    setPayload(parsed);
+  };
+
   const classifyNow = async () => {
+    const query = buildMerchandiseQuery(merchandiseRows);
     if (!query.trim()) return;
 
     log.debug("[frontend submit] start query_preview=", query.slice(0, 60));
@@ -420,73 +789,27 @@ export default function HomePage() {
     setPayload(null);
     setParseFailureDetail(null);
 
+    setParseFailureDetail(null);
+    setProgressSteps(DEFAULT_CLASSIFICATION_STEPS.map((step) => ({ ...step })));
+
     try {
-      const response = await fetch(`${API_BASE_URL}/classify`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ query, user_id: userId }),
+      const data = await streamClassifyQuery(query, userId, {
+        onInit: (steps) => setProgressSteps(steps),
+        onStep: (step) =>
+          setProgressSteps((current) =>
+            current ? applyProgressStep(current, step) : current
+          ),
       });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(httpApiErrorMessage(response.status, text));
-      }
-
-      const data = await response.json();
-      const rawText: string =
-        typeof data.raw === "string"
-          ? data.raw
-          : JSON.stringify(data.raw ?? "");
-      setRaw(rawText);
-
-      let parsed = tryParseStructuredPayload(rawText);
-      if (!parsed && rawText.trim().startsWith('"')) {
-        try {
-          const once = JSON.parse(rawText.trim()) as unknown;
-          if (typeof once === "string")
-            parsed = tryParseStructuredPayload(once);
-        } catch {
-          /* ignore */
-        }
-      }
-      if (!parsed) {
-        try {
-          const maybeJson = JSON.parse(rawText);
-          const obj =
-            typeof maybeJson === "string" ? JSON.parse(maybeJson) : maybeJson;
-          if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-            const hasNarrative = typeof (obj as any).narrative === "string";
-            const hasClassifications = Array.isArray(
-              (obj as any).classifications
-            );
-            const missing = [
-              !hasNarrative ? "narrative" : null,
-              !hasClassifications ? "classifications" : null,
-            ]
-              .filter(Boolean)
-              .join(" + ");
-            setParseFailureDetail(
-              missing
-                ? `Schéma inattendu : champ(s) manquant(s) = ${missing}.`
-                : "Schéma inattendu : réponse non interprétable par l'UI."
-            );
-          } else {
-            setParseFailureDetail(
-              "Réponse JSON reçue mais structure non compatible avec l'UI."
-            );
-          }
-        } catch {
-          setParseFailureDetail("Réponse JSON invalide côté client.");
-        }
-      }
-      setPayload(parsed);
+      const rawText =
+        typeof data.raw === "string" ? data.raw : JSON.stringify(data.raw ?? "");
+      applyRawClassificationResult(rawText);
+      setProgressSteps((current) => (current ? markAllStepsDone(current) : current));
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur inconnue côté client";
       setError(message);
       setParseFailureDetail(null);
+      setProgressSteps(null);
     } finally {
       setLoading(false);
     }
@@ -505,6 +828,14 @@ export default function HomePage() {
     setRaw(null);
     setPayload(null);
     setParseFailureDetail(null);
+
+    setParseFailureDetail(null);
+    setProgressSteps(
+      DEFAULT_CLASSIFICATION_STEPS.map((step) => ({
+        ...step,
+        status: step.id === "merchandise" ? "active" : step.status,
+      }))
+    );
 
     try {
       const formData = new FormData();
@@ -529,57 +860,19 @@ export default function HomePage() {
       const rawText: string =
         typeof data.raw === "string" ? data.raw : JSON.stringify(data.raw ?? "");
       const effectiveQuery =
-        typeof data.effective_query === "string" ? data.effective_query : query.trim();
+        typeof data.effective_query === "string"
+          ? data.effective_query
+          : buildMerchandiseQuery(merchandiseRows).trim();
       setClassifyQueryForCache(effectiveQuery);
       if (typeof data.items_count === "number") setFileItemsCount(data.items_count);
-      setRaw(rawText);
-
-      let parsed = tryParseStructuredPayload(rawText);
-      if (!parsed && rawText.trim().startsWith('"')) {
-        try {
-          const once = JSON.parse(rawText.trim()) as unknown;
-          if (typeof once === "string")
-            parsed = tryParseStructuredPayload(once);
-        } catch {
-          /* ignore */
-        }
-      }
-      if (!parsed) {
-        try {
-          const maybeJson = JSON.parse(rawText);
-          const obj =
-            typeof maybeJson === "string" ? JSON.parse(maybeJson) : maybeJson;
-          if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-            const hasNarrative = typeof (obj as any).narrative === "string";
-            const hasClassifications = Array.isArray(
-              (obj as any).classifications
-            );
-            const missing = [
-              !hasNarrative ? "narrative" : null,
-              !hasClassifications ? "classifications" : null,
-            ]
-              .filter(Boolean)
-              .join(" + ");
-            setParseFailureDetail(
-              missing
-                ? `Schéma inattendu : champ(s) manquant(s) = ${missing}.`
-                : "Schéma inattendu : réponse non interprétable par l'UI."
-            );
-          } else {
-            setParseFailureDetail(
-              "Réponse JSON reçue mais structure non compatible avec l'UI."
-            );
-          }
-        } catch {
-          setParseFailureDetail("Réponse JSON invalide côté client.");
-        }
-      }
-      setPayload(parsed);
+      applyRawClassificationResult(rawText);
+      setProgressSteps((current) => (current ? markAllStepsDone(current) : current));
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur inconnue côté client";
       setError(message);
       setParseFailureDetail(null);
+      setProgressSteps(null);
     } finally {
       setLoading(false);
     }
@@ -595,6 +888,7 @@ export default function HomePage() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    const query = buildMerchandiseQuery(merchandiseRows);
     if (!query.trim() && !selectedFile) return;
     if (selectedFile) {
       await classifyFromFile(selectedFile);
@@ -607,6 +901,13 @@ export default function HomePage() {
   const isAssistantInfo = Boolean(payload?.assistant_info);
   const getRowKey = (item: ClassificationItem, index: number) =>
     `${index}||${item.hs_code ?? ""}||${item.description ?? ""}`;
+
+  const toggleDetailRow = (rowKey: string) => {
+    setExpandedDetailKeys((prev) => ({
+      ...prev,
+      [rowKey]: !prev[rowKey],
+    }));
+  };
 
   const getItemQuantity = (item: ClassificationItem, index: number) => {
     const rowKey = getRowKey(item, index);
@@ -907,9 +1208,9 @@ export default function HomePage() {
             Décrire la marchandise
           </h2>
           <p className="text-sm text-muted-foreground">
-            Décrivez la marchandise à classer (matière, usage, caractéristiques
-            techniques…). Vous pouvez saisir plusieurs lignes ou puces, une par
-            marchandise.
+            Renseignez chaque marchandise dans le tableau ci-dessous (la
+            désignation est obligatoire). Une ligne correspond à une
+            marchandise. Vous pouvez aussi envoyer un fichier à la place.
           </p>
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="space-y-1">
@@ -933,12 +1234,12 @@ export default function HomePage() {
                   <polyline points="17 8 12 3 7 8" />
                   <line x1="12" y1="3" x2="12" y2="15" />
                 </svg>
-                Ou envoyer un fichier (txt, pdf)
+                Ou envoyer un fichier (Excel, Word, PDF, TXT, CSV)
               </label>
               <input
                 id="uploadFile"
                 type="file"
-                accept=".txt,.pdf,text/plain,application/pdf"
+                accept=".txt,.pdf,.csv,.xlsx,.xls,.xlsm,.docx,.doc,text/plain,application/pdf,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
                 onChange={(e) => {
                   const f = e.target.files?.[0] ?? null;
                   setSelectedFile(f);
@@ -956,18 +1257,16 @@ export default function HomePage() {
                   >
                     retirer
                   </button>
+                  <span className="block mt-1">
+                    Le fichier remplace la saisie tableau pour cette classification.
+                  </span>
                 </div>
               )}
             </div>
-            <textarea
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              className="mosam-textarea min-h-[140px]"
-              placeholder={
-                "Exemples :\n" +
-                "- Ordinateur portable 15'' écran LED, processeur i7, 16 Go RAM\n" +
-                "- Barre en acier laminé à chaud, section rectangulaire"
-              }
+            <MerchandiseTableForm
+              rows={merchandiseRows}
+              onChange={setMerchandiseRows}
+              disabled={loading || !!selectedFile}
             />
             <button
               type="submit"
@@ -984,6 +1283,9 @@ export default function HomePage() {
               )}
             </button>
           </form>
+          {loading && progressSteps && (
+            <ClassificationProgressPanel steps={progressSteps} />
+          )}
           {error && (
             <div className="mt-3 rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
               {error}
@@ -1176,339 +1478,122 @@ export default function HomePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {classifications.map((item, index) => (
-                      <tr
-                        key={getRowKey(item, index)}
-                        className={index % 2 === 0 ? "bg-muted/40" : "bg-background"}
-                      >
-                        <td className="px-3 py-2 align-top">
-                          <div className="font-semibold">
-                            {item.description || "Marchandise"}
-                          </div>
-                          {item.origin && (
-                            <div className="text-xs text-muted-foreground">
-                              Origine : {item.origin}
-                            </div>
-                          )}
-                          {item.value && (
-                            <div className="text-xs text-muted-foreground">
-                              Valeur : {item.value}
-                            </div>
-                          )}
-                          {item.classification_status && (
-                            <div className="mt-2 text-xs font-semibold text-foreground/80">
-                              Statut :{" "}
-                              {item.classification_status === "confirmee"
-                                ? "Classification confirmee"
-                                : "Classification provisoire"}
-                            </div>
-                          )}
-                          {item.completeness_checklist &&
-                            item.completeness_checklist.length > 0 && (
-                              <div className="mt-2 text-xs text-muted-foreground leading-snug">
-                                <div className="font-semibold text-foreground/80">
-                                  Qualite de la description
-                                </div>
-                                {item.completeness_checklist.map((entry) => (
-                                  <div
-                                    key={entry.field}
-                                    className={getChecklistTone(entry.status)}
-                                  >
-                                    {getChecklistMark(entry.status)} {entry.label}
-                                  </div>
-                                ))}
-                                {typeof item.completeness_score === "number" && (
-                                  <div className="mt-1 font-semibold text-foreground/80">
-                                    Score : {item.completeness_score}%
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          {item.classification_analysis && (
-                            <div className="mt-3 text-xs text-muted-foreground leading-snug border-t border-border/60 pt-2">
-                              <div className="font-semibold text-foreground/80">
-                                Analyse du classement
-                              </div>
-                              {item.classification_analysis.product_identified && (
-                                <div>
-                                  {getChecklistMark("ok")} Produit :{" "}
-                                  {item.classification_analysis.product_identified}
-                                </div>
-                              )}
-                              {item.classification_analysis.function && (
-                                <div>
-                                  {getChecklistMark("ok")} Fonction :{" "}
-                                  {item.classification_analysis.function}
-                                </div>
-                              )}
-                              {item.classification_analysis.composition_lines &&
-                                item.classification_analysis.composition_lines.length > 0 && (
-                                  <div>
-                                    {getChecklistMark("ok")} Composition :{" "}
-                                    {item.classification_analysis.composition_lines.join(", ")}
-                                  </div>
-                                )}
-                              {item.classification_analysis.chapters_studied &&
-                                item.classification_analysis.chapters_studied.length > 0 && (
-                                  <div>
-                                    {getChecklistMark("ok")} Chapitres etudies :{" "}
-                                    {item.classification_analysis.chapters_studied.join(", ")}
-                                  </div>
-                                )}
-                              {item.classification_analysis.chapter_retained && (
-                                <div>
-                                  {getChecklistMark("ok")} Chapitre retenu :{" "}
-                                  {item.classification_analysis.chapter_retained}
-                                  {item.classification_analysis.chapter_name
-                                    ? ` — ${item.classification_analysis.chapter_name}`
-                                    : ""}
-                                </div>
-                              )}
-                              {item.classification_analysis.missing_information &&
-                                item.classification_analysis.missing_information.length > 0 && (
-                                  <div className={getChecklistTone("missing")}>
-                                    {getChecklistMark("missing")} Informations manquantes :{" "}
-                                    {item.classification_analysis.missing_information.join("; ")}
-                                  </div>
-                                )}
-                              {item.classification_analysis.rgi_applied &&
-                                item.classification_analysis.rgi_applied.length > 0 && (
-                                  <div>
-                                    {getChecklistMark("ok")} RGI appliquees :{" "}
-                                    {item.classification_analysis.rgi_applied.join(", ")}
-                                  </div>
-                                )}
-                              {item.classification_analysis.rgi_not_applicable &&
-                                item.classification_analysis.rgi_not_applicable.length > 0 &&
-                                item.classification_analysis.rgi_not_applicable.map((entry) => (
-                                  <div key={entry.rule} className={getChecklistTone("optional_missing")}>
-                                    {getChecklistMark("optional_missing")} {entry.rule} non
-                                    appliquee : {entry.reason}
-                                  </div>
-                                ))}
-                              {item.classification_analysis.why_position &&
-                                item.classification_analysis.why_position.reasons &&
-                                item.classification_analysis.why_position.reasons.length > 0 && (
-                                  <div className="mt-2">
-                                    <div className="font-semibold text-foreground/80">
-                                      {item.classification_analysis.why_position.title ||
-                                        `Pourquoi ${item.classification_analysis.position_retained || item.hs_code} ?`}
-                                    </div>
-                                    {item.classification_analysis.why_position.reasons.map(
-                                      (reason) => (
-                                        <div key={reason} className="mt-0.5">
-                                          {reason}
-                                        </div>
-                                      )
-                                    )}
-                                  </div>
-                                )}
-                              {item.classification_analysis.alternatives_studied &&
-                                item.classification_analysis.alternatives_studied.length > 0 && (
-                                  <div className="mt-2">
-                                    <div className="font-semibold text-foreground/80">
-                                      Alternatives etudiees
-                                    </div>
-                                    {item.classification_analysis.alternatives_studied.map(
-                                      (alt) => (
-                                        <div
-                                          key={`${alt.code}-${alt.status}`}
-                                          className={
-                                            alt.status === "retained"
-                                              ? getChecklistTone("ok")
-                                              : getChecklistTone("optional_missing")
-                                          }
-                                        >
-                                          {alt.status === "retained"
-                                            ? getChecklistMark("ok")
-                                            : getChecklistMark("optional_missing")}{" "}
-                                          <span className="font-mono">{alt.code}</span> —{" "}
-                                          {alt.status === "retained" ? "retenu" : "rejete"} :{" "}
-                                          {alt.reason}
-                                        </div>
-                                      )
-                                    )}
-                                  </div>
-                                )}
-                              {item.classification_analysis.explanatory_notes &&
-                                item.classification_analysis.explanatory_notes.length > 0 && (
-                                  <div className="mt-2">
-                                    <div className="font-semibold text-foreground/80">
-                                      Notes explicatives SH
-                                    </div>
-                                    {item.classification_analysis.explanatory_notes.map(
-                                      (note) => (
-                                        <div key={note.text} className="mt-0.5 italic">
-                                          {note.text}
-                                        </div>
-                                      )
-                                    )}
-                                  </div>
-                                )}
-                              {item.classification_analysis.decision && (
-                                <div className="mt-1 font-semibold text-foreground/80">
-                                  Decision : {item.classification_analysis.decision}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {item.missing_fields && item.missing_fields.length > 0 && (
-                            <div className="mt-2 text-xs leading-snug text-amber-700">
-                              <div className="font-semibold">
-                                Informations manquantes
-                              </div>
-                              {item.missing_fields.map((field) => (
-                                <div key={field}>• {field}</div>
-                              ))}
-                            </div>
-                          )}
-                          {item.justification && (
-                            <div className="mt-2 text-xs text-muted-foreground leading-relaxed">
-                              <span className="font-semibold text-foreground/80">
-                                Justification :{" "}
-                              </span>
-                              {item.justification}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <input
-                            type="number"
-                            min={1}
-                            step={1}
-                            inputMode="numeric"
-                            value={getItemQuantity(item, index)}
-                            onChange={(e) => {
-                              const next = Number(e.target.value);
-                              if (!Number.isFinite(next)) return;
-                              const safe = Math.max(1, Math.floor(next));
-                              const rowKey = getRowKey(item, index);
-                              setQuantityOverrides((prev) => ({ ...prev, [rowKey]: safe }));
-                            }}
-                            className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm"
-                            aria-label={`Quantité pour ${item.description || "Marchandise"}`}
-                          />
-                          <div className="mt-2 text-xs text-muted-foreground leading-snug">
-                            <div className="font-semibold text-foreground/80">Detail calcul quantite</div>
-                            <div>
-                              Qte retenue:{" "}
-                              <span className="font-semibold">{getItemQuantity(item, index)}</span>
-                            </div>
-                            <div>
-                              Source: {getQuantitySourceLabel(item.quantity_source)}
-                              {item.quantity_raw ? ` (brut: ${item.quantity_raw})` : ""}
-                            </div>
-                            <div>
-                              Fiabilité quantité :{" "}
-                              {item.quantity_source === "implicit"
-                                ? "implicite (1 pièce)"
-                                : typeof item.quantity_confidence === "number"
-                                  ? `${item.quantity_confidence}%`
-                                  : "N/R"}
-                            </div>
-                            <div>
-                              Qualité de la description :{" "}
-                              {typeof item.completeness_score === "number"
-                                ? `${item.completeness_score}%`
-                                : typeof item.description_quality === "number"
-                                  ? `${item.description_quality}%`
-                                  : "N/R"}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <div className="font-mono">
-                            {item.hs_code || "Non renseigné"}
-                          </div>
-                          {item.subposition_label && (
-                            <div className="mt-1 text-xs text-amber-700 dark:text-amber-400 leading-snug">
-                              {item.subposition_label}
-                            </div>
-                          )}
-                          {item.position_label && (
-                            <div className="mt-1 text-xs text-muted-foreground leading-snug">
-                              {item.position_label}
-                            </div>
-                          )}
-                          {item.hs_code_suggested &&
-                            item.hs_code_suggested !== item.hs_code && (
-                              <div className="mt-1 text-xs text-muted-foreground leading-snug">
-                                Hypothese initiale : {item.hs_code_suggested}
-                              </div>
-                            )}
-                        </td>
-                        <td className="px-3 py-2 align-top text-sm">
-                          <div>{item.section || "N/A"}</div>
-                          {item.section_name && (
-                            <div className="text-xs text-muted-foreground">
-                              {item.section_name}
-                            </div>
-                          )}
-                          <div className="mt-1 text-xs">
-                            <span className="font-semibold">
-                              Chapitre {item.chapter || "N/A"}
-                            </span>
-                            {item.chapter_name && (
-                              <span className="text-muted-foreground">
-                                {" "}
-                                – {item.chapter_name}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 align-top text-xs">
-                          <div>D.D. {item.dd_rate || "N/R"}</div>
-                          <div>R.S. {item.rs_rate || "N/R"}</div>
-                          <div className="text-muted-foreground">
-                            {item.other_taxes || "N/R"}
-                          </div>
-                          <div>U.S. {item.us_unit || "N/R"}</div>
-                          {item.taxes_source === "tec" && (
-                            <div className="mt-1 text-[10px] text-emerald-700 dark:text-emerald-400">
-                              Source : TEC (sous-position confirmee)
-                            </div>
-                          )}
-                          {item.taxes_source === "provisional" && (
-                            <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-400 leading-snug">
-                              {item.taxes_note || "Taux a confirmer apres sous-position"}
-                            </div>
-                          )}
-                          {item.taxes_note && item.taxes_source === "tec" && (
-                            <div className="mt-1 text-[10px] text-amber-700 dark:text-amber-400 leading-snug">
-                              {item.taxes_note}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <div className="text-xs text-muted-foreground mb-1">
-                            Classification
-                          </div>
-                          <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                            {typeof item.confidence === "number"
-                              ? `${item.confidence}%`
-                              : "N/R"}
-                          </span>
-                          {item.risk_label && (
-                            <div
-                              className={`mt-2 text-xs leading-snug ${getRiskToneClass(item.risk_level)}`}
-                            >
-                              <span aria-hidden="true">{getRiskEmoji(item.risk_level)} </span>
-                              {item.risk_label}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 align-top">
-                          <button
-                            type="button"
-                            onClick={() => handleValidate(item, index)}
-                            className="inline-flex items-center justify-center min-h-[44px] min-w-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
-                            disabled={!!validatedKeys[getRowKey(item, index)]}
+                    {classifications.map((item, index) => {
+                      const rowKey = getRowKey(item, index);
+                      const isDetailExpanded = !!expandedDetailKeys[rowKey];
+                      return (
+                        <Fragment key={rowKey}>
+                          <tr
+                            className={index % 2 === 0 ? "bg-muted/40" : "bg-background"}
                           >
-                            {validatedKeys[getRowKey(item, index)] ? "Validé" : "Valider"}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                            <td className="px-3 py-2 align-top">
+                              <div className="font-semibold">
+                                {item.description || "Marchandise"}
+                              </div>
+                              {item.classification_status === "provisoire" && (
+                                <div className="mt-1 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                                  Classification provisoire
+                                </div>
+                              )}
+                              {isCommercialFieldDisplayed(item.origin) && (
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  Origine : {item.origin}
+                                </div>
+                              )}
+                              {isCommercialFieldDisplayed(item.value) && (
+                                <div className="text-xs text-muted-foreground">
+                                  Valeur : {item.value}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top">
+                              <input
+                                type="number"
+                                min={1}
+                                step={1}
+                                inputMode="numeric"
+                                value={getItemQuantity(item, index)}
+                                onChange={(e) => {
+                                  const next = Number(e.target.value);
+                                  if (!Number.isFinite(next)) return;
+                                  const safe = Math.max(1, Math.floor(next));
+                                  setQuantityOverrides((prev) => ({ ...prev, [rowKey]: safe }));
+                                }}
+                                className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm"
+                                aria-label={`Quantité pour ${item.description || "Marchandise"}`}
+                              />
+                            </td>
+                            <td className="px-3 py-2 align-top">
+                              <div className="font-mono text-base font-bold text-primary">
+                                {item.hs_code || "Non renseigné"}
+                              </div>
+                              {item.subposition_label && (
+                                <div className="mt-1 text-xs text-amber-700 dark:text-amber-400 leading-snug">
+                                  {item.subposition_label}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top text-sm">
+                              <div>{item.section || "N/A"}</div>
+                              {item.chapter && (
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  Ch. {item.chapter}
+                                  {item.chapter_name ? ` — ${item.chapter_name}` : ""}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top text-xs whitespace-nowrap">
+                              <div>D.D. {item.dd_rate || "N/R"}</div>
+                              <div>R.S. {item.rs_rate || "N/R"}</div>
+                            </td>
+                            <td className="px-3 py-2 align-top">
+                              <span className="inline-flex items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                                {typeof item.confidence === "number"
+                                  ? `${item.confidence}%`
+                                  : "N/R"}
+                              </span>
+                              {item.risk_level && (
+                                <div className="mt-1 text-xs" aria-hidden="true">
+                                  {getRiskEmoji(item.risk_level)}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top">
+                              <div className="flex flex-col gap-2 min-w-[7.5rem]">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleDetailRow(rowKey)}
+                                  className="inline-flex items-center justify-center min-h-[44px] rounded-full border border-border px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted touch-manipulation"
+                                  aria-expanded={isDetailExpanded}
+                                >
+                                  {isDetailExpanded ? "Masquer les détails" : "Voir les détails"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleValidate(item, index)}
+                                  className="inline-flex items-center justify-center min-h-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
+                                  disabled={!!validatedKeys[rowKey]}
+                                >
+                                  {validatedKeys[rowKey] ? "Validé" : "Valider"}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          {isDetailExpanded && (
+                            <tr className={index % 2 === 0 ? "bg-muted/20" : "bg-muted/10"}>
+                              <td colSpan={7} className="px-4 py-4 border-t border-border/60">
+                                <ClassificationDetailPanel
+                                  item={item}
+                                  index={index}
+                                  getItemQuantity={getItemQuantity}
+                                  getQuantitySourceLabel={getQuantitySourceLabel}
+                                />
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
                 <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
