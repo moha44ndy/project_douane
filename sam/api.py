@@ -913,6 +913,9 @@ def _finalize_classification_response(
         return normalized
     if isinstance(data, dict):
         _attach_product_identification(data, product_identifications)
+        classifications = data.get("classifications")
+        if isinstance(classifications, list):
+            enrich_classifications_with_risk(classifications)
         return _ensure_json_raw(data)
     return normalized
 
@@ -1825,7 +1828,7 @@ def startup_event() -> None:
     app.state.chunks = chunks
     app.state.index = index
     tariff_label_index = build_tariff_label_index(chunks)
-    set_tariff_label_index(tariff_label_index)
+    set_tariff_label_index(tariff_label_index, chunks=chunks)
     app.state.tariff_label_index = tariff_label_index
     heading_narrative_index = build_heading_narrative_index(chunks)
     set_heading_narrative_index(heading_narrative_index)

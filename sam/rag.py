@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 from .config.settings import Config
+from .openai_compat import chat_completion_kwargs
 from .app_logger import get_logger
 from dotenv import load_dotenv
 import threading
@@ -24,11 +25,21 @@ from .db import get_db
 import urllib3
 import json
 from openai import OpenAI
-from .product_identification import prepare_query_for_classification
+from .product_identification import (
+    _identification_matches_reference,
+    prepare_query_for_classification,
+)
 from .candidate_set_enforcer import (
     attach_candidates_to_classifications,
     format_merged_candidates_prompt,
+    limit_position_candidates,
+    rerank_candidates_by_affinity,
     retrieve_locked_tec_context,
+)
+from .tariff_labels import (
+    find_positions_by_heading_match,
+    find_positions_by_label_keywords,
+    lookup_position_label,
 )
 from .classification_progress import ClassificationProgressReporter
 
@@ -1018,7 +1029,9 @@ def build_validated_examples_context(
     return "Exemples validés similaires:\n" + "\n".join(snippets)
 
 
-def search_faiss_index(query, index, k=5):
+def search_faiss_index(query, index, k=None):
+    if k is None:
+        k = max(1, int(getattr(Config, "MOSAM_FAISS_TOP_K", 20)))
     logger.debug("start vectorisation de la requete (OpenAI embeddings)")
     try:
         query_vec = _embed_texts_openai([query], batch_size=1)[0]
@@ -1103,8 +1116,9 @@ def use_llm(prompt_text):
             "n'arreter au dernier niveau justifiable ; si une information juridiquement indispensable manque, le signaler et limiter la confiance. "
             "Ton hs_code est une HYPOTHESE : Mosam applique ensuite la discrimination TEC complete avant de confirmer ou tronquer le code. "
             "13) Positions TEC candidates : si un bloc « POSITIONS TEC CANDIDATES (VERROUILLAGE OBLIGATOIRE) » est present, "
-            "tu DOIS choisir hs_code uniquement parmi ces positions (XX.XX ou sous-code de l'une d'elles). "
-            "Justifie explicitement pourquoi les autres candidates sont ecartees. "
+            "applique la METHODE D'ANALYSE PAR ELIMINATION : pour chaque position, indique compatible / incompatible / incertain "
+            "et pourquoi, puis choisis hs_code UNIQUEMENT parmi les positions compatibles. "
+            "Tu es meilleur pour eliminer que pour deviner. "
             "Tout code hors liste sera rejete par Mosam. "
             "Si un bloc « Avertissement discrimination TEC » est present, respecte-le strictement. "
             "Abréviations: D.D. = droits de douane, R.S. = régime statistique, U.S. = unité de mesure. "
@@ -1127,19 +1141,28 @@ def use_llm(prompt_text):
             "Mentionne explicitement les chapitres ou positions écartés (ex. « chapitre 76 écarté car… ») pour alimenter l'analyse des alternatives. "
             "Ne pas créer de champ séparé pour la RGI : tout le raisonnement juridique va dans \"justification\". "
             "Utilise \"classification_status\" = \"confirmee\" si les informations indispensables sont présentes, sinon \"provisoire\". "
+            "14) PRINCIPE DE CLASSIFICATION PAR NATURE TECHNIQUE (essentiel pour les equipements industriels) : "
+            "classe le produit selon ce qu'il EST techniquement (sa nature physique), pas selon ce a quoi il SERT (son application). "
+            "Exemple : un variateur de frequence CONVERTIT l'energie electrique (change la frequence/tension) → c'est un convertisseur statique, "
+            "meme si son APPLICATION est de controler la vitesse d'un moteur. "
+            "Un automate programmable (PLC/API) est un appareil de COMMANDE industrielle (il commande/pilote des processus via des entrees/sorties), "
+            "pas une machine de traitement de donnees a usage general. "
+            "Lis attentivement l'intitule COMPLET et les sous-positions de chaque position candidate. "
+            "Choisis la position dont le libelle decrit le plus precisement la NATURE TECHNIQUE du produit. "
+            "Quand plusieurs positions semblent possibles, prefere celle qui est la plus specifique au produit plutot qu'une position generique. "
             "REGLE ABSOLUE : ne retourne JAMAIS classifications = []. Si tu ne peux pas determiner un code precis, "
             "retourne au minimum le chapitre le plus probable (XX.XX), confidence <= 40, classification_status = provisoire."
         )
 
-        model = Config.MOSAM_MODEL or "gpt-4.1-mini"
+        model = Config.MOSAM_CLASSIFICATION_MODEL or "gpt-5"
         response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": prompt_text},
             ],
-            max_tokens=4096,
             response_format={"type": "json_object"},
+            **chat_completion_kwargs(model, max_tokens=4096, temperature=0.2),
         )
 
         content = response.choices[0].message.content
@@ -1284,6 +1307,48 @@ def build_context_for_query(query, chunks, index):
     return locked_context
 
 
+def _build_customs_search_terms(
+    product_type: str,
+    function_usage: str,
+    family: str = "",
+) -> str:
+    """Build a FAISS query from industrial vocabulary mapped to TEC terms."""
+    return " ".join(_build_customs_label_keywords(product_type, function_usage, family))
+
+
+def _build_customs_label_keywords(
+    product_type: str,
+    function_usage: str,
+    family: str = "",
+) -> list[str]:
+    """Map industrial product vocabulary to TEC heading keywords."""
+    combined = f"{product_type} {function_usage} {family}".lower()
+    keywords: set[str] = set()
+
+    if any(w in combined for w in ["automate", "programmable", "plc", "api", "simatic", "controleur", "contrôleur"]):
+        keywords.update(["commande", "tableau", "panneau", "console", "armoire"])
+    if any(w in combined for w in ["variateur", "onduleur", "redresseur", "inverter", "vfd", "convertisseur"]):
+        keywords.update(["convertisseur", "statique", "transformateur"])
+    if any(w in combined for w in ["connecteur", "connector", "fiche", "douille", "jack"]):
+        keywords.update(["connecteur", "fiche", "douille"])
+    if any(w in combined for w in ["transceiver", "sfp", "gbic", "optique", "fibre"]):
+        keywords.update(["transmission", "reception", "convertisseur", "signaux", "telecommunication"])
+    if any(w in combined for w in ["disjoncteur", "breaker", "fusible", "sectionneur"]):
+        keywords.update(["disjoncteur", "fusible", "coupure", "sectionnement"])
+    if any(w in combined for w in ["switch", "commut", "routeur", "router", "ethernet"]):
+        keywords.update(["commutation", "transmission", "reception", "telecommunication"])
+    if any(w in combined for w in ["smartphone", "telephone", "mobile", "cellulaire"]):
+        keywords.update(["telephone", "intelligent", "cellulaire"])
+    if any(w in combined for w in ["excavat", "pelle", "bulldozer", "chargeuse", "engin", "terrassement"]):
+        keywords.update(["excavateur", "pelle", "chenille", "terrassement"])
+    if any(w in combined for w in ["capteur", "sensor", "sonde", "transducteur"]):
+        keywords.update(["transducteur", "capteur", "instrument", "mesure"])
+    if any(w in combined for w in ["cable", "fil", "conducteur", "rj45"]):
+        keywords.update(["fil", "cable", "conducteur", "cuivre"])
+
+    return sorted(keywords)
+
+
 def _build_tec_discrimination_hint(
     source_text: str,
     candidate_dicts: list[dict[str, Any]] | None = None,
@@ -1370,30 +1435,122 @@ def process_user_input(
 
     prompt_sections = []
     for i, (query, classification_query, identification) in enumerate(prepared, start=1):
+        unstable = getattr(identification, "identification_unstable", False)
+        primary_query = query.strip() if unstable else classification_query
+
         locked_context, candidate_dicts = retrieve_locked_tec_context(
-            classification_query,
+            primary_query,
             chunks,
             index,
             search_fn=search_faiss_index,
         )
 
+        if unstable and primary_query.casefold() != classification_query.casefold():
+            _, enriched_candidates = retrieve_locked_tec_context(
+                classification_query, chunks, index, search_fn=search_faiss_index,
+            )
+            existing = {d.get("position_code") for d in candidate_dicts}
+            for fc in enriched_candidates:
+                if fc.get("position_code") not in existing:
+                    candidate_dicts.append(fc)
+                    existing.add(fc.get("position_code"))
+
         if not identification.skipped:
+            existing_positions = {d.get("position_code") for d in candidate_dicts}
+
+            # 2nd FAISS query: product_type + function_usage
             func_query = " ".join(filter(None, [
                 (identification.product_type or "").strip(),
                 (identification.function_usage or "").strip(),
             ]))
             if func_query and func_query.casefold() != classification_query.casefold():
-                func_context, func_candidates = retrieve_locked_tec_context(
+                _, func_candidates = retrieve_locked_tec_context(
                     func_query, chunks, index, search_fn=search_faiss_index,
                 )
-                existing_positions = {d.get("position_code") for d in candidate_dicts}
-                added = False
                 for fc in func_candidates:
                     if fc.get("position_code") not in existing_positions:
                         candidate_dicts.append(fc)
-                        added = True
-                if added:
-                    locked_context = format_merged_candidates_prompt(candidate_dicts)
+                        existing_positions.add(fc.get("position_code"))
+
+            # 3rd FAISS query: family (product family/category)
+            family = getattr(identification, "family", "") or ""
+            family = family.strip()
+            if family and family.casefold() != func_query.casefold() and family.casefold() != classification_query.casefold():
+                _, family_candidates = retrieve_locked_tec_context(
+                    family, chunks, index, search_fn=search_faiss_index,
+                )
+                for fc in family_candidates:
+                    if fc.get("position_code") not in existing_positions:
+                        candidate_dicts.append(fc)
+                        existing_positions.add(fc.get("position_code"))
+
+            # 4th source: text matching against position headings
+            ptype = (identification.product_type or "").strip()
+            fusage = (identification.function_usage or "").strip()
+            heading_matches = find_positions_by_heading_match(
+                classification_query,
+                product_type=ptype,
+                function_usage=fusage,
+                family=family,
+            )
+            for pos_code, heading_label, _score in heading_matches:
+                if pos_code not in existing_positions:
+                    candidate_dicts.append({
+                        "position_code": pos_code,
+                        "label": heading_label,
+                        "score": 0.0,
+                        "chapter": pos_code.replace(".", "")[:2],
+                        "excerpt": "",
+                        "matched_codes": [],
+                    })
+                    existing_positions.add(pos_code)
+
+            # 5th source: FAISS with customs-oriented vocabulary
+            customs_terms = _build_customs_search_terms(ptype, fusage, family)
+            if customs_terms and customs_terms.casefold() not in {
+                classification_query.casefold(),
+                func_query.casefold(),
+                family.casefold() if family else "",
+                primary_query.casefold(),
+            }:
+                _, customs_candidates = retrieve_locked_tec_context(
+                    customs_terms, chunks, index, search_fn=search_faiss_index,
+                )
+                for fc in customs_candidates:
+                    if fc.get("position_code") not in existing_positions:
+                        candidate_dicts.append(fc)
+                        existing_positions.add(fc.get("position_code"))
+
+            # 6th source: direct match against TEC position headings via customs keywords
+            label_keywords = _build_customs_label_keywords(ptype, fusage, family)
+            if label_keywords:
+                min_matches = 2 if len(label_keywords) >= 3 else 1
+                keyword_matches = find_positions_by_label_keywords(
+                    label_keywords,
+                    min_matches=min_matches,
+                    top_n=4,
+                )
+                for pos_code, heading_label, _score in keyword_matches:
+                    if pos_code not in existing_positions:
+                        candidate_dicts.append({
+                            "position_code": pos_code,
+                            "label": heading_label,
+                            "score": 0.0,
+                            "chapter": pos_code.replace(".", "")[:2],
+                            "excerpt": "",
+                            "matched_codes": [],
+                        })
+                        existing_positions.add(pos_code)
+
+            if candidate_dicts:
+                candidate_dicts = rerank_candidates_by_affinity(
+                    candidate_dicts,
+                    product_type=ptype,
+                    function_usage=fusage,
+                    family=family,
+                )
+                candidate_dicts = limit_position_candidates(candidate_dicts)
+                locked_context = format_merged_candidates_prompt(candidate_dicts)
 
         if i - 1 < len(product_identifications):
             product_identifications[i - 1]["tec_position_candidates"] = candidate_dicts
@@ -1420,25 +1577,43 @@ def process_user_input(
             family = family.strip()
             why_not = getattr(identification, "why_not_other_products", "") or ""
             why_not = why_not.strip()
-            if ptype or fusage:
-                lines = ["IDENTIFICATION PRODUIT (prioritaire pour determiner la position) :"]
+            reasoning = getattr(identification, "reasoning", "") or ""
+            reasoning = reasoning.strip()
+            if ptype or fusage or unstable:
+                ref_confirmed = _identification_matches_reference(query, identification)
+                product_ref = (
+                    mpn
+                    or commercial
+                    or query.strip()
+                )
+                lines = ["PRODUIT IDENTIFIE :"]
+                if product_ref:
+                    lines.append(product_ref)
+                lines.append("")
                 if manufacturer:
-                    lines.append(f"- Fabricant : {manufacturer}")
-                if commercial:
-                    lines.append(f"- Nom commercial : {commercial}")
-                if mpn:
-                    lines.append(f"- Reference fabricant : {mpn}")
-                if ptype:
-                    lines.append(f"- Type de produit : {ptype}")
-                if family:
-                    lines.append(f"- Famille : {family}")
-                if fusage:
-                    lines.append(f"- Fonction principale : {fusage}")
-                if why_not:
-                    lines.append(f"- Eliminations : {why_not}")
+                    lines.append(f"Fabricant : {manufacturer}")
+                if ptype and (not unstable or ref_confirmed):
+                    lines.append(f"Type : {ptype}")
+                if fusage and (not unstable or ref_confirmed):
+                    lines.append(f"Fonction : {fusage}")
+                if family and (not unstable or ref_confirmed):
+                    lines.append(f"Famille : {family}")
+                if unstable:
+                    lines.append("")
+                    lines.append(
+                        "ATTENTION : identification incertaine ou non confirmee. "
+                        f"Reference utilisateur prioritaire : {query.strip()}. "
+                        "Ne te fie pas a une hypothese produit erronnee ; "
+                        "confidence <= 55, classification_status = provisoire."
+                    )
+                if reasoning and (not unstable or ref_confirmed):
+                    lines.append(f"Raisonnement identification : {reasoning}")
+                if why_not and (not unstable or ref_confirmed):
+                    lines.append(f"Produits ecartes : {why_not}")
+                lines.append("")
                 lines.append(
-                    "Le code SH doit correspondre a la FONCTION PRINCIPALE ci-dessus, "
-                    "pas a la composition physique (verre, plastique, metal, etc.)."
+                    "Analyse CHAQUE position TEC candidate (compatible / incompatible / incertain + pourquoi), "
+                    "puis choisis uniquement parmi les positions compatibles."
                 )
                 id_function_block = "\n" + "\n".join(lines) + "\n"
 
@@ -1469,9 +1644,11 @@ def process_user_input(
     combined_context = "\n\n".join(prompt_sections)
     enriched_prompt = (
         "L'utilisateur peut avoir fourni plusieurs marchandises. "
-        "Analyse chaque bloc ci-dessous et produis une réponse structurée avec, pour chaque marchandise, "
-        "une hypothèse de position tarifaire (pas une classification définitive — la discrimination TEC "
-        "des sous-positions est appliquée ensuite par Mosam), le taux d'imposition indicatif et les détails pertinents.\n\n"
+        "Pour chaque bloc ci-dessous : analyse chaque position TEC candidate "
+        "(compatible / incompatible / incertain + pourquoi), elimine les positions incompatibles, "
+        "puis retiens hs_code uniquement parmi les positions compatibles. "
+        "Tu es meilleur pour eliminer que pour deviner. "
+        "La discrimination TEC des sous-positions est appliquee ensuite par Mosam.\n\n"
         f"{combined_context}\n\nDemande initiale de l'utilisateur:\n{user_input}"
     )
     logger.debug("start the send of the question")

@@ -17,6 +17,7 @@ _TARIFF_COLUMNS_RE = re.compile(
 _TARIFF_RATE_COLUMNS_RE = re.compile(r"\s+\d+\s+\d\s*$")
 
 _TARIFF_LABEL_INDEX: dict[str, str] | None = None
+_POSITION_LABEL_INDEX: dict[str, str] | None = None
 _HEADING_NARRATIVE_INDEX: dict[str, str] | None = None
 
 _TARIFF_CODE_AT_LINE_START_RE = re.compile(
@@ -48,13 +49,217 @@ def build_tariff_label_index(chunks: Iterable) -> dict[str, str]:
     return index
 
 
-def set_tariff_label_index(index: dict[str, str]) -> None:
-    global _TARIFF_LABEL_INDEX
+_SUBPOS_CODE_RE = re.compile(r"\d{4}\.\d{2}")
+
+
+def _extract_position_headings_from_chunk(text: str) -> dict[str, str]:
+    """Extract position headings (XX.XX format) from a TEC chunk.
+
+    TEC format example:
+        85.04  Transformateurs électriques, convertisseurs élec-
+        triques statiques (redresseurs, par exemple), bobines
+        de réactance et selfs.
+         8504.10.00.00 - Ballasts pour lampes ou tubes ...
+
+    Strategy: find XX.XX codes, capture everything after them until the
+    first XXXX.XX sub-position code appears (signaling the heading is over).
+    """
+    results: dict[str, str] = {}
+    pos_pattern = re.compile(r"(?:^|\n)\s*(\d{2}\.\d{2})\s{2,}")
+
+    for match in pos_pattern.finditer(text):
+        pos_code = match.group(1)
+        digits = pos_code.replace(".", "")
+        if len(digits) != 4:
+            continue
+
+        start = match.end()
+        remaining = text[start:]
+
+        subpos_match = _SUBPOS_CODE_RE.search(remaining)
+        if subpos_match:
+            heading_text = remaining[: subpos_match.start()]
+        else:
+            heading_text = remaining[:300]
+
+        heading_text = re.sub(r"-\s*\n\s*", "", heading_text)
+        heading_text = re.sub(r"\s+", " ", heading_text).strip()
+        heading_text = heading_text.rstrip(".")
+        heading_text = re.sub(r"\s*[uU]\s+\d+\s+\d\s*$", "", heading_text).strip()
+
+        if len(heading_text) >= 10:
+            prev = results.get(digits, "")
+            if len(heading_text) > len(prev):
+                results[digits] = heading_text
+
+    return results
+
+
+def build_position_label_index(
+    full_index: dict[str, str],
+    chunks: Iterable | None = None,
+) -> dict[str, str]:
+    """Build a 4-digit position → label index.
+
+    Strategy:
+    1. Scan TEC chunks for position headings (XX.XX format) — these are
+       the authoritative position titles (e.g. "85.04 Transformateurs
+       électriques, convertisseurs électriques statiques...").
+    2. Fall back to the longest sub-position label for positions not
+       found in step 1.
+    """
+    result: dict[str, str] = {}
+
+    if chunks is not None:
+        for chunk in chunks:
+            text = chunk.page_content if hasattr(chunk, "page_content") else str(chunk)
+            for pos_key, heading in _extract_position_headings_from_chunk(text).items():
+                prev = result.get(pos_key, "")
+                if len(heading) > len(prev):
+                    result[pos_key] = heading
+
+    pos_labels: dict[str, list[str]] = {}
+    for code, label in full_index.items():
+        digits = re.sub(r"\D", "", code)
+        if len(digits) >= 4:
+            pos_key = digits[:4]
+            if pos_key not in result:
+                pos_labels.setdefault(pos_key, []).append(label)
+    for pos_key, labels in pos_labels.items():
+        labels.sort(key=len, reverse=True)
+        result[pos_key] = labels[0]
+
+    return result
+
+
+def set_tariff_label_index(
+    index: dict[str, str],
+    chunks: Iterable | None = None,
+) -> None:
+    global _TARIFF_LABEL_INDEX, _POSITION_LABEL_INDEX
     _TARIFF_LABEL_INDEX = index
+    _POSITION_LABEL_INDEX = build_position_label_index(index, chunks=chunks)
 
 
 def get_tariff_label_index() -> dict[str, str]:
     return _TARIFF_LABEL_INDEX or {}
+
+
+def get_position_label_index() -> dict[str, str]:
+    return _POSITION_LABEL_INDEX or {}
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for comparison: lowercase, strip accents, remove punctuation."""
+    import unicodedata
+    text = unicodedata.normalize("NFKD", text.lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _compute_term_overlap(query_terms: set[str], heading_text: str) -> float:
+    """Score = ratio of query terms found in the heading text."""
+    if not query_terms:
+        return 0.0
+    heading_normalized = _normalize_text(heading_text)
+    heading_words = set(heading_normalized.split())
+    matches = 0
+    for term in query_terms:
+        if term in heading_words or any(term in hw for hw in heading_words):
+            matches += 1
+    return matches / len(query_terms)
+
+
+def find_positions_by_heading_match(
+    product_description: str,
+    *,
+    product_type: str = "",
+    function_usage: str = "",
+    family: str = "",
+    top_n: int = 3,
+    min_score: float = 0.25,
+) -> list[tuple[str, str, float]]:
+    """Find position codes whose heading text matches the product description.
+
+    Returns list of (position_code_XX.XX, heading_label, score) sorted by score.
+    """
+    pos_idx = get_position_label_index()
+    if not pos_idx:
+        return []
+
+    search_text = " ".join(filter(None, [product_description, product_type, function_usage, family]))
+    query_terms = set(_normalize_text(search_text).split())
+    # Remove very common/short words
+    stopwords = {"de", "du", "des", "le", "la", "les", "un", "une", "et", "ou", "en",
+                 "pour", "par", "avec", "dans", "sur", "a", "au", "aux", "d", "l",
+                 "qui", "que", "ce", "ces", "son", "sa", "ses", "ne", "pas", "est",
+                 "sont", "etre", "avoir", "fait", "faire", "plus", "moins", "tres",
+                 "autre", "autres", "non", "y", "n"}
+    query_terms = {t for t in query_terms if len(t) >= 3 and t not in stopwords}
+    if not query_terms:
+        return []
+
+    scored: list[tuple[str, str, float]] = []
+    for pos_key, heading in pos_idx.items():
+        score = _compute_term_overlap(query_terms, heading)
+        if score >= min_score:
+            pos_code = f"{pos_key[:2]}.{pos_key[2:]}"
+            scored.append((pos_code, heading, score))
+
+    scored.sort(key=lambda x: x[2], reverse=True)
+    return scored[:top_n]
+
+
+def find_positions_by_label_keywords(
+    keywords: list[str],
+    *,
+    min_matches: int = 1,
+    top_n: int = 3,
+) -> list[tuple[str, str, float]]:
+    """Find positions whose TEC heading contains industrial/customs keywords."""
+    pos_idx = get_position_label_index()
+    if not pos_idx or not keywords:
+        return []
+
+    normalized_keywords = [_normalize_text(k) for k in keywords if k.strip()]
+    normalized_keywords = [k for k in normalized_keywords if len(k) >= 3]
+    if not normalized_keywords:
+        return []
+
+    scored: list[tuple[str, str, float]] = []
+    for pos_key, heading in pos_idx.items():
+        norm_heading = _normalize_text(heading)
+        matches = sum(1 for kw in normalized_keywords if kw in norm_heading)
+        if matches >= min_matches:
+            pos_code = f"{pos_key[:2]}.{pos_key[2:]}"
+            score = matches / len(normalized_keywords)
+            scored.append((pos_code, heading, score))
+
+    scored.sort(key=lambda x: x[2], reverse=True)
+    return scored[:top_n]
+
+
+def list_subpositions_for_position(position_code: str) -> list[tuple[str, str]]:
+    """Return all sub-position codes and labels under a 4-digit position.
+
+    Args:
+        position_code: position in XX.XX or XXXX format
+    Returns:
+        Sorted list of (code, label) tuples
+    """
+    digits = re.sub(r"\D", "", (position_code or "").strip())
+    if len(digits) < 4:
+        return []
+    prefix = digits[:4]
+    idx = get_tariff_label_index()
+    results = []
+    for code, label in idx.items():
+        code_digits = re.sub(r"\D", "", code)
+        if code_digits.startswith(prefix):
+            results.append((code, label))
+    results.sort(key=lambda x: x[0])
+    return results
 
 
 def _looks_like_rate_tail(text: str) -> bool:
@@ -231,6 +436,13 @@ def lookup_position_label(
     if normalized.upper() in ("NON APPLICABLE", "NON RENSEIGNE", "NON RENSEIGNÉ", "N/A", "NA"):
         return None
 
+    # For position codes XX.XX (e.g. 85.17), prioritize position-level headings
+    parts = [p for p in normalized.split(".") if p.isdigit()]
+    if len(parts) == 2 and len(parts[0] + parts[1]) == 4 and _POSITION_LABEL_INDEX:
+        pos_label = _POSITION_LABEL_INDEX.get(parts[0] + parts[1])
+        if pos_label:
+            return pos_label
+
     lookup_index = index if index is not None else get_tariff_label_index()
     if not lookup_index:
         return None
@@ -239,4 +451,5 @@ def lookup_position_label(
         label = lookup_index.get(candidate)
         if label:
             return label
+
     return None

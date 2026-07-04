@@ -8,6 +8,7 @@ from typing import Any
 import requests
 
 from .config.settings import Config
+from .openai_compat import responses_api_kwargs, responses_max_output_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def web_search_model() -> str:
     return (
         (Config.MOSAM_WEB_SEARCH_MODEL or "").strip()
         or (Config.MOSAM_MODEL or "").strip()
-        or "gpt-4.1-mini"
+        or "gpt-5"
     )
 
 
@@ -34,15 +35,20 @@ def _extract_output_text(data: dict[str, Any]) -> str:
         return top_level
     parts: list[str] = []
     for item in data.get("output") or []:
-        if not isinstance(item, dict) or item.get("type") != "message":
+        if not isinstance(item, dict):
             continue
-        for content in item.get("content") or []:
-            if not isinstance(content, dict):
-                continue
-            if content.get("type") in {"output_text", "text"}:
-                text = str(content.get("text") or "").strip()
-                if text:
-                    parts.append(text)
+        if item.get("type") == "message":
+            for content in item.get("content") or []:
+                if not isinstance(content, dict):
+                    continue
+                if content.get("type") in {"output_text", "text"}:
+                    text = str(content.get("text") or "").strip()
+                    if text:
+                        parts.append(text)
+        elif item.get("type") == "text":
+            text = str(item.get("text") or "").strip()
+            if text:
+                parts.append(text)
     return "\n".join(parts).strip()
 
 
@@ -142,24 +148,56 @@ def identify_with_openai_web_search(
     Lance une identification marchandise avec recherche web OpenAI.
     Retourne (texte brut du modele, sources URL, requetes web).
     """
-    payload: dict[str, Any] = {
-        "model": web_search_model(),
+    model = web_search_model()
+    base_payload: dict[str, Any] = {
+        "model": model,
         "instructions": instructions,
         "input": user_input,
-        "tools": [
+        "tools": [{"type": "web_search"}],
+        "max_output_tokens": responses_max_output_tokens(model, 1400),
+        "store": False,
+        **responses_api_kwargs(model, temperature=0.2),
+    }
+
+    context_sizes = [
+        Config.MOSAM_WEB_SEARCH_CONTEXT_SIZE or "medium",
+        "low",
+    ]
+    last_error: Exception | None = None
+
+    for attempt, context_size in enumerate(context_sizes, start=1):
+        payload = dict(base_payload)
+        payload["tools"] = [
             {
                 "type": "web_search",
-                "search_context_size": Config.MOSAM_WEB_SEARCH_CONTEXT_SIZE or "medium",
+                "search_context_size": context_size,
             }
-        ],
-        "max_output_tokens": 1400,
-        "temperature": 0.2,
-        "store": False,
-    }
-    data = _call_responses_api(payload)
-    text = _extract_output_text(data)
-    sources = extract_url_citations(data)
-    queries = extract_web_search_queries(data)
-    if not text:
-        raise RuntimeError("OpenAI Responses API: reponse vide")
-    return text, sources, queries
+        ]
+        try:
+            data = _call_responses_api(payload)
+            text = _extract_output_text(data)
+            sources = extract_url_citations(data)
+            queries = extract_web_search_queries(data)
+            if not text:
+                raise RuntimeError("OpenAI Responses API: reponse vide")
+            return text, sources, queries
+        except Exception as exc:
+            last_error = exc
+            retryable = attempt < len(context_sizes) and (
+                "timeout" in str(exc).lower()
+                or "timed out" in str(exc).lower()
+                or "connection" in str(exc).lower()
+            )
+            if retryable:
+                logger.warning(
+                    "[openai_web_search] tentative %d echouee (%s), retry context=%s",
+                    attempt,
+                    exc,
+                    context_sizes[attempt],
+                )
+                continue
+            raise
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("OpenAI Responses API: echec recherche web")

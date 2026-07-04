@@ -21,6 +21,7 @@ from typing import Any
 from openai import OpenAI
 
 from .config.settings import Config
+from .openai_compat import chat_completion_kwargs
 from .openai_web_search import identify_with_openai_web_search, openai_web_search_enabled
 
 logger = logging.getLogger(__name__)
@@ -180,8 +181,10 @@ class ProductIdentification:
     enriched_description: str = ""
     notes: str = ""
     web_search_used: bool = False
+    web_search_failed: bool = False
     web_sources: list[dict[str, str]] = field(default_factory=list)
     web_search_queries: list[str] = field(default_factory=list)
+    identification_unstable: bool = False
     skipped: bool = False
     skip_reason: str = ""
     attempt_count: int = 1
@@ -207,8 +210,10 @@ class ProductIdentification:
             "enriched_description": self.enriched_description,
             "notes": self.notes,
             "web_search_used": self.web_search_used,
+            "web_search_failed": self.web_search_failed,
             "web_sources": self.web_sources,
             "web_search_queries": self.web_search_queries,
+            "identification_unstable": self.identification_unstable,
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
             "attempt_count": self.attempt_count,
@@ -343,9 +348,17 @@ def _retry_prompt_attempt2(original: str) -> str:
     )
 
 
-def _retry_prompt_attempt3(original: str) -> str:
+def _retry_prompt_attempt3(original: str, *, web_failed: bool = False) -> str:
+    web_note = (
+        "IMPORTANT : la recherche internet a echoue. N'invente PAS un produit different "
+        "de la reference. Si tu ne connais pas cette reference, mets identification_confidence "
+        "<= 30 et indique l'incertitude.\n\n"
+        if web_failed
+        else ""
+    )
     return (
         f"Derniere tentative pour identifier la reference '{original}'. "
+        f"{web_note}"
         "Si plusieurs produits existent pour cette reference, choisis le plus probable "
         "et explique pourquoi dans le champ 'reasoning'. "
         "Si aucune identification fiable n'est possible, mets identification_confidence "
@@ -394,14 +407,14 @@ def _call_identification_llm(
     *,
     system_prompt: str,
 ) -> str:
+    model = Config.MOSAM_IDENTIFICATION_MODEL or "gpt-5"
     response = _client.chat.completions.create(
-        model=Config.MOSAM_MODEL or "gpt-4.1-mini",
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        max_tokens=1200,
-        temperature=0.2,
+        **chat_completion_kwargs(model, max_tokens=1200, temperature=0.2),
     )
     content = response.choices[0].message.content
     return content or ""
@@ -411,19 +424,21 @@ def _call_with_optional_web(
     user_prompt: str,
     *,
     system_prompt: str,
-) -> tuple[str, list[dict[str, str]], list[str], bool]:
-    """Retourne (texte brut, sources web, requetes web, web_search_used)."""
+) -> tuple[str, list[dict[str, str]], list[str], bool, bool]:
+    """Retourne (texte brut, sources web, requetes web, web_search_used, web_search_failed)."""
     if openai_web_search_enabled():
         try:
             raw, sources, queries = identify_with_openai_web_search(
                 instructions=system_prompt,
                 user_input=user_prompt,
             )
-            return raw, sources, queries, True
+            return raw, sources, queries, True, False
         except Exception as exc:
             logger.warning("[product_identification] recherche web echouee: %s", exc)
+            raw = _call_identification_llm(user_prompt, system_prompt=system_prompt)
+            return raw, [], [], False, True
     raw = _call_identification_llm(user_prompt, system_prompt=system_prompt)
-    return raw, [], [], False
+    return raw, [], [], False, False
 
 
 # ---------------------------------------------------------------------------
@@ -432,13 +447,123 @@ def _call_with_optional_web(
 
 def _is_identification_reliable(identification: ProductIdentification) -> bool:
     """Fiable si confiance >= seuil ET product_type + function_usage renseignes."""
+    if identification.identification_unstable:
+        return False
     if identification.identification_confidence < _RELIABILITY_THRESHOLD:
         return False
     if not identification.product_type.strip():
         return False
     if not identification.function_usage.strip():
         return False
+    if identification.input_type == InputType.MANUFACTURER_REF and not _identification_matches_reference(
+        identification.original_query,
+        identification,
+    ):
+        return False
     return True
+
+
+def _reference_tokens(original: str) -> list[str]:
+    """Tokens significatifs extraits d'une reference constructeur."""
+    tokens = re.findall(r"[A-Za-z0-9]{2,}", original or "")
+    return [t.lower() for t in tokens if len(t) >= 2]
+
+
+def _identification_matches_reference(
+    original: str,
+    identification: ProductIdentification,
+) -> bool:
+    """Verifie que l'identification reste liee a la reference saisie."""
+    original_clean = (original or "").strip()
+    if not original_clean:
+        return True
+
+    haystack = " ".join(
+        filter(
+            None,
+            [
+                identification.product_name,
+                identification.manufacturer_part_number,
+                identification.commercial_name,
+                identification.manufacturer,
+                identification.product_type,
+                identification.reasoning,
+            ],
+        )
+    )
+    haystack_lower = haystack.lower()
+    original_lower = original_clean.lower()
+
+    compact_original = re.sub(r"[^a-z0-9]", "", original_lower)
+    compact_haystack = re.sub(r"[^a-z0-9]", "", haystack_lower)
+    if len(compact_original) >= 4 and compact_original in compact_haystack:
+        return True
+
+    mpn = (identification.manufacturer_part_number or "").strip().lower()
+    if mpn and (mpn == original_lower or original_lower in mpn or mpn in original_lower):
+        return True
+
+    tokens = _reference_tokens(original_clean)
+    if not tokens:
+        return True
+
+    alpha_num_tokens = [
+        t for t in tokens
+        if any(c.isdigit() for c in t) and any(c.isalpha() for c in t)
+    ]
+    long_tokens = [t for t in tokens if len(t) >= 5]
+    if alpha_num_tokens and all(t in haystack_lower for t in alpha_num_tokens):
+        return True
+    if long_tokens and all(t in haystack_lower for t in long_tokens):
+        return True
+
+    matched = sum(1 for t in tokens if t in haystack_lower)
+    return matched >= max(2, len(tokens))
+
+
+def _finalize_identification_stability(
+    original: str,
+    identification: ProductIdentification,
+) -> ProductIdentification:
+    """Marque et assainit une identification incertaine ou incoherente."""
+    unreliable = not _is_identification_reliable(identification)
+    ref_mismatch = (
+        identification.input_type == InputType.MANUFACTURER_REF
+        and not _identification_matches_reference(original, identification)
+    )
+
+    if not unreliable and not ref_mismatch:
+        return identification
+
+    identification.identification_unstable = True
+    identification.identification_confidence = min(
+        identification.identification_confidence,
+        45 if ref_mismatch else 55,
+    )
+
+    if ref_mismatch:
+        identification.enriched_description = (
+            f"Reference utilisateur : {original.strip()}\n"
+            "Identification incertaine — la reference n'a pas ete confirmee.\n"
+            "Preciser le fabricant, la nature et la fonction du produit avant validation."
+        )
+        identification.notes = (
+            (identification.notes or "")
+            + " Identification instable : reference non confirmee (hypothese ecartee)."
+        ).strip()
+    elif unreliable:
+        parts = [f"Reference utilisateur : {original.strip()}", "Identification incertaine — a valider."]
+        if identification.product_type.strip():
+            parts.append(f"Hypothese (non confirmee) : {identification.product_type.strip()}")
+        if identification.function_usage.strip():
+            parts.append(f"Fonction probable : {identification.function_usage.strip()}")
+        identification.enriched_description = "\n".join(parts)
+        if "identification incertaine" not in (identification.notes or "").lower():
+            identification.notes = (
+                (identification.notes or "") + " Identification instable apres tentatives."
+            ).strip()
+
+    return identification
 
 
 # ---------------------------------------------------------------------------
@@ -542,10 +667,12 @@ def identify_product(query: str) -> ProductIdentification:
     )
 
     # --- Attempt 1 ---
+    web_failed_any = False
     try:
-        raw, web_sources, web_queries, web_used = _call_with_optional_web(
+        raw, web_sources, web_queries, web_used, web_failed = _call_with_optional_web(
             user_prompt, system_prompt=system_prompt,
         )
+        web_failed_any = web_failed_any or web_failed
     except Exception as exc:
         logger.warning("[product_identification] echec LLM: %s", exc)
         return ProductIdentification(
@@ -570,14 +697,16 @@ def identify_product(query: str) -> ProductIdentification:
             best.identification_confidence, best.product_type[:30],
             best.identification_method[:30],
         )
-        return best
+        best.web_search_failed = web_failed_any and not web_used
+        return _finalize_identification_stability(original, best)
 
     if input_type != InputType.MANUFACTURER_REF:
         logger.debug(
             "[product_identification] non fiable mais input_type=%s, pas de retry (conf=%d)",
             input_type, best.identification_confidence,
         )
-        return best
+        best.web_search_failed = web_failed_any and not web_used
+        return _finalize_identification_stability(original, best)
 
     logger.info(
         "[product_identification] non fiable pour ref '%s' (conf=%d) -> retry",
@@ -591,9 +720,10 @@ def identify_product(query: str) -> ProductIdentification:
     retry_prompt = _retry_prompt_attempt2(original)
     retry_system = _system_prompt_manufacturer_ref(use_web=openai_web_search_enabled())
     try:
-        raw, r_sources, r_queries, r_web = _call_with_optional_web(
+        raw, r_sources, r_queries, r_web, r_failed = _call_with_optional_web(
             retry_prompt, system_prompt=retry_system,
         )
+        web_failed_any = web_failed_any or r_failed
         all_sources.extend(r_sources)
         all_queries.extend(r_queries)
         web_used = web_used or r_web
@@ -614,16 +744,18 @@ def identify_product(query: str) -> ProductIdentification:
             best.web_sources = all_sources[:10]
             best.web_search_queries = list(dict.fromkeys(all_queries))[:8]
             best.web_search_used = web_used
-            return best
+            best.web_search_failed = web_failed_any and not web_used
+            return _finalize_identification_stability(original, best)
     except Exception as exc:
         logger.warning("[product_identification] retry 2 echoue: %s", exc)
 
     # --- Attempt 3 (derniere chance) ---
-    retry_prompt = _retry_prompt_attempt3(original)
+    retry_prompt = _retry_prompt_attempt3(original, web_failed=web_failed_any)
     try:
-        raw, r_sources, r_queries, r_web = _call_with_optional_web(
+        raw, r_sources, r_queries, r_web, r_failed = _call_with_optional_web(
             retry_prompt, system_prompt=retry_system,
         )
+        web_failed_any = web_failed_any or r_failed
         all_sources.extend(r_sources)
         all_queries.extend(r_queries)
         web_used = web_used or r_web
@@ -658,7 +790,8 @@ def identify_product(query: str) -> ProductIdentification:
     best.web_sources = all_sources[:10]
     best.web_search_queries = list(dict.fromkeys(all_queries))[:8]
     best.web_search_used = web_used
-    return best
+    best.web_search_failed = web_failed_any and not web_used
+    return _finalize_identification_stability(original, best)
 
 
 def prepare_query_for_classification(query: str) -> tuple[str, ProductIdentification]:
@@ -677,7 +810,18 @@ def prepare_query_for_classification(query: str) -> tuple[str, ProductIdentifica
         )
 
     identification = identify_product(original)
-    text = identification.enriched_description.strip() or original
+
+    if identification.identification_unstable:
+        parts = [f"Reference utilisateur : {original}"]
+        if _identification_matches_reference(original, identification):
+            if identification.product_type.strip():
+                parts.append(f"Type probable : {identification.product_type.strip()}")
+            if identification.function_usage.strip():
+                parts.append(f"Fonction probable : {identification.function_usage.strip()}")
+        parts.append("Identification incertaine — a valider avant toute utilisation officielle.")
+        text = "\n".join(parts)
+    else:
+        text = identification.enriched_description.strip() or original
     logger.debug(
         "[prepare_query] identification DONE for '%s' -> type='%s', function='%s', "
         "method='%s', conf=%d, attempts=%d",

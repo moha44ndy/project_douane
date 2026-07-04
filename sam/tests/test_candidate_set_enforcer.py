@@ -9,6 +9,7 @@ from sam.candidate_set_enforcer import (
     enforce_candidate_set_on_item,
     extract_tariff_codes_from_text,
     format_candidate_set_prompt,
+    limit_position_candidates,
 )
 
 
@@ -57,6 +58,20 @@ class TestCandidateSetEnforcer(unittest.TestCase):
         )
         self.assertIn("VERROUILLAGE OBLIGATOIRE", prompt)
         self.assertIn("85.28", prompt)
+        self.assertIn("ELIMINATION", prompt)
+        self.assertIn("compatible", prompt)
+
+    def test_limit_position_candidates_keeps_highest_scores(self) -> None:
+        candidates = [
+            {"position_code": "85.17", "label": "A", "score": 0.2},
+            {"position_code": "85.36", "label": "B", "score": 1.5},
+            {"position_code": "85.44", "label": "C", "score": 0.9},
+            {"position_code": "85.38", "label": "D", "score": 0.1},
+        ]
+        limited = limit_position_candidates(candidates, max_positions=2)
+        self.assertEqual(len(limited), 2)
+        self.assertEqual(limited[0]["position_code"], "85.36")
+        self.assertEqual(limited[1]["position_code"], "85.44")
 
     def test_enforce_candidate_set_rejects_out_of_set_code(self) -> None:
         item = {

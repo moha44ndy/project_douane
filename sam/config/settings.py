@@ -25,7 +25,13 @@ class Config:
 
     # LLM / OpenAI
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    MOSAM_MODEL = os.getenv("MOSAM_MODEL", "gpt-4.1-mini")
+    MOSAM_MODEL = os.getenv("MOSAM_MODEL", "gpt-5")
+    MOSAM_IDENTIFICATION_MODEL = (
+        os.getenv("MOSAM_IDENTIFICATION_MODEL", "").strip() or MOSAM_MODEL
+    )
+    MOSAM_CLASSIFICATION_MODEL = (
+        os.getenv("MOSAM_CLASSIFICATION_MODEL", "").strip() or MOSAM_MODEL
+    )
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
     # Base de données (Supabase / Postgres)
@@ -65,4 +71,16 @@ class Config:
         )
     except ValueError:
         MOSAM_WEB_SEARCH_TIMEOUT_SECONDS = 90
+
+    # Retrieval FAISS / positions candidates TEC
+    try:
+        MOSAM_FAISS_TOP_K = int(os.getenv("MOSAM_FAISS_TOP_K", "20"))
+    except ValueError:
+        MOSAM_FAISS_TOP_K = 20
+    try:
+        MOSAM_MAX_CANDIDATE_POSITIONS = int(
+            os.getenv("MOSAM_MAX_CANDIDATE_POSITIONS", "15")
+        )
+    except ValueError:
+        MOSAM_MAX_CANDIDATE_POSITIONS = 15
 

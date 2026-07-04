@@ -58,12 +58,61 @@ def _is_field_unset(value: str | None) -> bool:
     return not normalized or "non renseign" in normalized
 
 
+def _rich_description_text(item: dict[str, Any]) -> str:
+    """Texte exploitable pour juger la richesse (description + identification + source)."""
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def _add(text: str) -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        key = _normalize_for_match(cleaned)
+        if key in seen:
+            return
+        seen.add(key)
+        parts.append(cleaned)
+
+    _add(str(item.get("source_query") or ""))
+    _add(str(item.get("description") or ""))
+
+    product_id = item.get("product_identification")
+    if isinstance(product_id, dict):
+        for field in (
+            "enriched_description",
+            "product_name",
+            "product_type",
+            "function_usage",
+            "original_query",
+        ):
+            _add(str(product_id.get(field) or ""))
+
+    return " ".join(parts)
+
+
 def _description_quality_signals(description: str) -> tuple[bool, bool]:
     """Retourne (trop_courte, trop_vague) a partir de la description marchandise."""
     normalized = _normalize_for_match(description)
-    words = [word for word in re.split(r"\s+", normalized.strip()) if len(word) >= 3]
-    is_short = len(normalized.strip()) < 30 or len(words) < 4
-    is_vague = len(words) <= 6 and any(hint in normalized for hint in _VAGUE_DESCRIPTION_HINTS)
+    words = [word for word in re.split(r"\s+", normalized.strip()) if len(word) >= 2]
+
+    # Trop courte : moins de 3 mots significatifs (ex. "iPhone 15" seul).
+    is_short = len(words) < 3
+
+    # Trop vague : formulation generique sans precision (marque, modele, chiffre, usage).
+    has_specific = bool(re.search(r"\d", normalized)) or len(words) >= 6
+    has_technical = bool(
+        re.search(
+            r"\b(?:mm|cm|kg|gb|mhz|ghz|v|w|kw|ports?|pouce|litre|ml|cat\d|rj45|sfp|plc)\b",
+            normalized,
+        )
+    )
+    generic_hits = sum(1 for hint in _VAGUE_DESCRIPTION_HINTS if hint in normalized)
+    is_vague = (
+        not has_specific
+        and not has_technical
+        and len(words) <= 5
+        and generic_hits >= 1
+    )
     return is_short, is_vague
 
 
@@ -71,19 +120,35 @@ def assess_contestation_risk(item: dict[str, Any]) -> dict[str, str]:
     """
     Evalue le risque de contestation d'une classification.
 
-    La confiance de classification (`confidence`) mesure la solidite du code SH.
-    `quantity_confidence` mesure seulement la fiabilite d'extraction de quantite
-    dans le texte source : elle n'indique pas si la fiche produit est incomplete.
+    La confiance affichee (`confidence`) peut etre min(identification, classification).
+    Pour le risque de contestation du code SH, on privilegie `classification_confidence`
+    quand elle est disponible.
     """
     confidence = _safe_int(item.get("confidence"), 0)
+    code_confidence = _safe_int(item.get("classification_confidence"), 0) or confidence
     description_quality = _safe_int(item.get("description_quality"), 0)
     classification_status = str(item.get("classification_status") or "").strip().lower()
     missing_fields = item.get("missing_fields") if isinstance(item.get("missing_fields"), list) else []
     hs_code = str(item.get("hs_code") or "")
-    description = str(item.get("description") or "")
+    description = _rich_description_text(item)
     justification = _normalize_for_match(str(item.get("justification") or ""))
     has_position_label = bool(str(item.get("position_label") or "").strip())
     is_short, is_vague = _description_quality_signals(description)
+
+    product_id = item.get("product_identification")
+    if isinstance(product_id, dict) and product_id.get("identification_unstable"):
+        if code_confidence >= 70 and has_position_label and not _is_hs_code_missing(hs_code):
+            return {
+                "risk_level": "medium",
+                "risk_label": "Identification incertaine — classification indicative.",
+            }
+
+    # Le score de richesse de fiche prime sur les heuristiques texte courtes.
+    if description_quality >= 65:
+        is_short = False
+        is_vague = False
+    elif description_quality >= 55:
+        is_vague = False
 
     if _is_hs_code_missing(hs_code):
         return {"risk_level": "high", "risk_label": "Classement incertain."}
@@ -114,15 +179,15 @@ def assess_contestation_risk(item: dict[str, Any]) -> dict[str, str]:
             }
 
     has_uncertainty = any(keyword in justification for keyword in _UNCERTAINTY_KEYWORDS)
-    if confidence < 55 or (confidence < 70 and has_uncertainty):
+    if code_confidence < 55 or (code_confidence < 70 and has_uncertainty):
         return {"risk_level": "high", "risk_label": "Classement incertain."}
 
-    if not has_position_label and confidence < 75:
+    if not has_position_label and code_confidence < 75:
         return {"risk_level": "high", "risk_label": "Classement incertain."}
 
     # Classement solide + libelle TEC + fiche/description exploitable => faible risque.
     if (
-        confidence >= 85
+        code_confidence >= 85
         and has_position_label
         and not is_short
         and not is_vague
@@ -131,9 +196,18 @@ def assess_contestation_risk(item: dict[str, Any]) -> dict[str, str]:
         return {"risk_level": "low", "risk_label": "Faible risque de contestation."}
 
     if (
-        confidence >= 80
-        and description_quality >= 85
+        code_confidence >= 80
+        and description_quality >= 65
         and has_position_label
+        and not has_uncertainty
+    ):
+        return {"risk_level": "low", "risk_label": "Faible risque de contestation."}
+
+    if (
+        code_confidence >= 80
+        and has_position_label
+        and not is_short
+        and not is_vague
         and not has_uncertainty
     ):
         return {"risk_level": "low", "risk_label": "Faible risque de contestation."}
@@ -143,14 +217,12 @@ def assess_contestation_risk(item: dict[str, Any]) -> dict[str, str]:
         incomplete_score += 2
     if is_vague:
         incomplete_score += 2
-    if confidence < 70:
+    if code_confidence < 70:
         incomplete_score += 2
-    elif confidence < 80:
-        incomplete_score += 1
-    if _is_field_unset(item.get("origin")) and _is_field_unset(item.get("value")) and is_short:
+    elif code_confidence < 80:
         incomplete_score += 1
 
-    if incomplete_score >= 2:
+    if incomplete_score >= 3:
         return {"risk_level": "medium", "risk_label": "Description incomplète."}
 
     return {"risk_level": "low", "risk_label": "Faible risque de contestation."}

@@ -49,6 +49,27 @@ class TestClassificationRisk(unittest.TestCase):
         )
         self.assertEqual(risk["risk_level"], "low")
 
+    def test_low_risk_when_identification_enriches_short_description(self) -> None:
+        """Une description courte mais une identification riche ne doit pas etre jaune."""
+        risk = assess_contestation_risk(
+            {
+                "hs_code": "8517.13.00.00",
+                "position_label": "Telephones intelligents",
+                "description": "iPhone 15",
+                "confidence": 55,
+                "classification_confidence": 92,
+                "product_identification": {
+                    "product_type": "Smartphone tactile Apple iPhone 15 Pro Max 256 Go",
+                    "enriched_description": (
+                        "Telephone intelligent Apple iPhone 15 Pro Max avec ecran OLED 6,7 pouces, "
+                        "stockage 256 Go, connectivite 5G"
+                    ),
+                    "identification_confidence": 55,
+                },
+            }
+        )
+        self.assertEqual(risk["risk_level"], "low")
+
     def test_medium_risk_when_description_is_vague(self) -> None:
         risk = assess_contestation_risk(
             {
