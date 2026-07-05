@@ -64,3 +64,24 @@ export const CURRENCY_OPTIONS: SelectOption[] = [
 ];
 
 export const CURRENCY_SUGGESTIONS = CURRENCY_OPTIONS.map((o) => o.value);
+
+/** Unités de quantité courantes en douane / TEC (U.S.). */
+export const UNIT_OPTIONS: SelectOption[] = [
+  { value: "PCE", label: "Pièce (PCE)" },
+  { value: "U", label: "Unité (U)" },
+  { value: "KG", label: "Kilogramme (KG)" },
+  { value: "G", label: "Gramme (G)" },
+  { value: "T", label: "Tonne (T)" },
+  { value: "L", label: "Litre (L)" },
+  { value: "ML", label: "Millilitre (ML)" },
+  { value: "M", label: "Mètre (M)" },
+  { value: "M2", label: "Mètre carré (M2)" },
+  { value: "M3", label: "Mètre cube (M3)" },
+  { value: "PAIR", label: "Paire (PAIR)" },
+  { value: "DOZ", label: "Douzaine (DOZ)" },
+  { value: "SET", label: "Ensemble (SET)" },
+  { value: "CARTON", label: "Carton" },
+  { value: "COLIS", label: "Colis" },
+];
+
+export const UNIT_SUGGESTIONS = UNIT_OPTIONS.map((o) => o.value);

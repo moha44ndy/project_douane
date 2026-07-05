@@ -3,6 +3,7 @@
 import {
   CURRENCY_SUGGESTIONS,
   ORIGIN_COUNTRY_SUGGESTIONS,
+  UNIT_SUGGESTIONS,
 } from "../lib/merchandiseOptions";
 import {
   MerchandiseRow,
@@ -26,7 +27,7 @@ type TextColumn = {
 
 type ComboboxColumn = {
   kind: "combobox";
-  key: "origin" | "currency";
+  key: "origin" | "currency" | "unit";
   label: string;
   placeholder: string;
   className?: string;
@@ -71,11 +72,14 @@ const COLUMNS: ColumnDef[] = [
     inputMode: "numeric",
   },
   {
-    kind: "text",
+    kind: "combobox",
     key: "unit",
     label: "Unité",
-    placeholder: "ex. PCE, kg",
-    className: "w-20",
+    placeholder: "Choisir ou saisir (PCE, KG…)",
+    className: "w-36",
+    listId: "mosam-unit-suggestions",
+    suggestions: UNIT_SUGGESTIONS,
+    uppercase: true,
   },
   {
     kind: "combobox",
