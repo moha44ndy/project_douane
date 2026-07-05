@@ -74,7 +74,7 @@ from .rag import (
     process_user_input,
 )
 from .config.settings import Config
-from .product_identification import product_identification_enabled
+from .product_identification import product_identification_enabled, should_run_product_identification
 from .openai_web_search import openai_web_search_enabled
 from .classification_progress import ClassificationProgressReporter, sse_event, sse_init_event
 from .app_logger import get_logger
@@ -4341,6 +4341,34 @@ async def classify_file(
     )
 
 
+def _structured_item_lacks_product_detail(item: MerchandiseItem) -> bool:
+    """True si seule la désignation (ou des infos logistiques) est renseignée."""
+    return not any(
+        (
+            item.material.strip(),
+            item.usage.strip(),
+            item.characteristics.strip(),
+        )
+    )
+
+
+def _should_skip_identification_for_structured(items: list[MerchandiseItem]) -> bool:
+    """
+    Ignore l'agent d'identification seulement si chaque article du formulaire
+    apporte déjà assez de détails produit (matière, usage, caractéristiques).
+    """
+    active = [mi for mi in items if mi.designation.strip()]
+    if not active:
+        return True
+    if any(_structured_item_lacks_product_detail(mi) for mi in active):
+        return False
+    for mi in active:
+        dossier = _structured_item_to_dossier(mi)
+        if should_run_product_identification(dossier):
+            return False
+    return True
+
+
 def _structured_item_to_dossier(item: MerchandiseItem) -> str:
     """Convertit un MerchandiseItem structuré en texte de dossier pour le pipeline."""
     lines: list[str] = [f"Produit : {item.designation.strip()}"]
@@ -4527,7 +4555,10 @@ def _classify_text_query(
                 validated_index=getattr(app.state, "classifications_index", None),
                 validated_meta=getattr(app.state, "classifications_meta", None),
                 progress=progress,
-                skip_identification=structured_form_mode,
+                skip_identification=(
+                    structured_form_mode
+                    and _should_skip_identification_for_structured(structured_items or [])
+                ),
             )
         )
     except Exception as exc:  # pragma: no cover - garde-fou

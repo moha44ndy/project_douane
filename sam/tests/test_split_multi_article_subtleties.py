@@ -482,8 +482,12 @@ Valeur :
         self.assertEqual(counts[unique_items[0]], 450)
 
     @patch("sam.product_identification.product_identification_enabled", return_value=True)
-    def test_structured_form_skips_identification_agent(self, _enabled) -> None:
-        from sam.api import MerchandiseItem, _build_structured_inputs
+    def test_structured_form_skips_identification_when_rich(self, _enabled) -> None:
+        from sam.api import (
+            MerchandiseItem,
+            _build_structured_inputs,
+            _should_skip_identification_for_structured,
+        )
         from sam.product_identification import prepare_query_for_classification
         from sam.rag import split_user_queries
 
@@ -500,16 +504,38 @@ Valeur :
                 currency="XOF",
             )
         ]
+        self.assertTrue(_should_skip_identification_for_structured(items))
         classify_input, _, _, _ = _build_structured_inputs(items)
         queries = split_user_queries(classify_input)
         self.assertEqual(len(queries), 1)
         _, identification = prepare_query_for_classification(queries[0])
         self.assertTrue(identification.skipped)
 
+    @patch("sam.product_identification.product_identification_enabled", return_value=True)
+    def test_structured_form_runs_identification_when_only_designation(self, _enabled) -> None:
+        from sam.api import MerchandiseItem, _should_skip_identification_for_structured
+        from sam.product_identification import should_run_product_identification
+
+        items = [
+            MerchandiseItem(
+                designation="iPhone 15",
+                material="",
+                usage="",
+                characteristics="",
+                quantity="",
+                unit="",
+                origin="",
+                value="",
+                currency="",
+            )
+        ]
+        self.assertFalse(_should_skip_identification_for_structured(items))
+        self.assertTrue(should_run_product_identification("iPhone 15"))
+
     @patch("sam.rag.use_llm", return_value='{"narrative":"","classifications":[]}')
     @patch("sam.rag.retrieve_locked_tec_context", return_value=("", []))
-    @patch("sam.product_identification.prepare_query_for_classification")
-    def test_process_user_input_structured_form_never_calls_agent(
+    @patch("sam.rag.prepare_query_for_classification")
+    def test_process_user_input_structured_form_never_calls_agent_when_rich(
         self,
         mock_prepare,
         _tec,
@@ -530,6 +556,36 @@ Valeur :
         self.assertEqual(len(result.product_identifications), 1)
         self.assertTrue(result.product_identifications[0]["skipped"])
         self.assertEqual(result.product_identifications[0]["skip_reason"], "structured_form")
+
+    @patch("sam.rag.use_llm", return_value='{"narrative":"","classifications":[]}')
+    @patch("sam.rag.retrieve_locked_tec_context", return_value=("", []))
+    @patch("sam.rag.prepare_query_for_classification")
+    def test_process_user_input_sparse_structured_form_calls_agent(
+        self,
+        mock_prepare,
+        _tec,
+        _llm,
+    ) -> None:
+        from sam.product_identification import ProductIdentification
+        from sam.rag import process_user_input
+
+        mock_prepare.return_value = (
+            "iPhone 15 enrichi",
+            ProductIdentification(
+                original_query="iPhone 15",
+                enriched_description="iPhone 15 enrichi",
+                product_name="iPhone 15",
+                identification_confidence=85,
+            ),
+        )
+        result = process_user_input(
+            "iPhone 15",
+            chunks=[],
+            index=None,
+            skip_identification=False,
+        )
+        mock_prepare.assert_called_once()
+        self.assertFalse(result.product_identifications[0]["skipped"])
 
 
 if __name__ == "__main__":
