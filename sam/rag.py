@@ -1237,7 +1237,12 @@ def split_user_queries(raw_text):
         return []
     normalized = raw_text.replace("\r", "\n").strip()
     if _is_single_structured_dossier(normalized):
-        return [normalized]
+        return [_strip_leading_list_marker(normalized)]
+
+    if "\n\n" in normalized:
+        blocks = [b.strip() for b in normalized.split("\n\n") if b.strip()]
+        if len(blocks) > 1 and all(_is_single_structured_dossier(b) for b in blocks):
+            return [_strip_leading_list_marker(b) for b in blocks]
 
     raw_lines = normalized.split("\n")
     list_line_re = re.compile(r"^\s*(?:[-*•]|\d+[\.\)])\s+")
@@ -1277,9 +1282,14 @@ def split_user_queries(raw_text):
     return [one.strip()] if one.strip() else []
 
 
+def _strip_leading_list_marker(text: str) -> str:
+    """Retire un tiret / puce en tête (saisie tableau convertie en liste)."""
+    return re.sub(r"^\s*[-*•]\s+", "", (text or "").strip(), count=1)
+
+
 def _is_single_structured_dossier(text: str) -> bool:
     """Une fiche Produit + sections (composition, quantite, origine, etc.) = une seule marchandise."""
-    normalized = (text or "").replace("\r", "\n").strip()
+    normalized = _strip_leading_list_marker((text or "").replace("\r", "\n").strip())
     if not normalized:
         return False
     if not re.search(
@@ -1424,13 +1434,19 @@ def process_user_input(
 
     prepared: list[tuple[str, str, Any]] = []
     product_identifications: list[dict[str, Any]] = []
+    identification_skipped = True
     for query in queries:
         classification_query, identification = prepare_query_for_classification(query)
+        if not identification.skipped:
+            identification_skipped = False
         product_identifications.append(identification.to_dict())
         prepared.append((query, classification_query, identification))
 
     if progress:
-        progress.complete("identification")
+        if identification_skipped:
+            progress.skip("identification")
+        else:
+            progress.complete("identification")
         progress.start("tec_context")
 
     prompt_sections = []

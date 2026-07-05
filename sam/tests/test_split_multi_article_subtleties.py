@@ -5,6 +5,7 @@ formulations ambiguës (virgules, « et », « + », blocs composition).
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from sam import api as api_mod
 
@@ -433,6 +434,77 @@ class TestRealWorldTariffPhrases(unittest.TestCase):
                     expected_count,
                     f"attendu {expected_count}, obtenu {len(items)}: {items}",
                 )
+
+
+class TestStructuredFormDossierSplit(unittest.TestCase):
+    """Le tableau structuré ne doit pas être découpé ligne par ligne."""
+
+    def test_bullet_prefixed_dossier_stays_single_query(self) -> None:
+        from sam.rag import split_user_queries
+
+        text = """- Produit : rambo magic
+Composition :
+- liquide
+Usage :
+pour lutter contre les moustiques
+Caractéristiques :
+- neuf
+Origine :
+Nigéria
+Valeur :
+1000 XOF"""
+        queries = split_user_queries(text)
+        self.assertEqual(len(queries), 1)
+        self.assertIn("rambo magic", queries[0])
+        self.assertIn("Composition", queries[0])
+
+    def test_build_structured_inputs_single_item_no_bullet(self) -> None:
+        from sam.api import MerchandiseItem, _build_structured_inputs
+
+        items = [
+            MerchandiseItem(
+                designation="rambo magic",
+                material="liquide",
+                usage="pour lutter contre les moustiques",
+                characteristics="neuf",
+                quantity="450",
+                unit="ML",
+                origin="Nigéria",
+                value="1000",
+                currency="XOF",
+            )
+        ]
+        classify_input, unique_items, counts, _ = _build_structured_inputs(items)
+        self.assertEqual(len(unique_items), 1)
+        self.assertFalse(classify_input.startswith("- "))
+        self.assertIn("Quantité", classify_input)
+        self.assertIn("450 ML", classify_input)
+        self.assertEqual(counts[unique_items[0]], 450)
+
+    @patch("sam.product_identification.product_identification_enabled", return_value=True)
+    def test_structured_form_skips_identification_agent(self, _enabled) -> None:
+        from sam.api import MerchandiseItem, _build_structured_inputs
+        from sam.product_identification import prepare_query_for_classification
+        from sam.rag import split_user_queries
+
+        items = [
+            MerchandiseItem(
+                designation="rambo magic",
+                material="liquide",
+                usage="pour lutter contre les moustiques",
+                characteristics="neuf",
+                quantity="450",
+                unit="ML",
+                origin="Nigéria",
+                value="1000",
+                currency="XOF",
+            )
+        ]
+        classify_input, _, _, _ = _build_structured_inputs(items)
+        queries = split_user_queries(classify_input)
+        self.assertEqual(len(queries), 1)
+        _, identification = prepare_query_for_classification(queries[0])
+        self.assertTrue(identification.skipped)
 
 
 if __name__ == "__main__":

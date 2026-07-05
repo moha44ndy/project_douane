@@ -4350,6 +4350,10 @@ def _structured_item_to_dossier(item: MerchandiseItem) -> str:
         lines.append(f"Usage :\n{item.usage.strip()}")
     if item.characteristics.strip():
         lines.append(f"Caractéristiques :\n- {item.characteristics.strip()}")
+    qty_parts = [item.quantity.strip(), item.unit.strip()]
+    quantity = " ".join(part for part in qty_parts if part)
+    if quantity:
+        lines.append(f"Quantité :\n{quantity}")
     if item.origin.strip():
         lines.append(f"Origine :\n{item.origin.strip()}")
     if item.value.strip():
@@ -4381,6 +4385,7 @@ def _build_structured_inputs(
 
         has_detail = any([
             mi.material.strip(), mi.usage.strip(), mi.characteristics.strip(),
+            mi.quantity.strip(), mi.unit.strip(),
             mi.origin.strip(), mi.value.strip(), mi.currency.strip(),
         ])
         display = _structured_item_to_dossier(mi) if has_detail else designation
@@ -4410,7 +4415,12 @@ def _build_structured_inputs(
             "quantity_confidence": 95,
         }
 
-    classify_input = "\n".join([f"- {it}" for it in unique_items]) if unique_items else ""
+    if len(unique_items) == 1:
+        classify_input = unique_items[0]
+    elif unique_items:
+        classify_input = "\n\n".join(unique_items)
+    else:
+        classify_input = ""
     return classify_input, unique_items, item_counts, item_meta
 
 
