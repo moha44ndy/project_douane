@@ -147,6 +147,42 @@ def _label_surface_material(label: str) -> str | None:
     return None
 
 
+def _label_vehicle_condition(label: str) -> str | None:
+    """Neuf / usagé explicite dans le libellé TEC (chapitre 87 notamment)."""
+    norm = _normalize(label).strip(" :")
+    if norm.startswith("usages") or norm == "usage":
+        return "usage"
+    if norm.startswith("neufs") or norm == "neuf":
+        return "neuf"
+    return None
+
+
+def _source_mentions_new_vehicle(source: str) -> bool:
+    norm = _normalize(source)
+    if not norm:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:neuf|neufs|nouveau|nouvelle|zero\s*km|0\s*km|premiere\s+main)\b",
+            norm,
+        )
+    )
+
+
+def _source_mentions_used_vehicle(source: str) -> bool:
+    """Usagé / d'occasion — pas le champ dossier « Usage : … » (fonction du produit)."""
+    norm = _normalize(source)
+    if not norm:
+        return False
+    if re.search(r"\b(?:occasion|occasions|seconde\s+main|reconditionne)\b", norm):
+        return True
+    if re.search(r"\busages\b", norm):
+        return True
+    if re.search(r"\bvehicule\s+usage\b|\bauto\s+usage\b|\bd[' ]occasion\b", norm):
+        return True
+    return False
+
+
 def _source_mentions_mounted(source: str) -> bool:
     norm = _normalize(source)
     return any(
@@ -521,6 +557,20 @@ def _compare_subposition_with_merchandise(
 ) -> str:
     """Compare les criteres extraits du libelle TEC aux infos connues sur la marchandise."""
     profile = _candidate_profile(label)
+    vehicle_condition = _label_vehicle_condition(label)
+    if vehicle_condition == "usage":
+        if _source_mentions_new_vehicle(source):
+            return SUBPOSITION_EXCLUDED
+        if _source_mentions_used_vehicle(source):
+            return SUBPOSITION_CONFIRMED
+        return SUBPOSITION_UNVERIFIABLE
+    if vehicle_condition == "neuf":
+        if _source_mentions_used_vehicle(source):
+            return SUBPOSITION_EXCLUDED
+        if _source_mentions_new_vehicle(source):
+            return SUBPOSITION_CONFIRMED
+        return SUBPOSITION_UNVERIFIABLE
+
     if profile.is_autres:
         return SUBPOSITION_UNVERIFIABLE
 
@@ -528,6 +578,8 @@ def _compare_subposition_with_merchandise(
         if _source_mentions_dismounted_for_industry(source):
             return SUBPOSITION_CONFIRMED
         if _source_mentions_mounted(source):
+            return SUBPOSITION_EXCLUDED
+        if _source_mentions_new_vehicle(source):
             return SUBPOSITION_EXCLUDED
         return SUBPOSITION_UNVERIFIABLE
 
@@ -703,10 +755,11 @@ def _list_distinct_headings(position_code: str) -> list[str]:
 def _token_matches_source(token: str, source_norm: str) -> bool:
     if not token or not source_norm:
         return False
-    if token in source_norm:
+    if re.search(rf"(?<![a-z]){re.escape(token)}(?![a-z])", source_norm):
         return True
-    if len(token) >= 5 and token[:5] in source_norm:
-        return True
+    # Eviter le faux positif « Usage : » (fonction) ↔ libelle TEC « Usagés ».
+    if token == "usages":
+        return _source_mentions_used_vehicle(source_norm)
     return False
 
 
@@ -1561,11 +1614,19 @@ def _finalize_subposition_decision(
             source_norm = _normalize(source)
             scored_unv: list[tuple[str, str, int]] = []
             for code, label, profile in unverifiable:
+                if _label_vehicle_condition(label) == "usage" and _source_mentions_new_vehicle(source):
+                    continue
+                if _label_vehicle_condition(label) == "neuf" and _source_mentions_used_vehicle(source):
+                    continue
                 label_tokens = _significant_label_tokens(label)
                 hits = sum(1 for t in label_tokens if _token_matches_source(t, source_norm))
                 scored_unv.append((code, label, hits))
             scored_unv.sort(key=lambda x: x[2], reverse=True)
-            if scored_unv[0][2] > 0 and scored_unv[0][2] > scored_unv[1][2]:
+            if (
+                scored_unv
+                and scored_unv[0][2] > 0
+                and (len(scored_unv) == 1 or scored_unv[0][2] > scored_unv[1][2])
+            ):
                 matched = scored_unv[0][0]
                 outcome = _outcome_for_single_match(matched, excluded, candidates)
                 return _decision(outcome, matched_code=matched, viable=[matched])

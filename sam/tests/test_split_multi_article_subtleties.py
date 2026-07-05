@@ -506,6 +506,31 @@ Valeur :
         _, identification = prepare_query_for_classification(queries[0])
         self.assertTrue(identification.skipped)
 
+    @patch("sam.rag.use_llm", return_value='{"narrative":"","classifications":[]}')
+    @patch("sam.rag.retrieve_locked_tec_context", return_value=("", []))
+    @patch("sam.product_identification.prepare_query_for_classification")
+    def test_process_user_input_structured_form_never_calls_agent(
+        self,
+        mock_prepare,
+        _tec,
+        _llm,
+    ) -> None:
+        from sam.rag import process_user_input
+
+        dossier = (
+            "Produit : rambo magic\nComposition :\n- liquide\nUsage :\ninsecticide"
+        )
+        result = process_user_input(
+            dossier,
+            chunks=[],
+            index=None,
+            skip_identification=True,
+        )
+        mock_prepare.assert_not_called()
+        self.assertEqual(len(result.product_identifications), 1)
+        self.assertTrue(result.product_identifications[0]["skipped"])
+        self.assertEqual(result.product_identifications[0]["skip_reason"], "structured_form")
+
 
 if __name__ == "__main__":
     unittest.main()

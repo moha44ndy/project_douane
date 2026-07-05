@@ -41,6 +41,12 @@ class TestTariffSubposition(unittest.TestCase):
                 "8471.41.10.00 -- Presentes demontes importes pour l'industrie du montage u 5 1\n"
                 "8471.41.90.00 -- Autres u 5 1"
             ),
+            _Chunk(
+                "8703.23.11.00 -- Presentes entierement a l'etat demonte ou non monte\n"
+                "     importes pour l'industrie du montage u 5 1\n"
+                "8703.23.19.00 -- Autres u 20 1\n"
+                "8703.23.20.00 -- Usages u 20 1"
+            ),
         ]
         cls.index = build_tariff_label_index(chunks)
         set_tariff_label_index(cls.index)
@@ -123,6 +129,20 @@ class TestTariffSubposition(unittest.TestCase):
         result = resolve_subposition_from_tec("8471.30", source)
         self.assertEqual(result.status, "confirmed")
         self.assertEqual(result.matched_code, "8471.30.90.00")
+
+    def test_vehicule_neuf_exclut_usages_8703_23(self) -> None:
+        source = (
+            "Designation : Mercedes-Benz Classe S 500\n"
+            "Matiere / composition : vehicule automobile complet\n"
+            "Usage : transport de personnes\n"
+            "Caracteristiques : essence, cylindree 2 999 cm3, neuf, annee 2025\n"
+            "Origine : Allemagne"
+        )
+        result = resolve_subposition_from_tec("8703.23", source)
+        self.assertEqual(result.status, "confirmed")
+        self.assertEqual(result.matched_code, "8703.23.19.00")
+        self.assertNotEqual(result.matched_code, "8703.23.20.00")
+        self.assertEqual(result.final_decision.get("outcome"), "retain_autres")
 
     def test_trusted_identification_monte_confirms_code(self) -> None:
         source = (

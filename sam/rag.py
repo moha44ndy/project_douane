@@ -26,6 +26,7 @@ import urllib3
 import json
 from openai import OpenAI
 from .product_identification import (
+    ProductIdentification,
     _identification_matches_reference,
     prepare_query_for_classification,
 )
@@ -1416,6 +1417,8 @@ def process_user_input(
     validated_index: faiss.Index | None = None,
     validated_meta: list[dict[str, object]] | None = None,
     progress: ClassificationProgressReporter | None = None,
+    *,
+    skip_identification: bool = False,
 ) -> ClassificationPipelineResult:
     if is_assistant_meta_query(user_input):
         logger.debug("meta query about assistant; skip RAG/LLM classification")
@@ -1430,23 +1433,42 @@ def process_user_input(
         )
 
     if progress:
-        progress.start("identification")
+        if skip_identification:
+            progress.skip("identification")
+        else:
+            progress.start("identification")
 
     prepared: list[tuple[str, str, Any]] = []
     product_identifications: list[dict[str, Any]] = []
-    identification_skipped = True
+    identification_skipped = skip_identification
     for query in queries:
-        classification_query, identification = prepare_query_for_classification(query)
-        if not identification.skipped:
-            identification_skipped = False
+        if skip_identification:
+            text = (query or "").strip()
+            product_ref = text
+            if text.lower().startswith("produit :"):
+                product_ref = text.split(":", 1)[1].strip().split("\n", 1)[0].strip()
+            identification = ProductIdentification(
+                original_query=text,
+                enriched_description=text,
+                product_name=product_ref[:120] or text[:120],
+                identification_confidence=100,
+                skipped=True,
+                skip_reason="structured_form",
+            )
+            classification_query = text
+        else:
+            classification_query, identification = prepare_query_for_classification(query)
+            if not identification.skipped:
+                identification_skipped = False
         product_identifications.append(identification.to_dict())
         prepared.append((query, classification_query, identification))
 
     if progress:
-        if identification_skipped:
-            progress.skip("identification")
-        else:
-            progress.complete("identification")
+        if not skip_identification:
+            if identification_skipped:
+                progress.skip("identification")
+            else:
+                progress.complete("identification")
         progress.start("tec_context")
 
     prompt_sections = []

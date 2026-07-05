@@ -4492,10 +4492,12 @@ def _classify_text_query(
     if progress:
         progress.start("merchandise")
 
+    structured_form_mode = False
     if structured_items:
         classify_input, unique_items, item_counts, item_meta = _build_structured_inputs(
             structured_items
         )
+        structured_form_mode = bool(classify_input)
         if not classify_input:
             classify_input = query
     else:
@@ -4525,6 +4527,7 @@ def _classify_text_query(
                 validated_index=getattr(app.state, "classifications_index", None),
                 validated_meta=getattr(app.state, "classifications_meta", None),
                 progress=progress,
+                skip_identification=structured_form_mode,
             )
         )
     except Exception as exc:  # pragma: no cover - garde-fou

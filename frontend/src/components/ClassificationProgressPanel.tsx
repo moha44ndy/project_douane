@@ -34,7 +34,9 @@ function StepIcon({ status }: { status: ClassificationProgressStep["status"] }) 
 
 export function ClassificationProgressPanel({ steps }: ClassificationProgressPanelProps) {
   const activeStep = steps.find((step) => step.status === "active");
-  const doneCount = steps.filter((step) => step.status === "done").length;
+  const doneCount = steps.filter(
+    (step) => step.status === "done" || step.status === "skipped"
+  ).length;
 
   return (
     <div
