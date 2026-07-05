@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "./apiBase";
+import { httpApiErrorMessage, humanizeClientFetchError } from "./httpApiErrorMessage";
 
 export type ClassificationStepStatus = "pending" | "active" | "done" | "skipped";
 
@@ -40,22 +41,43 @@ function parseSseEvents(
   return { events, rest };
 }
 
+class IncompleteStreamError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IncompleteStreamError";
+  }
+}
+
+function shouldFallbackToClassifyEndpoint(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error instanceof IncompleteStreamError) return true;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes("incomplète") ||
+    msg.includes("flux de progression indisponible") ||
+    msg.includes("body stream") ||
+    msg.includes("network")
+  );
+}
+
 async function consumeClassifyStream(
   response: Response,
   handlers: StreamHandlers
 ): Promise<ClassifyStreamResult> {
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Erreur HTTP ${response.status}`);
+    throw new Error(httpApiErrorMessage(response.status, text));
   }
   if (!response.body) {
-    throw new Error("Flux de progression indisponible.");
+    throw new IncompleteStreamError("Flux de progression indisponible.");
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let result: ClassifyStreamResult | null = null;
+  let streamError: string | null = null;
+  let sawProgress = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -78,6 +100,7 @@ async function consumeClassifyStream(
           })
         );
       } else if (type === "step") {
+        sawProgress = true;
         handlers.onStep?.({
           id: String(event.step ?? ""),
           label: String(event.label ?? event.step ?? ""),
@@ -98,13 +121,20 @@ async function consumeClassifyStream(
         };
         handlers.onResult?.(result);
       } else if (type === "error") {
-        throw new Error(String(event.detail ?? "Classification échouée"));
+        streamError = String(event.detail ?? "Classification échouée");
+        handlers.onError?.(streamError);
+        throw new Error(streamError);
       }
     }
   }
 
   if (!result?.raw) {
-    throw new Error("Réponse de classification incomplète.");
+    const hint = streamError
+      ? streamError
+      : sawProgress
+        ? "La classification a été interrompue avant la fin (délai serveur ou connexion coupée). Réessayez dans un instant."
+        : "Réponse de classification incomplète.";
+    throw new IncompleteStreamError(hint);
   }
   return result;
 }
@@ -140,7 +170,7 @@ async function classifyWithoutStream(
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Erreur HTTP ${response.status}`);
+    throw new Error(httpApiErrorMessage(response.status, text));
   }
   const data = (await response.json()) as Record<string, unknown>;
   const result: ClassifyStreamResult = {
@@ -151,7 +181,9 @@ async function classifyWithoutStream(
       typeof data.items_count === "number" ? data.items_count : undefined,
   };
   if (!result.raw) {
-    throw new Error("Réponse de classification incomplète.");
+    throw new Error(
+      "Le serveur n'a renvoyé aucun résultat de classification. Vérifiez que l'API est démarrée et que le quota OpenAI est disponible."
+    );
   }
   handlers.onResult?.(result);
   return result;
@@ -167,17 +199,32 @@ export async function streamClassifyQuery(
   if (items && items.length > 0) {
     body.items = items;
   }
-  const response = await fetch(`${API_BASE_URL}/classify/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
 
-  if (response.status === 404 || response.status === 405) {
-    return classifyWithoutStream(body, handlers);
+  try {
+    const response = await fetch(`${API_BASE_URL}/classify/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (response.status === 404 || response.status === 405) {
+      return classifyWithoutStream(body, handlers);
+    }
+
+    return await consumeClassifyStream(response, handlers);
+  } catch (err) {
+    if (shouldFallbackToClassifyEndpoint(err)) {
+      try {
+        return await classifyWithoutStream(body, handlers);
+      } catch (fallbackErr) {
+        throw fallbackErr;
+      }
+    }
+    if (err instanceof Error) {
+      throw new Error(humanizeClientFetchError(err.message));
+    }
+    throw err;
   }
-
-  return consumeClassifyStream(response, handlers);
 }
 
 export const DEFAULT_CLASSIFICATION_STEPS: ClassificationProgressStep[] = [

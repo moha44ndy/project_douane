@@ -27,6 +27,9 @@ import {
 const INDICATIVE_DISCLAIMER =
   "Proposition indicative, à faire valider avant toute utilisation officielle.";
 
+/** Désactiver l'upload fichier tant que la fonctionnalité n'est pas prête en prod. */
+const FILE_UPLOAD_ENABLED = false;
+
 type ClassificationItem = {
   description?: string;
   quantity?: number;
@@ -942,7 +945,7 @@ export default function HomePage() {
   };
 
   const retryClassification = async () => {
-    if (selectedFile) {
+    if (FILE_UPLOAD_ENABLED && selectedFile) {
       await classifyFromFile(selectedFile);
       return;
     }
@@ -952,8 +955,8 @@ export default function HomePage() {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     const query = buildMerchandiseQuery(merchandiseRows);
-    if (!query.trim() && !selectedFile) return;
-    if (selectedFile) {
+    if (!query.trim() && !(FILE_UPLOAD_ENABLED && selectedFile)) return;
+    if (FILE_UPLOAD_ENABLED && selectedFile) {
       await classifyFromFile(selectedFile);
     } else {
       await classifyNow();
@@ -1239,9 +1242,10 @@ export default function HomePage() {
           <p className="text-sm text-muted-foreground">
             Renseignez chaque marchandise dans le tableau ci-dessous (la
             désignation est obligatoire). Une ligne correspond à une
-            marchandise. Vous pouvez aussi envoyer un fichier à la place.
+            marchandise.
           </p>
           <form onSubmit={handleSubmit} className="space-y-3">
+            {FILE_UPLOAD_ENABLED && (
             <div className="space-y-1">
               <label
                 htmlFor="uploadFile"
@@ -1292,10 +1296,11 @@ export default function HomePage() {
                 </div>
               )}
             </div>
+            )}
             <MerchandiseTableForm
               rows={merchandiseRows}
               onChange={setMerchandiseRows}
-              disabled={loading || !!selectedFile}
+              disabled={loading || (FILE_UPLOAD_ENABLED && !!selectedFile)}
             />
             <button
               type="submit"
