@@ -1,4 +1,4 @@
-"""Ajoute le contenu coûts sur la slide 8 de Logiciel-douane_vF.pptx."""
+"""Met à jour la slide 8 (coûts d'exploitation) de Logiciel-douane_vF.pptx."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,15 +9,62 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Pt
 
 PPTX_PATH = Path(r"c:\MAMP\htdocs\Logiciel-douane_vF.pptx")
-SLIDE_INDEX = 7  # slide 8 (0-based)
+PPTX_FALLBACK = Path(r"c:\MAMP\htdocs\Logiciel-douane_vF_jury.pptx")
+SLIDE_INDEX = 10  # slide 11 (coûts d'exploitation dans le deck présenté)
+ROI_SLIDE_INDEX = 8  # slide 9 — modèle visuel ROI
+RESTORE_SLIDE8_EMPTY = False  # laisser la slide 8 inchangée si elle existe déjà
 
 DARK = RGBColor(0x06, 0x2B, 0x50)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+MUTED = RGBColor(0x44, 0x37, 0x28)
+
+# Taux indicatif pour les conversions affichées (1 USD ≈ 620 FCFA).
+FCFA_PER_USD = 620
+
+# Mesures terrain (juil. 2026, GPT-5, fiche formulaire complète).
+BENCH_S500_USD = 0.07
+BENCH_S500_SEC = 47
+BENCH_RAMBO_RETRY_USD = 0.09
+BENCH_RAMBO_SEC = 56
+BENCH_RAMBO_FIRST_USD = 0.69  # pic observé au 1er essai (hors cache)
+BENCH_DETAILED_AVG_USD = (BENCH_S500_USD + BENCH_RAMBO_RETRY_USD) / 2
+MONTHLY_CLASSIFICATIONS = 100
 
 PUNCHLINE = (
     "Une erreur de classification peut coûter plusieurs centaines de milliers de FCFA, "
-    "alors qu'une analyse Mosam coûte moins de 30 FCFA."
+    f"alors qu'une analyse Mosam coûte environ {int(BENCH_DETAILED_AVG_USD * FCFA_PER_USD)} FCFA "
+    "(fiche détaillée mesurée)."
 )
+
+CALLOUT_BODY = (
+    f"Mesures réelles : S500 neuf 2025 = {BENCH_S500_USD:.2f} $ ({BENCH_S500_SEC} s) ; "
+    f"Rambo Magic = {BENCH_RAMBO_RETRY_USD:.2f} $ au 2e essai ({BENCH_RAMBO_SEC} s).\n"
+    f"1er essai sans cache peut monter à ~{BENCH_RAMBO_FIRST_USD:.2f} $ "
+    "(tokens de raisonnement GPT-5).\n"
+    "Le cache après validation : requête identique à 0 $.\n"
+    "Infrastructure cloud pilote : 0 à 30 $/mois. Moteur TEC / RGI : local, sans surcoût IA."
+)
+
+PIPELINE_BODY = (
+    "Structure Pipeline\n\n"
+    "1. Utilisateur (saisie)\n"
+    "2. Identification GPT-5 (si fiche incomplète)\n"
+    "3. Recherche web (si nécessaire)\n"
+    "4. Embeddings OpenAI\n"
+    "5. Index FAISS (TEC local)\n"
+    "6. GPT-5 — positions candidates\n"
+    "7. Moteur juridique Mosam\n"
+    "   (Notes, RGI, Sous-positions, Droits)\n"
+    "8. Résultat"
+)
+
+
+def _usd_to_fcfa(usd: float) -> int:
+    return int(round(usd * FCFA_PER_USD))
+
+
+def _fmt_usd_fr(usd: float, *, decimals: int = 2) -> str:
+    return f"{usd:.{decimals}f}".replace(".", ",")
 
 
 def _set_text(shape, text: str, *, font_name: str, size_pt: float, bold: bool = False, color=None):
@@ -74,14 +121,22 @@ def _add_punchline(cost_slide, prs: Presentation) -> None:
     run.font.color.rgb = ref_run.font.color.rgb
 
 
-def main() -> None:
-    prs = Presentation(str(PPTX_PATH))
-    roi_slide = prs.slides[8]
-    cost_slide = prs.slides[SLIDE_INDEX]
-
-    for shape in list(cost_slide.shapes):
+def _clear_slide(slide) -> None:
+    for shape in list(slide.shapes):
         sp = shape._element
         sp.getparent().remove(sp)
+
+
+def main() -> None:
+    target = PPTX_PATH if PPTX_PATH.exists() else PPTX_FALLBACK
+    prs = Presentation(str(target))
+    roi_slide = prs.slides[ROI_SLIDE_INDEX]
+    cost_slide = prs.slides[SLIDE_INDEX]
+
+    _clear_slide(cost_slide)
+
+    if RESTORE_SLIDE8_EMPTY and len(prs.slides) > 7:
+        _clear_slide(prs.slides[7])
 
     label_src = roi_slide.shapes[1]
     title_src = roi_slide.shapes[2]
@@ -93,6 +148,9 @@ def main() -> None:
     callout_body_src = roi_slide.shapes[18]
     callout_footer_src = roi_slide.shapes[20] if len(roi_slide.shapes) > 20 else roi_slide.shapes[19]
 
+    monthly_usd = BENCH_DETAILED_AVG_USD * MONTHLY_CLASSIFICATIONS
+    monthly_fcfa = _usd_to_fcfa(monthly_usd)
+
     def add_box(left, top, width, height):
         return cost_slide.shapes.add_textbox(left, top, width, height)
 
@@ -102,24 +160,41 @@ def main() -> None:
     title = add_box(title_src.left, title_src.top, title_src.width, title_src.height)
     _clone_text_style(title_src, title, "Un modèle économique maîtrisé")
 
-    subtitle = add_box(subtitle_src.left, subtitle_src.top, subtitle_src.width, subtitle_src.height)
-    _clone_text_style(subtitle_src, subtitle, "Estimation basée sur GPT-5 et l'architecture Mosam actuelle")
+    subtitle = add_box(subtitle_src.left, subtitle_src.top, subtitle_src.width + 400000, subtitle_src.height)
+    _clone_text_style(
+        subtitle_src,
+        subtitle,
+        "Mesures réelles GPT-5 (juil. 2026) — fiche détaillée : ~0,07 à 0,10 $ / produit (~45–60 s)",
+    )
 
     items = [
         (
-            "~0,02 $",
-            "Par classification — fiche détaillée",
-            "Dossier Excel ou description complète : moteur TEC local + 1 appel IA (~12 FCFA / produit).",
+            f"~{_fmt_usd_fr(BENCH_S500_USD)} $",
+            "Fiche détaillée — Mercedes Classe S500",
+            (
+                f"Formulaire complet (essence, cylindrée, neuf…) : "
+                f"{_fmt_usd_fr(BENCH_S500_USD)} $, {BENCH_S500_SEC} s "
+                f"(~{_usd_to_fcfa(BENCH_S500_USD)} FCFA / produit)."
+            ),
         ),
         (
-            "~0,05 $",
-            "Par classification — saisie courte",
-            "Nom commercial ou référence : identification web + classification (~30 FCFA / produit).",
+            f"~{_fmt_usd_fr(BENCH_RAMBO_RETRY_USD)} $",
+            "Fiche détaillée — Rambo Magic (2e essai)",
+            (
+                f"Même type de saisie, 2e classification : "
+                f"{_fmt_usd_fr(BENCH_RAMBO_RETRY_USD)} $, {BENCH_RAMBO_SEC} s "
+                f"(~{_usd_to_fcfa(BENCH_RAMBO_RETRY_USD)} FCFA). "
+                f"1er essai observé : ~{_fmt_usd_fr(BENCH_RAMBO_FIRST_USD)} $."
+            ),
         ),
         (
-            "~5 $",
-            "Pour 100 classifications / mois",
-            "Usage typique pilote (mix fiches détaillées + saisies courtes) — soit ~3 000 FCFA / mois IA.",
+            f"~{_fmt_usd_fr(monthly_usd, decimals=0)} $/mois",
+            f"Budget IA — {MONTHLY_CLASSIFICATIONS} classifications / mois",
+            (
+                f"Ordre de grandeur pilote (fiches détaillées, ~{_fmt_usd_fr(BENCH_DETAILED_AVG_USD)} $ en moyenne) : "
+                f"~{monthly_fcfa} FCFA / mois IA "
+                f"(~{_fmt_usd_fr(monthly_usd, decimals=0)} $/mois, hors cache)."
+            ),
         ),
     ]
 
@@ -170,7 +245,7 @@ def main() -> None:
     )
     _set_text(
         ct,
-        "Coût marginal négligeable face au risque",
+        "Coût marginal faible face au risque douanier",
         font_name="Crimson Pro Bold",
         size_pt=10,
         bold=True,
@@ -181,22 +256,29 @@ def main() -> None:
         callout_body_src.left,
         callout_body_src.top,
         callout_body_src.width,
-        callout_body_src.height + 120000,
+        callout_body_src.height + 280000,
     )
     _set_text(
         cb,
-        "Infrastructure cloud pilote (API, frontend, base de données) : 0 à 30 $/mois.\n"
-        "Moteur TEC, RGI et tarifs : traitement local, sans surcoût IA.\n"
-        "Le cache des requêtes identiques réduit le coût IA à 0 $.",
+        CALLOUT_BODY,
         font_name="Open Sans",
-        size_pt=8.5,
+        size_pt=8,
         color=WHITE,
     )
 
+    pipeline = add_box(5160318, 1212800, 3600000, 3200000)
+    _set_text(pipeline, PIPELINE_BODY, font_name="Open Sans", size_pt=9, color=MUTED)
+
     _add_punchline(cost_slide, prs)
 
-    prs.save(str(PPTX_PATH))
-    print(f"Slide {SLIDE_INDEX + 1} mise à jour : {PPTX_PATH}")
+    try:
+        prs.save(str(target))
+        print(f"Slide {SLIDE_INDEX + 1} mise à jour : {target}")
+        if RESTORE_SLIDE8_EMPTY:
+            print("Slide 8 vidée (coûts uniquement sur slide 11).")
+    except PermissionError:
+        prs.save(str(PPTX_FALLBACK))
+        print(f"Fichier verrouillé — copie enregistrée : {PPTX_FALLBACK}")
 
 
 if __name__ == "__main__":

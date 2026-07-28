@@ -1,6 +1,7 @@
 .env
 venv*/
 .env.local
+env.txt
 
 # Fichiers Python à ignorer
 __pycache__/
