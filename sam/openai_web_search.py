@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import requests
 
 from .config.settings import Config
 from .openai_compat import responses_api_kwargs, responses_max_output_tokens
+from .telemetry import record_telemetry_call
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +175,16 @@ def identify_with_openai_web_search(
                 "search_context_size": context_size,
             }
         ]
+        started = time.perf_counter()
         try:
             data = _call_responses_api(payload)
+            record_telemetry_call(
+                "web_search",
+                model=model,
+                duration_ms=(time.perf_counter() - started) * 1000.0,
+                prompt_chars=len(user_input or "") + len(instructions or ""),
+                success=True,
+            )
             text = _extract_output_text(data)
             sources = extract_url_citations(data)
             queries = extract_web_search_queries(data)
@@ -182,6 +192,13 @@ def identify_with_openai_web_search(
                 raise RuntimeError("OpenAI Responses API: reponse vide")
             return text, sources, queries
         except Exception as exc:
+            record_telemetry_call(
+                "web_search",
+                model=model,
+                duration_ms=(time.perf_counter() - started) * 1000.0,
+                prompt_chars=len(user_input or "") + len(instructions or ""),
+                success=False,
+            )
             last_error = exc
             retryable = attempt < len(context_sizes) and (
                 "timeout" in str(exc).lower()

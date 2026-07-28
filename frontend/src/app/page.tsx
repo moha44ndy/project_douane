@@ -29,6 +29,7 @@ const INDICATIVE_DISCLAIMER =
 
 /** Désactiver l'upload fichier tant que la fonctionnalité n'est pas prête en prod. */
 const FILE_UPLOAD_ENABLED = false;
+const TABLE_IMPORT_ENABLED = true;
 
 type ClassificationItem = {
   description?: string;
@@ -61,9 +62,11 @@ type ClassificationItem = {
   risk_level?: "low" | "medium" | "high";
   risk_label?: string;
   classification_status?: "confirmee" | "provisoire";
+  retryable?: boolean;
+  error_code?: string;
   classification_confidence?: number;
   identification_confidence?: number;
-  product_identification?: Record<string, unknown>;
+  product_identification?: ProductIdentification;
   source_query?: string;
   completeness_checklist?: Array<{
     field: string;
@@ -102,6 +105,32 @@ type ClassificationItem = {
     position_retained?: string;
     confidence?: number;
   };
+};
+
+type ProductIdentification = {
+  original_query?: string;
+  input_type?: string;
+  product_name?: string;
+  product_type?: string;
+  family?: string;
+  manufacturer?: string;
+  manufacturer_part_number?: string;
+  commercial_name?: string;
+  function_usage?: string;
+  materials?: string[];
+  technical_characteristics?: string[];
+  missing_for_customs?: string[];
+  identification_confidence?: number;
+  identification_method?: string;
+  reasoning?: string;
+  enriched_description?: string;
+  notes?: string;
+  web_search_used?: boolean;
+  web_search_failed?: boolean;
+  web_sources?: Array<{ title?: string; url?: string; snippet?: string }>;
+  web_search_queries?: string[];
+  identification_unstable?: boolean;
+  attempt_count?: number;
 };
 
 function buildValidatePayload(
@@ -232,6 +261,35 @@ function trimRedundantIndicativeDisclaimerFromNarrative(n: string): string {
   return t;
 }
 
+type NarrativeProductSection = {
+  product: string;
+  points: string[];
+};
+
+function parseClassificationNarrative(narrative: string): NarrativeProductSection[] {
+  const cleaned = trimIndicativeDisclaimerFromNarrative(narrative);
+  const blocks = cleaned
+    .split(/(?=Produit analyse\s+)/i)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  return blocks.map((block, index) => {
+    const withoutPrefix = block.replace(/^Produit analyse\s+/i, "");
+    const marker = withoutPrefix.search(/\s+RGI appliquees\b/i);
+    const product = marker >= 0
+      ? withoutPrefix.slice(0, marker).trim()
+      : `Synthèse ${index + 1}`;
+    const details = marker >= 0
+      ? withoutPrefix.slice(marker).replace(/^\s*RGI appliquees\s*/i, "").trim()
+      : withoutPrefix;
+    const points = details
+      .split(/\s+(?=\+\s|\[(?:TEC|Note|Hypothese))/i)
+      .map((point) => point.replace(/^\+\s*/, "").trim())
+      .filter(Boolean);
+    return { product, points };
+  });
+}
+
 /**
  * Corrige les formes sans accent fréquentes dans les réponses API (copier-coller uniquement).
  * Ne touche pas aux codes numériques ni aux sigles d'unité courants (PIECE, KG…).
@@ -300,6 +358,23 @@ function getRiskToneClass(level?: string): string {
   if (level === "medium") return "text-amber-700";
   if (level === "high") return "text-red-700";
   return "text-muted-foreground";
+}
+
+function getIdentificationInputLabel(inputType?: string): string {
+  if (inputType === "manufacturer_ref" || inputType === "manufacturer_reference") {
+    return "Reference fabricant";
+  }
+  if (inputType === "part_number") return "Numero de piece";
+  if (inputType === "brand_model") return "Marque / modele";
+  if (inputType === "free_description") return "Description libre";
+  return inputType || "Non precise";
+}
+
+function compactList(values?: string[], maxItems = 4): string {
+  if (!Array.isArray(values) || values.length === 0) return "";
+  const clean = values.map((value) => value.trim()).filter(Boolean);
+  if (clean.length <= maxItems) return clean.join(", ");
+  return `${clean.slice(0, maxItems).join(", ")} +${clean.length - maxItems}`;
 }
 
 /**
@@ -414,6 +489,18 @@ function ClassificationDetailPanel({
   getItemQuantity,
   getQuantitySourceLabel,
 }: ClassificationDetailPanelProps) {
+  const productIdentification = item.product_identification;
+  const identifiedProductTitle = [
+    productIdentification?.manufacturer,
+    productIdentification?.commercial_name || productIdentification?.product_name,
+  ]
+    .map((value) => value?.trim())
+    .filter(Boolean)
+    .join(" ");
+  const identifiedMaterials = compactList(productIdentification?.materials);
+  const identifiedCharacteristics = compactList(productIdentification?.technical_characteristics);
+  const missingForCustoms = compactList(productIdentification?.missing_for_customs);
+
   return (
     <div className="space-y-4 text-sm leading-relaxed">
       {(isCommercialFieldDisplayed(item.origin) || isCommercialFieldDisplayed(item.value)) && (
@@ -423,6 +510,70 @@ function ClassificationDetailPanel({
           </h4>
           {isCommercialFieldDisplayed(item.origin) && <div>Origine : {item.origin}</div>}
           {isCommercialFieldDisplayed(item.value) && <div>Valeur : {item.value}</div>}
+        </section>
+      )}
+
+      {productIdentification && (
+        <section>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Identification produit
+          </h4>
+          {identifiedProductTitle && (
+            <div>
+              Produit reconnu : <span className="font-semibold">{identifiedProductTitle}</span>
+            </div>
+          )}
+          {(productIdentification.manufacturer_part_number || productIdentification.input_type) && (
+            <div>
+              Reference :{" "}
+              {productIdentification.manufacturer_part_number ? (
+                <span className="font-semibold">
+                  {productIdentification.manufacturer_part_number}
+                </span>
+              ) : (
+                "Non precisee"
+              )}
+              {" · "}
+              {getIdentificationInputLabel(productIdentification.input_type)}
+            </div>
+          )}
+          {productIdentification.product_type && (
+            <div>Type : {productIdentification.product_type}</div>
+          )}
+          {productIdentification.function_usage && (
+            <div>Fonction / usage : {productIdentification.function_usage}</div>
+          )}
+          {identifiedMaterials && <div>Matiere(s) detectee(s) : {identifiedMaterials}</div>}
+          {identifiedCharacteristics && (
+            <div>Caracteristiques detectees : {identifiedCharacteristics}</div>
+          )}
+          {typeof productIdentification.identification_confidence === "number" && (
+            <div>Confiance identification : {productIdentification.identification_confidence}%</div>
+          )}
+          {productIdentification.identification_method && (
+            <div>Methode : {productIdentification.identification_method}</div>
+          )}
+          {productIdentification.attempt_count && productIdentification.attempt_count > 1 && (
+            <div>Tentatives d'identification : {productIdentification.attempt_count}</div>
+          )}
+          {missingForCustoms && (
+            <div className={getChecklistTone("optional_missing")}>
+              {getChecklistMark("optional_missing")} Infos douane encore utiles :{" "}
+              {missingForCustoms}
+            </div>
+          )}
+          {productIdentification.identification_unstable && (
+            <div className={getChecklistTone("missing")}>
+              {getChecklistMark("missing")} Identification a verifier : plusieurs produits peuvent
+              correspondre a cette reference.
+            </div>
+          )}
+          {productIdentification.web_search_failed && (
+            <div className={getChecklistTone("optional_missing")}>
+              {getChecklistMark("optional_missing")} Recherche internet non disponible pour cette
+              tentative.
+            </div>
+          )}
         </section>
       )}
 
@@ -692,14 +843,17 @@ function ClassificationDetailPanel({
 
 export default function HomePage() {
   const router = useRouter();
+  const importMerchandiseInputRef = useRef<HTMLInputElement | null>(null);
   const [merchandiseRows, setMerchandiseRows] = useState<MerchandiseRow[]>(() => [
     createEmptyMerchandiseRow(),
   ]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [importingFile, setImportingFile] = useState(false);
   const [loading, setLoading] = useState(false);
   const [progressSteps, setProgressSteps] = useState<ClassificationProgressStep[] | null>(
     null
   );
+  const [progressDetail, setProgressDetail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [raw, setRaw] = useState<string | null>(null);
   const [payload, setPayload] = useState<ApiPayload | null>(null);
@@ -720,6 +874,7 @@ export default function HomePage() {
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<"idle" | "ok" | "error">("idle");
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
+  const classificationInFlightRef = useRef(false);
   const [expandedDetailKeys, setExpandedDetailKeys] = useState<Record<string, boolean>>({});
 
   // Optionnel : regroupe les validations dans un "dossier entreprise"
@@ -827,8 +982,10 @@ export default function HomePage() {
   };
 
   const classifyNow = async () => {
+    if (classificationInFlightRef.current) return;
     const query = buildMerchandiseQuery(merchandiseRows);
     if (!query.trim()) return;
+    classificationInFlightRef.current = true;
 
     const activeRows = merchandiseRows.filter((r) => r.designation.trim());
     const structuredItems: MerchandiseItemPayload[] = activeRows.map((r) => ({
@@ -856,6 +1013,7 @@ export default function HomePage() {
     setParseFailureDetail(null);
 
     setParseFailureDetail(null);
+    setProgressDetail(null);
     setProgressSteps(DEFAULT_CLASSIFICATION_STEPS.map((step) => ({ ...step })));
 
     try {
@@ -865,24 +1023,30 @@ export default function HomePage() {
           setProgressSteps((current) =>
             current ? applyProgressStep(current, step) : current
           ),
+        onDetail: (message) => setProgressDetail(message),
       }, structuredItems);
       const rawText =
         typeof data.raw === "string" ? data.raw : JSON.stringify(data.raw ?? "");
       applyRawClassificationResult(rawText);
       setProgressSteps((current) => (current ? markAllStepsDone(current) : current));
+      setProgressDetail(null);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur inconnue côté client";
       setError(message);
       setParseFailureDetail(null);
       setProgressSteps(null);
+      setProgressDetail(null);
     } finally {
+      classificationInFlightRef.current = false;
       setLoading(false);
     }
   };
 
   const classifyFromFile = async (file: File) => {
+    if (classificationInFlightRef.current) return;
     if (!file) return;
+    classificationInFlightRef.current = true;
 
     log.debug("[frontend submit] start file name=", file.name);
     setFileItemsCount(null);
@@ -896,6 +1060,7 @@ export default function HomePage() {
     setParseFailureDetail(null);
 
     setParseFailureDetail(null);
+    setProgressDetail("Import et classification du fichier en cours...");
     setProgressSteps(
       DEFAULT_CLASSIFICATION_STEPS.map((step) => ({
         ...step,
@@ -933,15 +1098,144 @@ export default function HomePage() {
       if (typeof data.items_count === "number") setFileItemsCount(data.items_count);
       applyRawClassificationResult(rawText);
       setProgressSteps((current) => (current ? markAllStepsDone(current) : current));
+      setProgressDetail(null);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Erreur inconnue côté client";
       setError(message);
       setParseFailureDetail(null);
       setProgressSteps(null);
+      setProgressDetail(null);
     } finally {
+      classificationInFlightRef.current = false;
       setLoading(false);
     }
+  };
+
+  const importMerchandiseFromFile = async (file: File) => {
+    if (!file) return;
+
+    setImportingFile(true);
+    setError(null);
+    setValidationMessage(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(`${API_BASE_URL}/import/merchandise`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(httpApiErrorMessage(response.status, text));
+      }
+
+      const data = (await response.json()) as {
+        items?: Array<{
+          designation?: string;
+          material?: string;
+          usage?: string;
+          characteristics?: string;
+          quantity?: string;
+          unit?: string;
+          origin?: string;
+          value?: string;
+          currency?: string;
+        }>;
+        items_count?: number;
+      };
+
+      const importedRows: MerchandiseRow[] = Array.isArray(data.items)
+        ? data.items
+            .map((item) => ({
+              id: crypto.randomUUID(),
+              designation: String(item.designation ?? "").trim(),
+              material: String(item.material ?? "").trim(),
+              usage: String(item.usage ?? "").trim(),
+              characteristics: String(item.characteristics ?? "").trim(),
+              quantity: String(item.quantity ?? "").trim(),
+              unit: String(item.unit ?? "").trim(),
+              origin: String(item.origin ?? "").trim(),
+              value: String(item.value ?? "").trim(),
+              currency: String(item.currency ?? "").trim(),
+            }))
+            .filter((row) => row.designation)
+        : [];
+
+      if (!importedRows.length) {
+        throw new Error("Aucune ligne marchandise exploitable n'a ete importee.");
+      }
+
+      setMerchandiseRows(importedRows);
+      setSelectedFile(null);
+      setValidationMessage(
+        `${typeof data.items_count === "number" ? data.items_count : importedRows.length} produit(s) importé(s) dans le tableau.`
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Erreur inconnue lors de l'import";
+      setError(message);
+    } finally {
+      setImportingFile(false);
+    }
+  };
+
+  const downloadImportTemplate = () => {
+    const rows = [
+      [
+        "designation",
+        "matiere / composition",
+        "usage",
+        "caracteristiques",
+        "quantite",
+        "unite",
+        "pays d'origine",
+        "valeur",
+        "devise",
+      ],
+      [
+        "Sac de voyage en cuir",
+        "100 % cuir",
+        "Transport effets personnels",
+        "Neuf, livré monté",
+        "10",
+        "PCE",
+        "Bénin",
+        "1500",
+        "EUR",
+      ],
+      [
+        "Cisco C9200L-48P-4X-E",
+        "",
+        "Network equipment",
+        "Reference fabricant: C9200L-48P-4X-E; identifier le produit avant classification",
+        "2",
+        "PCE",
+        "China",
+        "2850",
+        "USD",
+      ],
+    ];
+    const csvContent = rows
+      .map((row) =>
+        row
+          .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
+          .join(",")
+      )
+      .join("\n");
+
+    const blob = new Blob([`\uFEFF${csvContent}`], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "mosam_import_template.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
   };
 
   const retryClassification = async () => {
@@ -954,6 +1248,7 @@ export default function HomePage() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    if (classificationInFlightRef.current || loading || importingFile) return;
     const query = buildMerchandiseQuery(merchandiseRows);
     if (!query.trim() && !(FILE_UPLOAD_ENABLED && selectedFile)) return;
     if (FILE_UPLOAD_ENABLED && selectedFile) {
@@ -1006,6 +1301,24 @@ export default function HomePage() {
     const qty = getItemQuantity(item, index);
     return sum + qty;
   }, 0);
+  const confirmedClassifications = classifications.filter(
+    (item) => item.classification_status === "confirmee"
+  ).length;
+  const detailedCodeClassifications = classifications.filter(
+    (item) => (item.hs_code?.replace(/\D/g, "").length ?? 0) >= 6
+  ).length;
+  const classificationsToReview = classifications.filter(
+    (item) =>
+      item.classification_status === "provisoire" ||
+      item.risk_level === "medium" ||
+      item.risk_level === "high"
+  ).length;
+  const retryableClassifications = classifications.filter(
+    (item) => item.retryable
+  ).length;
+  const narrativeSections = payload?.narrative
+    ? parseClassificationNarrative(payload.narrative)
+    : [];
 
   if (checkingSession) {
     return (
@@ -1014,6 +1327,10 @@ export default function HomePage() {
   }
 
   const handleValidate = async (item: ClassificationItem, index: number) => {
+    if (item.retryable) {
+      setError("Cette ligne doit etre relancee avant validation.");
+      return;
+    }
     if (!userId) {
       setError("Utilisateur non authentifié, impossible de valider.");
       return;
@@ -1072,6 +1389,7 @@ export default function HomePage() {
 
       for (let i = 0; i < payload.classifications.length; i++) {
         const item = payload.classifications[i];
+        if (item.retryable) continue;
         const rowKey = getRowKey(item, i);
         if (validatedSet.has(rowKey)) continue;
 
@@ -1191,6 +1509,22 @@ export default function HomePage() {
     }
   };
 
+  const handleDownloadResultsJson = () => {
+    if (!payload) return;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    link.href = url;
+    link.download = `mosam-classification-results-${timestamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-8">
       <header className="mosam-hero">
@@ -1220,7 +1554,7 @@ export default function HomePage() {
               Industrie Mosam
             </div>
             <div className="mosam-hero-stats">
-              21 sections · 97 chapitres · 5000+ codes
+              21 sections · 96 chapitres actifs · 6000+ lignes tarifaires
             </div>
           </div>
           <div className="mosam-header-actions-buttons">
@@ -1245,6 +1579,65 @@ export default function HomePage() {
             marchandise.
           </p>
           <form onSubmit={handleSubmit} className="space-y-3">
+            {TABLE_IMPORT_ENABLED && (
+            <div className="space-y-1">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <button
+                  type="button"
+                  onClick={() => importMerchandiseInputRef.current?.click()}
+                  disabled={loading || importingFile}
+                  className="inline-flex items-center gap-2 self-start rounded-xl border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  Importer Excel / CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadImportTemplate}
+                  disabled={loading || importingFile}
+                  className="inline-flex items-center gap-2 self-start rounded-xl border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Télécharger modèle CSV
+                </button>
+                <span className="text-sm text-muted-foreground">
+                  Importer un tableau produits et remplir le formulaire automatiquement.
+                </span>
+              </div>
+              <input
+                ref={importMerchandiseInputRef}
+                id="importMerchandiseFile"
+                type="file"
+                accept=".csv,.xlsx,.xls,.xlsm,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  if (f) {
+                    void importMerchandiseFromFile(f);
+                    e.currentTarget.value = "";
+                  }
+                }}
+                className="mosam-file-input-hidden"
+                disabled={loading || importingFile}
+              />
+              <p className="text-xs text-muted-foreground">
+                Colonnes reconnues automatiquement: désignation, matière, usage, caractéristiques, quantité, unité, origine, valeur, devise.
+              </p>
+            </div>
+            )}
             {FILE_UPLOAD_ENABLED && (
             <div className="space-y-1">
               <label
@@ -1300,14 +1693,14 @@ export default function HomePage() {
             <MerchandiseTableForm
               rows={merchandiseRows}
               onChange={setMerchandiseRows}
-              disabled={loading || (FILE_UPLOAD_ENABLED && !!selectedFile)}
+              disabled={loading || importingFile || (FILE_UPLOAD_ENABLED && !!selectedFile)}
             />
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || importingFile}
               className="mosam-btn-primary"
             >
-              {loading ? (
+              {loading || importingFile ? (
                 <>
                   <span className="inline-block h-4 w-4 border-2 border-primary-foreground/40 border-t-transparent rounded-full animate-spin" />
                   Mosam réfléchit…
@@ -1318,7 +1711,7 @@ export default function HomePage() {
             </button>
           </form>
           {loading && progressSteps && (
-            <ClassificationProgressPanel steps={progressSteps} />
+            <ClassificationProgressPanel steps={progressSteps} detail={progressDetail} />
           )}
           {error && (
             <div className="mt-3 rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
@@ -1371,6 +1764,14 @@ export default function HomePage() {
               {isAssistantInfo ? "Mosam" : "Résultat structuré"}
             </h2>
             <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleDownloadResultsJson}
+                aria-label="Télécharger les résultats JSON pour le benchmark qualité"
+                className="inline-flex min-h-[44px] items-center justify-center rounded-full border border-primary px-4 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
+              >
+                JSON
+              </button>
               <button
                 type="button"
                 onClick={() => void handleCopyResults()}
@@ -1438,14 +1839,22 @@ export default function HomePage() {
             </p>
           )}
           {!isAssistantInfo && (
-            <>
-              <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
-                {classifications.length} classification(s) reçue(s) (dans l&apos;UI).
-              </p>
-              <p className="text-xs text-foreground bg-amber-50/40 border border-amber-200 rounded-xl px-3 py-2">
-                {totalClassifiedQuantity} unité(s) classifiée(s) (quantité cumulée).
-              </p>
-            </>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              {[
+                ["Produits", classifications.length, "border-sky-200 bg-sky-50 text-sky-900"],
+                ["Quantité totale", totalClassifiedQuantity, "border-slate-200 bg-slate-50 text-slate-900"],
+                ["Codes détaillés", detailedCodeClassifications, "border-emerald-200 bg-emerald-50 text-emerald-900"],
+                ["Confirmées", confirmedClassifications, "border-teal-200 bg-teal-50 text-teal-900"],
+                ["À vérifier", classificationsToReview, "border-amber-200 bg-amber-50 text-amber-900"],
+              ].map(([label, value, tone]) => (
+                <div key={String(label)} className={`rounded-xl border px-3 py-2 ${tone}`}>
+                  <div className="text-[11px] font-medium uppercase tracking-wide opacity-75">
+                    {label}
+                  </div>
+                  <div className="mt-1 text-lg font-semibold tabular-nums">{value}</div>
+                </div>
+              ))}
+            </div>
           )}
           {payload.narrative &&
             (isAssistantInfo ? (
@@ -1461,9 +1870,29 @@ export default function HomePage() {
                   ))}
               </div>
             ) : (
-              <p className="text-sm text-foreground leading-relaxed whitespace-pre-line">
-                {trimIndicativeDisclaimerFromNarrative(payload.narrative.trim())}
-              </p>
+              <details className="rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm">
+                <summary className="cursor-pointer select-none font-medium text-primary">
+                  Voir la synthèse générale RGI ({classifications.length} produit(s))
+                </summary>
+                <div className="mt-3 max-h-96 space-y-3 overflow-y-auto border-t border-border pt-3 pr-1">
+                  {narrativeSections.map((section, sectionIndex) => (
+                    <article
+                      key={`${section.product}-${sectionIndex}`}
+                      className="rounded-xl border border-border bg-background px-3 py-3"
+                    >
+                      <h3 className="font-semibold text-primary">{section.product}</h3>
+                      <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-foreground">
+                        {section.points.map((point, pointIndex) => (
+                          <li key={pointIndex} className="flex gap-2">
+                            <span className="mt-1 text-primary" aria-hidden="true">•</span>
+                            <span>{point}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </article>
+                  ))}
+                </div>
+              </details>
             ))}
 
           {classifications.length === 0 && !isAssistantInfo && (
@@ -1483,6 +1912,25 @@ export default function HomePage() {
 
           {classifications.length > 0 && (
             <>
+              {retryableClassifications > 0 && (
+                <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                  <div className="font-semibold">
+                    {retryableClassifications} article(s) en attente du service IA
+                  </div>
+                  <p className="mt-1">
+                    Les resultats deja calcules sont conserves. Une relance reutilisera le cache
+                    et traitera uniquement les articles manquants.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void retryClassification()}
+                    className="mt-3 inline-flex min-h-[44px] items-center justify-center rounded-full border border-amber-700 px-4 py-2 font-semibold text-amber-900 hover:bg-amber-100"
+                    disabled={loading}
+                  >
+                    Relancer les articles en attente
+                  </button>
+                </div>
+              )}
               {/* Table partout (mobile + desktop) */}
               <div className="overflow-x-auto rounded-2xl border border-border bg-background">
                 <table className="min-w-full text-sm">
@@ -1529,6 +1977,11 @@ export default function HomePage() {
                                   Classification provisoire
                                 </div>
                               )}
+                              {item.retryable && (
+                                <div className="mt-1 inline-flex items-center rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-800">
+                                  En attente de relance
+                                </div>
+                              )}
                               {isCommercialFieldDisplayed(item.origin) && (
                                 <div className="mt-1 text-xs text-muted-foreground">
                                   Origine : {item.origin}
@@ -1559,7 +2012,7 @@ export default function HomePage() {
                             </td>
                             <td className="px-3 py-2 align-top">
                               <div className="font-mono text-base font-bold text-primary">
-                                {item.hs_code || "Non renseigné"}
+                                {item.retryable ? "En attente" : item.hs_code || "Non renseigné"}
                               </div>
                               {item.subposition_label && (
                                 <div className="mt-1 text-xs text-amber-700 dark:text-amber-400 leading-snug">
@@ -1604,11 +2057,19 @@ export default function HomePage() {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleValidate(item, index)}
+                                  onClick={() =>
+                                    item.retryable
+                                      ? void retryClassification()
+                                      : void handleValidate(item, index)
+                                  }
                                   className="inline-flex items-center justify-center min-h-[44px] rounded-full border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/10 touch-manipulation"
-                                  disabled={!!validatedKeys[rowKey]}
+                                  disabled={!!validatedKeys[rowKey] || loading}
                                 >
-                                  {validatedKeys[rowKey] ? "Validé" : "Valider"}
+                                  {item.retryable
+                                    ? "Relancer"
+                                    : validatedKeys[rowKey]
+                                      ? "Validé"
+                                      : "Valider"}
                                 </button>
                               </div>
                             </td>

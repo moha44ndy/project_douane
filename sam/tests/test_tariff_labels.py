@@ -2,7 +2,14 @@ import json
 import unittest
 
 from sam import api as api_mod
-from sam.tariff_labels import build_tariff_label_index, lookup_position_label, resolve_hs_code_to_tec
+from sam.tariff_labels import (
+    build_position_label_index,
+    build_tariff_label_index,
+    find_positions_by_label_keywords,
+    lookup_position_label,
+    resolve_hs_code_to_tec,
+    set_heading_narrative_index,
+)
 
 
 class TestTariffLabels(unittest.TestCase):
@@ -73,6 +80,41 @@ class TestTariffLabels(unittest.TestCase):
             rate_index=rate_index,
         )
         self.assertEqual(resolved, "8471.30.90.00")
+
+    def test_position_heading_on_same_line_as_full_code_is_indexed(self) -> None:
+        chunk = type("C", (), {"page_content": (
+            "96.17 9617.00.00.00 Bouteilles isolantes et autres recipients isothermiques\n"
+            "montes, dont l'isolation est assuree par le vide, ainsi que leurs parties. kg 20 1\n"
+            "96.18 9618.00.00.00 Mannequins et articles similaires. kg 20 1"
+        )})()
+        position_index = build_position_label_index({}, chunks=[chunk])
+        self.assertIn("9617", position_index)
+        self.assertIn("isothermiques", position_index["9617"])
+        self.assertNotIn("Mannequins", position_index["9617"])
+
+    def test_keyword_search_can_use_heading_narratives_for_tablet_family(self) -> None:
+        api_mod.set_tariff_label_index(
+            {
+                "8471.30.10.00": "Presentes demontes importes pour l'industrie du montage",
+                "8471.30.90.00": "Autres",
+            }
+        )
+        set_heading_narrative_index(
+            {
+                "8471.30": (
+                    "machines automatiques de traitement de l information portatives "
+                    "comportant au moins une unite centrale de traitement un clavier et un ecran"
+                )
+            }
+        )
+
+        matches = find_positions_by_label_keywords(
+            ["machines", "automatiques", "traitement", "information", "portatives", "unites"],
+            min_matches=2,
+            top_n=5,
+        )
+
+        self.assertTrue(any(position == "84.71" for position, _, _ in matches))
 
 
 if __name__ == "__main__":

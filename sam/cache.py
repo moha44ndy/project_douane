@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from typing import Any, Optional
 
 import requests
@@ -15,19 +17,28 @@ _TOKEN = Config.UPSTASH_REDIS_REST_TOKEN
 
 # Clé Redis pour désactiver le cache des classifications (valeur "1" = désactivé)
 CLASSIFY_CACHE_DISABLED_KEY = "mosam:classify_cache_disabled"
+_CLASSIFY_STATUS_TTL_SECONDS = 30.0
+_CLASSIFY_STATUS_LOCK = threading.Lock()
+_CLASSIFY_STATUS: dict[str, Any] = {
+    "disabled": False,
+    "expires_at": 0.0,
+    "refreshing": False,
+    "initialized": False,
+}
 
 
 def _enabled() -> bool:
     return bool(_URL and _TOKEN)
 
 
-def cache_set(key: str, value: Any, ex: Optional[int] = None) -> None:
+def cache_set(key: str, value: Any, ex: Optional[int] = None) -> bool:
     """
     Stocke une valeur dans Upstash Redis (même format que les autres commandes).
     value est sérialisé en JSON pour le stockage.
     """
     if not _enabled():
-        return
+        logger.debug("[cache] SET skipped: Redis not configured key=%s", key)
+        return False
     # Stocker en chaîne JSON pour pouvoir relire proprement
     value_str = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     cmd: list[Any] = ["SET", key, value_str]
@@ -41,12 +52,19 @@ def cache_set(key: str, value: Any, ex: Optional[int] = None) -> None:
             timeout=5,
         )
         if resp.status_code != 200:
-            return
+            logger.warning("[cache] SET failed key=%s status=%s", key, resp.status_code)
+            return False
         data = resp.json()
         if "error" in data:
-            return
-    except Exception:
-        return
+            logger.warning("[cache] SET Redis error key=%s error=%s", key, data.get("error"))
+            return False
+        ok = data.get("result") == "OK"
+        if not ok:
+            logger.warning("[cache] SET unexpected result key=%s result=%r", key, data.get("result"))
+        return ok
+    except Exception as exc:
+        logger.warning("[cache] SET failed key=%s error=%s", key, type(exc).__name__)
+        return False
 
 
 def cache_get(key: str) -> Optional[Any]:
@@ -77,7 +95,9 @@ def cache_get(key: str) -> Optional[Any]:
             # Compat rétroactive : ancien format possible en wrapper {"value": "..."}
             try:
                 decoded = json.loads(raw)
-                if isinstance(decoded, dict) and "value" in decoded:
+                # Legacy format is exactly {"value": "<payload>"}. Business
+                # objects can also contain a `value` field and must stay intact.
+                if isinstance(decoded, dict) and set(decoded) == {"value"}:
                     return decoded["value"]
             except json.JSONDecodeError:
                 pass
@@ -88,7 +108,7 @@ def cache_get(key: str) -> Optional[Any]:
         return None
 
 
-def cache_classify_is_disabled() -> bool:
+def _read_classify_disabled_remote() -> bool:
     """
     Indique si le cache des classifications est désactivé (réglage admin).
     Retourne False si Redis est indisponible ou si le cache est activé.
@@ -124,6 +144,48 @@ def cache_classify_is_disabled() -> bool:
         return False
 
 
+def _set_local_classify_disabled(disabled: bool) -> None:
+    with _CLASSIFY_STATUS_LOCK:
+        _CLASSIFY_STATUS["disabled"] = bool(disabled)
+        _CLASSIFY_STATUS["expires_at"] = time.monotonic() + _CLASSIFY_STATUS_TTL_SECONDS
+        _CLASSIFY_STATUS["refreshing"] = False
+        _CLASSIFY_STATUS["initialized"] = True
+
+
+def _refresh_classify_disabled_background() -> None:
+    disabled = _read_classify_disabled_remote()
+    _set_local_classify_disabled(disabled)
+
+
+def cache_classify_is_disabled(*, force_refresh: bool = False) -> bool:
+    """Return cache status without blocking classification requests on Redis I/O."""
+    if not _enabled():
+        return False
+    if force_refresh:
+        disabled = _read_classify_disabled_remote()
+        _set_local_classify_disabled(disabled)
+        return disabled
+
+    now = time.monotonic()
+    start_refresh = False
+    with _CLASSIFY_STATUS_LOCK:
+        disabled = bool(_CLASSIFY_STATUS["disabled"])
+        if bool(_CLASSIFY_STATUS["initialized"]) and now < float(_CLASSIFY_STATUS["expires_at"]):
+            return disabled
+        if not bool(_CLASSIFY_STATUS["refreshing"]):
+            _CLASSIFY_STATUS["refreshing"] = True
+            start_refresh = True
+
+    if start_refresh:
+        threading.Thread(
+            target=_refresh_classify_disabled_background,
+            name="mosam-cache-status-refresh",
+            daemon=True,
+        ).start()
+    logger.debug("[cache] classify status stale; using local disabled=%s", disabled)
+    return disabled
+
+
 def cache_classify_set_disabled(disabled: bool) -> bool:
     """
     Active ou désactive le cache des classifications (réglage admin).
@@ -157,6 +219,8 @@ def cache_classify_set_disabled(disabled: bool) -> bool:
         if "error" in data:
             logger.warning("[cache] SET Redis error: %s", data.get("error"))
             return False
+        if ok:
+            _set_local_classify_disabled(disabled)
         return ok
     except Exception as e:
         logger.exception("[cache] SET %s=%s failed", CLASSIFY_CACHE_DISABLED_KEY, value)

@@ -47,6 +47,17 @@ class TestTariffSubposition(unittest.TestCase):
                 "8703.23.19.00 -- Autres u 20 1\n"
                 "8703.23.20.00 -- Usages u 20 1"
             ),
+            _Chunk(
+                "69.07 Carreaux et dalles de pavement ou de revetement, en ceramique\n"
+                "6907.21.00.00 -- D'un coefficient d'absorption d'eau en poids inferieur "
+                "ou egal a 0,5 % m2 20 1\n"
+                "6907.22.00.00 -- D'un coefficient d'absorption d'eau en poids superieur "
+                "a 0,5 % mais inferieur ou egal a 10 % m2 20 1\n"
+                "6907.23.00.00 -- D'un coefficient d'absorption d'eau en poids superieur "
+                "a 10 % m2 20 1\n"
+                "6907.30.00.00 -- Cubes et articles similaires pour mosaiques m2 20 1\n"
+                "6907.40.00.00 -- Pieces de finition m2 20 1"
+            ),
         ]
         cls.index = build_tariff_label_index(chunks)
         set_tariff_label_index(cls.index)
@@ -111,6 +122,22 @@ class TestTariffSubposition(unittest.TestCase):
             rate_index=rate_index,
         )
         self.assertEqual(resolved, "8471.30.90.00")
+
+    def test_legacy_6908_tile_migrates_to_hs2022_absorption_subheading(self) -> None:
+        source = (
+            "Glazed ceramic floor tile, porcelain stoneware, water absorption "
+            "below 0.5 percent"
+        )
+        result = resolve_subposition_from_tec("6908.90", source)
+        self.assertEqual(result.status, "confirmed")
+        self.assertEqual(result.matched_code, "6907.21.00.00")
+
+    def test_water_absorption_selects_middle_hs2022_tile_band(self) -> None:
+        result = resolve_subposition_from_tec(
+            "69.07", "Ceramic wall tile with water absorption 7 percent"
+        )
+        self.assertEqual(result.status, "confirmed")
+        self.assertEqual(result.matched_code, "6907.22.00.00")
 
     def test_ordinateur_vague_arrete_position_8471(self) -> None:
         result = resolve_subposition_from_tec("8471.30", "ordinateur")
@@ -206,6 +233,23 @@ class TestTariffSubposition(unittest.TestCase):
         self.assertEqual(trusted_result.status, "confirmed")
         self.assertEqual(trusted_result.matched_code, "4202.91.90.00")
         self.assertEqual(trusted_result.final_decision.get("outcome"), "retain_full_code")
+        set_tariff_label_index(self.index)
+
+    def test_single_unverifiable_candidate_is_not_auto_confirmed(self) -> None:
+        single_index = build_tariff_label_index(
+            [_Chunk("9007.10.00.00 -- Cameras cinematographiques u 20 1")]
+        )
+        set_tariff_label_index(single_index)
+
+        result = resolve_subposition_from_tec(
+            "90.07",
+            "Camera numerique IP de surveillance avec flux video",
+        )
+
+        self.assertEqual(result.status, "insufficient")
+        self.assertEqual(result.hs_code, "90.07")
+        self.assertEqual(result.final_decision.get("outcome"), "stop_insufficient_criteria")
+        self.assertTrue(result.missing_criteria)
         set_tariff_label_index(self.index)
 
 

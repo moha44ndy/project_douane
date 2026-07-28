@@ -362,7 +362,18 @@ def build_justification_from_decision(
 
     resolution = decision.subposition_resolution or {}
     retained_code = decision.hs_code if _hs_digit_count(decision.hs_code) > 4 else decision.position_code
-    retained_label = lookup_position_label(retained_code) or get_position_heading(decision.position_code) or ""
+    if _hs_digit_count(retained_code) <= 4:
+        retained_label = (
+            get_position_heading(decision.position_code)
+            or lookup_position_label(retained_code)
+            or ""
+        )
+    else:
+        retained_label = (
+            lookup_position_label(retained_code)
+            or get_position_heading(decision.position_code)
+            or ""
+        )
 
     if retained_label:
         parts.append(f"[TEC] Niveau retenu {retained_code} : {retained_label}.")
@@ -382,9 +393,10 @@ def build_justification_from_decision(
             if rule and reason:
                 parts.append(f"[{rule}] Non applicable : {reason}.")
 
+    # A subdivision can be resolved while the overall result stays provisional
+    # because candidate evidence or functional coherence is weak.
     confirmed = (
-        decision.classification_status == "confirmee"
-        and _hs_digit_count(decision.hs_code) >= 8
+        _hs_digit_count(decision.hs_code) >= 8
         and resolution.get("status") == "confirmed"
     )
 

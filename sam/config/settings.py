@@ -32,6 +32,36 @@ class Config:
     MOSAM_CLASSIFICATION_MODEL = (
         os.getenv("MOSAM_CLASSIFICATION_MODEL", "").strip() or MOSAM_MODEL
     )
+    MOSAM_CLASSIFICATION_MODEL_CHEAP = (
+        os.getenv("MOSAM_CLASSIFICATION_MODEL_CHEAP", "").strip() or None
+    )
+    MOSAM_CLASSIFICATION_MODEL_ROUTING = (
+        os.getenv("MOSAM_CLASSIFICATION_MODEL_ROUTING", "off").strip().lower() or "off"
+    )
+    try:
+        MOSAM_CLASSIFICATION_ROUTING_MAX_PROMPT_CHARS = int(
+            os.getenv("MOSAM_CLASSIFICATION_ROUTING_MAX_PROMPT_CHARS", "20000")
+        )
+    except ValueError:
+        MOSAM_CLASSIFICATION_ROUTING_MAX_PROMPT_CHARS = 20000
+    try:
+        MOSAM_CLASSIFICATION_MAX_OUTPUT_TOKENS = int(
+            os.getenv("MOSAM_CLASSIFICATION_MAX_OUTPUT_TOKENS", "4096")
+        )
+    except ValueError:
+        MOSAM_CLASSIFICATION_MAX_OUTPUT_TOKENS = 4096
+    try:
+        MOSAM_STRUCTURED_FORM_BATCH_SIZE = int(
+            os.getenv("MOSAM_STRUCTURED_FORM_BATCH_SIZE", "3")
+        )
+    except ValueError:
+        MOSAM_STRUCTURED_FORM_BATCH_SIZE = 3
+    try:
+        MOSAM_REFERENCE_PARALLELISM = int(
+            os.getenv("MOSAM_REFERENCE_PARALLELISM", "2")
+        )
+    except ValueError:
+        MOSAM_REFERENCE_PARALLELISM = 2
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
     # Base de données (Supabase / Postgres)
@@ -65,6 +95,21 @@ class Config:
     MOSAM_WEB_SEARCH_CONTEXT_SIZE = os.getenv(
         "MOSAM_WEB_SEARCH_CONTEXT_SIZE", "medium"
     ).strip().lower()
+    MOSAM_WEB_SEARCH_POLICY = (
+        os.getenv("MOSAM_WEB_SEARCH_POLICY", "auto").strip().lower() or "auto"
+    )
+    try:
+        MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_WORDS = int(
+            os.getenv("MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_WORDS", "3")
+        )
+    except ValueError:
+        MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_WORDS = 3
+    try:
+        MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_CHARS = int(
+            os.getenv("MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_CHARS", "40")
+        )
+    except ValueError:
+        MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_CHARS = 40
     try:
         MOSAM_WEB_SEARCH_TIMEOUT_SECONDS = int(
             os.getenv("MOSAM_WEB_SEARCH_TIMEOUT_SECONDS", "90")
@@ -74,13 +119,43 @@ class Config:
 
     # Retrieval FAISS / positions candidates TEC
     try:
-        MOSAM_FAISS_TOP_K = int(os.getenv("MOSAM_FAISS_TOP_K", "20"))
+        MOSAM_FAISS_TOP_K = int(os.getenv("MOSAM_FAISS_TOP_K", "16"))
     except ValueError:
-        MOSAM_FAISS_TOP_K = 20
+        MOSAM_FAISS_TOP_K = 16
     try:
         MOSAM_MAX_CANDIDATE_POSITIONS = int(
-            os.getenv("MOSAM_MAX_CANDIDATE_POSITIONS", "15")
+            os.getenv("MOSAM_MAX_CANDIDATE_POSITIONS", "8")
         )
     except ValueError:
-        MOSAM_MAX_CANDIDATE_POSITIONS = 15
+        MOSAM_MAX_CANDIDATE_POSITIONS = 8
+    try:
+        MOSAM_TEC_EXCERPT_MAX_CHARS = int(
+            os.getenv("MOSAM_TEC_EXCERPT_MAX_CHARS", "180")
+        )
+    except ValueError:
+        MOSAM_TEC_EXCERPT_MAX_CHARS = 180
+    try:
+        MOSAM_TEC_SUBPOSITIONS_MAX_ITEMS = int(
+            os.getenv("MOSAM_TEC_SUBPOSITIONS_MAX_ITEMS", "8")
+        )
+    except ValueError:
+        MOSAM_TEC_SUBPOSITIONS_MAX_ITEMS = 8
+    MOSAM_TEC_CONTEXT_COMPACT = os.getenv(
+        "MOSAM_TEC_CONTEXT_COMPACT", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    MOSAM_RAG_EXTRA_SEARCHES_ENABLED = os.getenv(
+        "MOSAM_RAG_EXTRA_SEARCHES_ENABLED", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    MOSAM_RAG_HEADING_MATCH_ENABLED = os.getenv(
+        "MOSAM_RAG_HEADING_MATCH_ENABLED", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    MOSAM_TECHNICAL_NATURE_LLM_FALLBACK_ENABLED = os.getenv(
+        "MOSAM_TECHNICAL_NATURE_LLM_FALLBACK_ENABLED", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    try:
+        MOSAM_TECHNICAL_NATURE_LLM_CONFIDENCE_THRESHOLD = int(
+            os.getenv("MOSAM_TECHNICAL_NATURE_LLM_CONFIDENCE_THRESHOLD", "55")
+        )
+    except ValueError:
+        MOSAM_TECHNICAL_NATURE_LLM_CONFIDENCE_THRESHOLD = 55
 

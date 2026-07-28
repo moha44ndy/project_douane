@@ -11,18 +11,22 @@ Architecture :
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
 from openai import OpenAI
 
+from .cache import cache_get, cache_set
 from .config.settings import Config
 from .openai_compat import chat_completion_kwargs
 from .openai_web_search import identify_with_openai_web_search, openai_web_search_enabled
+from .telemetry import increment_telemetry, record_telemetry_call
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,39 @@ _DOSSIER_SECTIONS = ("composition", "usage", "capacite", "caracteristique", "spe
 
 _RELIABILITY_THRESHOLD = 80
 _MAX_ATTEMPTS = 3
+_GENERIC_PRODUCT_TYPES = {
+    "product",
+    "produit",
+    "device",
+    "appareil",
+    "equipment",
+    "equipement",
+    "electronic device",
+    "electronic equipment",
+    "electronic module",
+    "module electronique",
+    "industrial equipment",
+    "machine",
+    "system",
+    "systeme",
+    "component",
+    "composant",
+}
+_GENERIC_FUNCTION_TERMS = {
+    "general use",
+    "usage general",
+    "industrial use",
+    "usage industriel",
+    "electrical use",
+    "electronic use",
+    "various applications",
+    "applications diverses",
+}
+_REFERENCE_MISSING_HINTS = (
+    "fonction exacte du produit",
+    "nature technique confirmee",
+    "role systeme: appareil complet ou composant",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,11 +125,179 @@ def should_run_product_identification(query: str) -> bool:
     text = (query or "").strip()
     if not text or not product_identification_enabled():
         return False
+    if detect_input_type(text) == InputType.MANUFACTURER_REF:
+        return True
     if looks_like_structured_dossier(text):
         return False
     if description_is_already_rich(text):
         return False
     return True
+
+
+def _web_search_policy() -> str:
+    policy = (Config.MOSAM_WEB_SEARCH_POLICY or "auto").strip().lower()
+    if policy in {"always", "never", "manufacturer_only", "auto"}:
+        return policy
+    return "auto"
+
+
+def should_use_web_search_for_identification(query: str, input_type: str) -> bool:
+    """Gate la recherche web pour limiter les couts et la latence."""
+    if not openai_web_search_enabled():
+        return False
+
+    policy = _web_search_policy()
+    if policy == "never":
+        return False
+    if policy == "always":
+        return True
+    if policy == "manufacturer_only":
+        return input_type == InputType.MANUFACTURER_REF
+
+    # policy == "auto"
+    if input_type == InputType.MANUFACTURER_REF:
+        return True
+
+    text = (query or "").strip()
+    if not text:
+        return False
+    if looks_like_structured_dossier(text) or description_is_already_rich(text):
+        return False
+
+    words = [w for w in re.split(r"\s+", text) if w]
+    max_words = max(1, Config.MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_WORDS)
+    max_chars = max(8, Config.MOSAM_WEB_SEARCH_MAX_SHORT_QUERY_CHARS)
+    return len(words) <= max_words and len(text) <= max_chars
+
+
+def _extract_reference_for_cache(query: str) -> str:
+    text = re.sub(r"\s+", " ", (query or "").strip())
+    labelled = re.search(
+        r"(?i)\b(?:reference\s+fabricant|manufacturer\s+reference|part\s+number|mpn)\s*:?\s*([^,;\n]+)",
+        text,
+    )
+    if labelled:
+        labelled_text = labelled.group(1).strip()
+        labelled_candidates = re.findall(
+            r"\b[A-Z0-9]+(?:[-_./][A-Z0-9]+)+\b",
+            labelled_text,
+            flags=re.IGNORECASE,
+        )
+        if labelled_candidates:
+            return labelled_candidates[0].strip()
+        labelled_compact = re.findall(
+            r"\b[A-Z]{1,8}\d[A-Z0-9]{2,}\b",
+            labelled_text,
+            flags=re.IGNORECASE,
+        )
+        if labelled_compact:
+            return labelled_compact[0].strip()
+    candidates = re.findall(r"\b[A-Z0-9]+(?:[-_./][A-Z0-9]+)+\b", text, flags=re.IGNORECASE)
+    if candidates:
+        return candidates[0].strip()
+    compact = re.findall(r"\b[A-Z]{1,8}\d[A-Z0-9]{2,}\b", text, flags=re.IGNORECASE)
+    return compact[0].strip() if compact else ""
+
+
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in values:
+        cleaned = re.sub(r"\s+", " ", str(item or "").strip())
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(cleaned)
+    return output
+
+
+def _looks_generic_product_type(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", _normalize(value)).strip()
+    return not normalized or normalized in _GENERIC_PRODUCT_TYPES
+
+
+def _looks_generic_function(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", _normalize(value)).strip()
+    return not normalized or normalized in _GENERIC_FUNCTION_TERMS or len(normalized.split()) <= 2
+
+
+def _normalize_identification_output(
+    original: str,
+    identification: ProductIdentification,
+) -> ProductIdentification:
+    identification.materials = _unique_preserve_order(identification.materials)[:8]
+    identification.technical_characteristics = _unique_preserve_order(
+        identification.technical_characteristics
+    )[:10]
+    identification.missing_for_customs = _unique_preserve_order(
+        identification.missing_for_customs
+    )[:10]
+
+    if identification.input_type == InputType.MANUFACTURER_REF and not identification.manufacturer_part_number:
+        identification.manufacturer_part_number = _extract_reference_for_cache(original)
+
+    if (
+        identification.input_type == InputType.MANUFACTURER_REF
+        and identification.manufacturer_part_number
+        and identification.manufacturer_part_number not in identification.enriched_description
+    ):
+        identification.enriched_description = (
+            f"Reference fabricant : {identification.manufacturer_part_number}\n"
+            f"{identification.enriched_description.strip() or original}"
+        ).strip()
+
+    generic_type = _looks_generic_product_type(identification.product_type)
+    generic_function = _looks_generic_function(identification.function_usage)
+
+    if identification.input_type == InputType.MANUFACTURER_REF:
+        identification.missing_for_customs = _unique_preserve_order(
+            identification.missing_for_customs + list(_REFERENCE_MISSING_HINTS)
+        )[:10]
+
+    if generic_type:
+        identification.identification_confidence = min(identification.identification_confidence, 55)
+        identification.missing_for_customs = _unique_preserve_order(
+            identification.missing_for_customs + ["type de produit exact a confirmer"]
+        )[:10]
+
+    if generic_function:
+        identification.identification_confidence = min(identification.identification_confidence, 60)
+        identification.missing_for_customs = _unique_preserve_order(
+            identification.missing_for_customs + ["fonction principale exacte a confirmer"]
+        )[:10]
+
+    if (
+        identification.input_type == InputType.MANUFACTURER_REF
+        and not identification.technical_characteristics
+    ):
+        identification.missing_for_customs = _unique_preserve_order(
+            identification.missing_for_customs + ["caracteristiques techniques discriminantes"]
+        )[:10]
+
+    if not identification.why_not_other_products.strip() and identification.identification_confidence < 80:
+        identification.notes = (
+            (identification.notes or "")
+            + " Produits proches non suffisamment elimines."
+        ).strip()
+
+    return identification
+
+
+def _identification_cache_key(query: str) -> str:
+    cache_basis = query or ""
+    ref = _extract_reference_for_cache(cache_basis)
+    if ref and (
+        detect_input_type(cache_basis) == InputType.MANUFACTURER_REF
+        or re.search(r"[-_./]", ref)
+        or re.search(r"(?i)\b(?:reference\s+fabricant|manufacturer\s+reference|part\s+number|mpn)\b", cache_basis)
+    ):
+        cache_basis = f"manufacturer_ref:{ref}"
+    normalized = re.sub(r"\s+", " ", cache_basis.strip().lower())
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"product_identification:v1:{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +326,19 @@ def detect_input_type(text: str) -> str:
 
     if not has_alpha and not has_digit:
         return InputType.FREE_DESCRIPTION
+
+    if re.search(r"(?i)\b(?:reference\s+fabricant|manufacturer\s+reference|part\s+number|mpn)\b", t):
+        if has_alpha and has_digit:
+            return InputType.MANUFACTURER_REF
+
+    labelled_ref = re.search(
+        r"(?im)^\s*(?:reference\s+fabricant|manufacturer\s+reference|part\s+number|mpn)\s*:\s*(.+?)\s*$",
+        t,
+    )
+    if labelled_ref:
+        ref_value = labelled_ref.group(1).strip()
+        if ref_value and bool(re.search(r"[A-Za-z]", ref_value)) and bool(re.search(r"\d", ref_value)):
+            return InputType.MANUFACTURER_REF
 
     if " " not in t and has_alpha and has_digit:
         return InputType.MANUFACTURER_REF
@@ -408,25 +626,48 @@ def _call_identification_llm(
     system_prompt: str,
 ) -> str:
     model = Config.MOSAM_IDENTIFICATION_MODEL or "gpt-5"
-    response = _client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        **chat_completion_kwargs(model, max_tokens=1200, temperature=0.2),
-    )
-    content = response.choices[0].message.content
-    return content or ""
+    started = time.perf_counter()
+    try:
+        response = _client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            **chat_completion_kwargs(model, max_tokens=1200, temperature=0.2),
+        )
+        usage = getattr(response, "usage", None)
+        record_telemetry_call(
+            "identification_llm",
+            model=model,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            prompt_chars=len(user_prompt or "") + len(system_prompt or ""),
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            success=True,
+        )
+        content = response.choices[0].message.content
+        return content or ""
+    except Exception:
+        record_telemetry_call(
+            "identification_llm",
+            model=model,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            prompt_chars=len(user_prompt or "") + len(system_prompt or ""),
+            success=False,
+        )
+        raise
 
 
 def _call_with_optional_web(
     user_prompt: str,
     *,
     system_prompt: str,
+    use_web: bool,
 ) -> tuple[str, list[dict[str, str]], list[str], bool, bool]:
     """Retourne (texte brut, sources web, requetes web, web_search_used, web_search_failed)."""
-    if openai_web_search_enabled():
+    if use_web:
+        increment_telemetry("web_search_attempted")
         try:
             raw, sources, queries = identify_with_openai_web_search(
                 instructions=system_prompt,
@@ -643,6 +884,7 @@ def identify_product(query: str) -> ProductIdentification:
         )
 
     if not should_run_product_identification(original):
+        increment_telemetry("product_identification_skipped")
         return ProductIdentification(
             original_query=original,
             enriched_description=original,
@@ -653,11 +895,38 @@ def identify_product(query: str) -> ProductIdentification:
         )
 
     input_type = detect_input_type(original)
-    system_prompt = _get_system_prompt(input_type, use_web=openai_web_search_enabled())
+    use_web = should_use_web_search_for_identification(original, input_type)
+    increment_telemetry("product_identification_requested")
+    if input_type == InputType.MANUFACTURER_REF:
+        increment_telemetry("manufacturer_reference_inputs")
+    if use_web:
+        increment_telemetry("product_identification_web_enabled")
+    cache_key = _identification_cache_key(original)
+    cached_raw = cache_get(cache_key)
+    if isinstance(cached_raw, str) and cached_raw.strip():
+        try:
+            cached_data = json.loads(cached_raw)
+            if isinstance(cached_data, dict):
+                result = ProductIdentification(**cached_data)
+                logger.info(
+                    "[product_identification] cache HIT input_type=%s web=%s query='%s'",
+                    input_type,
+                    result.web_search_used,
+                    original[:50],
+                )
+                increment_telemetry("product_identification_cache_hit")
+                return result
+        except Exception:
+            logger.warning("[product_identification] cache parse failed", exc_info=True)
+    increment_telemetry("product_identification_cache_miss")
+
+    system_prompt = _get_system_prompt(input_type, use_web=use_web)
 
     logger.info(
-        "[product_identification] input_type=%s for '%s'",
-        input_type, original[:50],
+        "[product_identification] input_type=%s web=%s for '%s'",
+        input_type,
+        use_web,
+        original[:50],
     )
 
     user_prompt = (
@@ -670,7 +939,7 @@ def identify_product(query: str) -> ProductIdentification:
     web_failed_any = False
     try:
         raw, web_sources, web_queries, web_used, web_failed = _call_with_optional_web(
-            user_prompt, system_prompt=system_prompt,
+            user_prompt, system_prompt=system_prompt, use_web=use_web,
         )
         web_failed_any = web_failed_any or web_failed
     except Exception as exc:
@@ -690,6 +959,7 @@ def identify_product(query: str) -> ProductIdentification:
     best = _build_identification(
         parsed, original, input_type, web_used, web_sources, web_queries, attempt_count=1,
     )
+    best = _normalize_identification_output(original, best)
 
     if _is_identification_reliable(best):
         logger.info(
@@ -698,7 +968,9 @@ def identify_product(query: str) -> ProductIdentification:
             best.identification_method[:30],
         )
         best.web_search_failed = web_failed_any and not web_used
-        return _finalize_identification_stability(original, best)
+        best = _finalize_identification_stability(original, best)
+        cache_set(cache_key, best.to_dict(), ex=86400)
+        return best
 
     if input_type != InputType.MANUFACTURER_REF:
         logger.debug(
@@ -706,7 +978,9 @@ def identify_product(query: str) -> ProductIdentification:
             input_type, best.identification_confidence,
         )
         best.web_search_failed = web_failed_any and not web_used
-        return _finalize_identification_stability(original, best)
+        best = _finalize_identification_stability(original, best)
+        cache_set(cache_key, best.to_dict(), ex=21600)
+        return best
 
     logger.info(
         "[product_identification] non fiable pour ref '%s' (conf=%d) -> retry",
@@ -718,10 +992,10 @@ def identify_product(query: str) -> ProductIdentification:
 
     # --- Attempt 2 ---
     retry_prompt = _retry_prompt_attempt2(original)
-    retry_system = _system_prompt_manufacturer_ref(use_web=openai_web_search_enabled())
+    retry_system = _system_prompt_manufacturer_ref(use_web=use_web)
     try:
         raw, r_sources, r_queries, r_web, r_failed = _call_with_optional_web(
-            retry_prompt, system_prompt=retry_system,
+            retry_prompt, system_prompt=retry_system, use_web=use_web,
         )
         web_failed_any = web_failed_any or r_failed
         all_sources.extend(r_sources)
@@ -732,6 +1006,7 @@ def identify_product(query: str) -> ProductIdentification:
         candidate = _build_identification(
             parsed, original, input_type, web_used, all_sources, all_queries, attempt_count=2,
         )
+        candidate = _normalize_identification_output(original, candidate)
         if candidate.identification_confidence > best.identification_confidence:
             best = candidate
             best.attempt_count = 2
@@ -753,7 +1028,7 @@ def identify_product(query: str) -> ProductIdentification:
     retry_prompt = _retry_prompt_attempt3(original, web_failed=web_failed_any)
     try:
         raw, r_sources, r_queries, r_web, r_failed = _call_with_optional_web(
-            retry_prompt, system_prompt=retry_system,
+            retry_prompt, system_prompt=retry_system, use_web=use_web,
         )
         web_failed_any = web_failed_any or r_failed
         all_sources.extend(r_sources)
@@ -764,6 +1039,7 @@ def identify_product(query: str) -> ProductIdentification:
         candidate = _build_identification(
             parsed, original, input_type, web_used, all_sources, all_queries, attempt_count=3,
         )
+        candidate = _normalize_identification_output(original, candidate)
         if candidate.identification_confidence > best.identification_confidence:
             best = candidate
             best.attempt_count = 3
@@ -791,7 +1067,9 @@ def identify_product(query: str) -> ProductIdentification:
     best.web_search_queries = list(dict.fromkeys(all_queries))[:8]
     best.web_search_used = web_used
     best.web_search_failed = web_failed_any and not web_used
-    return _finalize_identification_stability(original, best)
+    best = _finalize_identification_stability(original, best)
+    cache_set(cache_key, best.to_dict(), ex=21600 if best.identification_unstable else 86400)
+    return best
 
 
 def prepare_query_for_classification(query: str) -> tuple[str, ProductIdentification]:

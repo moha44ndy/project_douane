@@ -202,6 +202,28 @@ def apply_position_validation(
     if not hs_code:
         return False
 
+    # A vector candidate miss must not be followed by a second lexical
+    # overwrite. Preserve the model hypothesis as a provisional result.
+    if item.get("tec_candidate_outside_set"):
+        logger.info(
+            "[position_validator] advisory only for out-of-candidate code=%s",
+            hs_code,
+        )
+        return False
+
+    status = str(item.get("classification_status") or "").strip().casefold()
+    try:
+        confidence = float(item.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if status in {"confirmee", "confirmed", "final", "validee", "validated"} and confidence > 60:
+        logger.info(
+            "[position_validator] confirmed result kept code=%s confidence=%.1f",
+            hs_code,
+            confidence,
+        )
+        return False
+
     description = _build_description(item, product_identification)
     if not description:
         return False
@@ -215,39 +237,11 @@ def apply_position_validation(
     if not better:
         return False
 
-    margin = better["margin"]
-    better_pos = better["better_position"]
-    better_label = better["better_label"]
-    current_pos = better["current_position"]
-
     logger.info(
-        "[position_validator] CORRECTION: %s -> %s (margin=%.3f)",
-        current_pos, better_pos, margin,
+        "[position_validator] ADVISORY: keep=%s alternative=%s margin=%.3f",
+        better["current_position"],
+        better["better_position"],
+        better["margin"],
     )
-
-    item.setdefault("hs_code_suggested", hs_code)
-    item["hs_code"] = better_pos
-    item["classification_status"] = "provisoire"
-
-    cap = 55 if margin >= 0.3 else 60
-    try:
-        current_conf = int(round(float(item.get("confidence") or 90)))
-    except (TypeError, ValueError):
-        current_conf = 90
-    item["confidence"] = min(current_conf, cap)
-
-    label = better_label or _position_label(better_pos)
-    if label:
-        item["position_label"] = label
-
-    note = (
-        f"Position corrigee par validation TEC : {current_pos} -> {better_pos} "
-        f"({better_label[:60]}). "
-        f"Le libelle TEC de {better_pos} correspond mieux a la description du produit."
-    )
-    item["position_validation"] = better
-    justification = str(item.get("justification") or "").strip()
-    if note not in justification:
-        item["justification"] = f"{note} {justification}".strip()
-
-    return True
+    item["position_validation_advisory"] = better
+    return False

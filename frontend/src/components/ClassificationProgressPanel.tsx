@@ -4,6 +4,7 @@ import { ClassificationProgressStep } from "../lib/classificationStream";
 
 type ClassificationProgressPanelProps = {
   steps: ClassificationProgressStep[];
+  detail?: string | null;
 };
 
 function StepIcon({ status }: { status: ClassificationProgressStep["status"] }) {
@@ -32,7 +33,7 @@ function StepIcon({ status }: { status: ClassificationProgressStep["status"] }) 
   return <span className="mosam-progress-icon mosam-progress-icon-pending" aria-hidden="true" />;
 }
 
-export function ClassificationProgressPanel({ steps }: ClassificationProgressPanelProps) {
+export function ClassificationProgressPanel({ steps, detail }: ClassificationProgressPanelProps) {
   const activeStep = steps.find((step) => step.status === "active");
   const doneCount = steps.filter(
     (step) => step.status === "done" || step.status === "skipped"
@@ -51,7 +52,8 @@ export function ClassificationProgressPanel({ steps }: ClassificationProgressPan
           {doneCount}/{steps.length}
         </p>
       </div>
-      {activeStep && (
+      {detail && <p className="text-xs text-muted-foreground">{detail}</p>}
+      {!detail && activeStep && (
         <p className="text-xs text-muted-foreground">{activeStep.label}…</p>
       )}
       <ol className="space-y-2">

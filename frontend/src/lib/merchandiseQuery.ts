@@ -26,6 +26,19 @@ export function createEmptyMerchandiseRow(): MerchandiseRow {
   };
 }
 
+function looksLikeManufacturerReference(value: string): boolean {
+  const text = value.trim();
+  if (!text) return false;
+  const hasAlpha = /[A-Za-z]/.test(text);
+  const hasDigit = /\d/.test(text);
+  if (!hasAlpha || !hasDigit) return false;
+  const specialCount = (text.match(/[-_./]/g) ?? []).length;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 1) return true;
+  if (specialCount >= 1 && words.length <= 4) return true;
+  return /\b[A-Z]{1,5}[-_]?\d{2,}/i.test(text);
+}
+
 function formatQuantity(row: MerchandiseRow): string {
   const qty = row.quantity.trim();
   const unit = row.unit.trim();
@@ -35,6 +48,9 @@ function formatQuantity(row: MerchandiseRow): string {
 
 function rowToStructuredDossier(row: MerchandiseRow): string {
   const lines: string[] = [`Produit : ${row.designation.trim()}`];
+  if (looksLikeManufacturerReference(row.designation)) {
+    lines.push(`Reference fabricant : ${row.designation.trim()}`);
+  }
   if (row.material.trim()) {
     lines.push(`Composition :\n- ${row.material.trim()}`);
   }
@@ -64,6 +80,9 @@ function rowToStructuredDossier(row: MerchandiseRow): string {
 
 function rowToListLine(row: MerchandiseRow): string {
   const parts = [row.designation.trim()];
+  if (looksLikeManufacturerReference(row.designation)) {
+    parts.push(`reference fabricant ${row.designation.trim()}`);
+  }
   if (row.material.trim()) parts.push(`matière ${row.material.trim()}`);
   if (row.usage.trim()) parts.push(`usage ${row.usage.trim()}`);
   if (row.characteristics.trim()) parts.push(row.characteristics.trim());

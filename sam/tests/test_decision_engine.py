@@ -67,6 +67,28 @@ class TestDecisionEngine(unittest.TestCase):
         self.assertNotIn("criteres discriminants satisfaits", text.lower())
         self.assertIn("[Hypothese modele]", text)
 
+    def test_resolved_subposition_is_not_described_as_undetermined_when_overall_provisional(self) -> None:
+        decision = ClassificationDecision(
+            product_identified="Industrial controller",
+            position_code="42.02",
+            hs_code="4202.91.90.00",
+            chapter="42",
+            classification_status="provisoire",
+            subposition_status=None,
+            confidence=55,
+            subposition_resolution={
+                "status": "confirmed",
+                "matched_code": "4202.91.90.00",
+                "explanation": "Une seule sous-position confirmee.",
+            },
+        )
+
+        text = build_justification_from_decision(decision)
+
+        self.assertIn("Sous-position 4202.91.90.00", text)
+        self.assertNotIn("non determinable", text.lower())
+        self.assertNotIn("Arret au niveau", text)
+
     def test_render_outputs_replaces_llm_justification(self) -> None:
         source = "Sac de voyage compose de 40% polyester et 35% cuir"
         item = {

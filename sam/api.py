@@ -6,11 +6,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 import base64
+import contextvars
 import json as jsonlib
 import time
 import hmac
 import hashlib
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
@@ -49,6 +51,7 @@ from .description_quality import assess_description_quality, enrich_item_descrip
 from .tariff_labels import (
     build_heading_narrative_index,
     build_tariff_label_index,
+    get_position_label_index,
     lookup_position_label,
     resolve_hs_code_to_tec,
     set_heading_narrative_index,
@@ -63,6 +66,11 @@ from .tariff_notes import (
     set_chapter_titles_index,
 )
 from .tariff_position_rules import build_surface_sensitive_positions, set_surface_sensitive_positions
+from .tariff_hierarchy import build_tariff_hierarchy, set_tariff_hierarchy
+from .structured_tariff_retrieval import (
+    StructuredTariffRetriever,
+    set_structured_tariff_retriever,
+)
 from .rag import (
     ClassificationPipelineResult,
     add_validated_classification_example_to_index,
@@ -74,9 +82,19 @@ from .rag import (
     process_user_input,
 )
 from .config.settings import Config
-from .product_identification import product_identification_enabled, should_run_product_identification
+from .product_identification import (
+    InputType,
+    detect_input_type,
+    product_identification_enabled,
+    should_run_product_identification,
+)
 from .openai_web_search import openai_web_search_enabled
 from .classification_progress import ClassificationProgressReporter, sse_event, sse_init_event
+from .telemetry import (
+    increment_telemetry,
+    reset_request_telemetry,
+    start_request_telemetry,
+)
 from .app_logger import get_logger
 
 logger = get_logger(__name__)
@@ -84,7 +102,10 @@ logger = get_logger(__name__)
 _ALIAS_CACHE_LOCK = threading.Lock()
 _ALIAS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "aliases": {}}
 _ALIAS_CACHE_TTL_SECONDS = 60.0
-_CLASSIFY_CACHE_SCHEMA_VERSION = "v2"
+_CLASSIFY_CACHE_SCHEMA_VERSION = "v17"
+_SINGLE_ITEM_CACHE_SCHEMA_VERSION = "v12"
+_LEGACY_SINGLE_ITEM_CACHE_SCHEMA_VERSION = "v12"
+_QUALITY_REFRESHED_ITEM_CACHE_SCHEMA_VERSION = "v13"
 
 _ALIAS_FUZZY_THRESHOLD = 0.86  # seuil de similarite chaine->chaine (flou)
 
@@ -192,6 +213,488 @@ def _classify_cache_key(query: str) -> str:
     # d'agrégation/normalisation évolue.
     return f"classify:{_CLASSIFY_CACHE_SCHEMA_VERSION}:{digest}"
 
+
+def _extract_manufacturer_reference_for_cache(text: str) -> str:
+    raw = (text or "").strip()
+    labelled = re.search(
+        r"(?i)\b(?:reference\s+fabricant|manufacturer\s+reference|part\s+number|mpn)\s*:?\s*([^,;\n]+)",
+        raw,
+    )
+    if labelled:
+        segment = labelled.group(1).strip()
+        candidates = re.findall(
+            r"\b[A-Z0-9]+(?:[-_./][A-Z0-9]+)+\b",
+            segment,
+            flags=re.IGNORECASE,
+        )
+        if candidates:
+            return candidates[0].strip()
+        compact = re.findall(r"\b[A-Z]{1,8}\d[A-Z0-9]{2,}\b", segment, flags=re.IGNORECASE)
+        if compact:
+            return compact[0].strip()
+        numeric = re.findall(r"\b\d{6,20}\b", segment)
+        if numeric:
+            return numeric[0].strip()
+    product_line = re.search(r"(?im)^\s*Produit\s*:\s*([^\n]+)", raw)
+    search_scope = product_line.group(1).strip() if product_line else raw
+    candidates = re.findall(
+        r"\b[A-Z0-9]+(?:[-_./][A-Z0-9]+)+\b",
+        search_scope,
+        flags=re.IGNORECASE,
+    )
+    if candidates:
+        return candidates[0].strip()
+    compact = re.findall(
+        r"\b[A-Z]{1,8}\d[A-Z0-9]{2,}\b", search_scope, flags=re.IGNORECASE
+    )
+    return compact[0].strip() if compact else ""
+
+
+def _single_item_cache_schema_version_for_text(item_text: str) -> str:
+    """Refresh quality-sensitive families without invalidating every cached product."""
+    normalized = _strip_accents_ascii(item_text or "").casefold()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return _SINGLE_ITEM_CACHE_SCHEMA_VERSION
+
+    quality_sensitive_signals = (
+        "tablette",
+        "tablet",
+        "ipad",
+        "smartphone",
+        "telephone intelligent",
+        "switch",
+        "commutateur",
+        "routeur",
+        "router",
+        "ethernet",
+        "camera",
+        "imagerie",
+        "thermique",
+        "multispectral",
+        "storage array",
+        "baie de stockage",
+        "systeme complet de stockage",
+        "automate programmable",
+        "plc",
+        "controleur industriel",
+        "variateur",
+        "convertisseur statique",
+        "frequency drive",
+        "variable speed drive",
+        "robot industriel",
+        "robotise",
+    )
+    if any(signal in normalized for signal in quality_sensitive_signals):
+        return _QUALITY_REFRESHED_ITEM_CACHE_SCHEMA_VERSION
+    return _SINGLE_ITEM_CACHE_SCHEMA_VERSION
+
+
+def _single_item_classification_cache_key(item_text: str) -> str:
+    """Clé de cache stable pour une marchandise unitaire issue d'un upload."""
+    cache_basis = item_text or ""
+    ref = _extract_manufacturer_reference_for_cache(cache_basis)
+    if ref and (
+        re.search(r"[-_./]", ref)
+        or re.search(
+            r"(?i)\b(?:reference\s+fabricant|manufacturer\s+reference|part\s+number|mpn)\b",
+            cache_basis,
+        )
+    ):
+        evidence_lines: list[str] = []
+        for raw_line in cache_basis.splitlines():
+            line = raw_line.strip()
+            normalized_line = _strip_accents_ascii(line).casefold()
+            if not line or re.match(
+                r"^(?:quantite|qte|unite|origine|pays d'origine|valeur|devise)\s*:",
+                normalized_line,
+            ):
+                continue
+            if re.match(
+                r"^(?:produit|product|reference fabricant|manufacturer reference|part number|mpn)\s*:",
+                normalized_line,
+            ):
+                continue
+            evidence_lines.append(line)
+        evidence = re.sub(r"\s+", " ", " ".join(evidence_lines).casefold()).strip()
+        cache_basis = f"manufacturer_ref:{ref.casefold()}|evidence:{evidence}"
+    q = re.sub(r"\s+", " ", cache_basis.strip().lower())
+    digest = hashlib.sha256(q.encode("utf-8")).hexdigest()
+    schema_version = _single_item_cache_schema_version_for_text(item_text)
+    return f"classify:item:{schema_version}:{digest}"
+
+
+def _legacy_single_item_classification_cache_key(item_text: str) -> str:
+    """Old full-text key used only to migrate explicitly labelled references."""
+    if _single_item_cache_schema_version_for_text(item_text) != _LEGACY_SINGLE_ITEM_CACHE_SCHEMA_VERSION:
+        return _single_item_classification_cache_key(item_text)
+    if not re.search(
+        r"(?i)\b(?:reference\s+fabricant|manufacturer\s+reference|part\s+number|mpn)\b",
+        item_text or "",
+    ):
+        return _single_item_classification_cache_key(item_text)
+    q = re.sub(r"\s+", " ", (item_text or "").strip().lower())
+    digest = hashlib.sha256(q.encode("utf-8")).hexdigest()
+    return f"classify:item:{_LEGACY_SINGLE_ITEM_CACHE_SCHEMA_VERSION}:{digest}"
+
+
+def _safe_preview(text_value: str, *, limit: int = 80) -> str:
+    text_value = re.sub(r"\s+", " ", (text_value or "").strip())
+    if len(text_value) <= limit:
+        return text_value
+    return text_value[:limit] + "..."
+
+
+def _log_classification_request_summary(
+    request_id: str,
+    *,
+    query: str,
+    structured_items: list["MerchandiseItem"] | None = None,
+    source: str = "text",
+) -> None:
+    active_items = [item for item in (structured_items or []) if item.designation.strip()]
+    detail_rich_items = sum(
+        1
+        for item in active_items
+        if any((item.material.strip(), item.usage.strip(), item.characteristics.strip()))
+    )
+    logger.info(
+        "[classify %s] request source=%s query_len=%s query_preview=%r structured_items=%s detail_rich_items=%s",
+        request_id,
+        source,
+        len((query or "").strip()),
+        _safe_preview(query, limit=100),
+        len(active_items),
+        detail_rich_items,
+    )
+
+
+def _log_classification_result_summary(
+    request_id: str,
+    *,
+    raw_out: str,
+    source: str,
+    cache_hit: bool,
+) -> None:
+    try:
+        parsed = json.loads(raw_out)
+    except Exception:
+        logger.info(
+            "[classify %s] result source=%s cache_hit=%s parseable=false raw_len=%s",
+            request_id,
+            source,
+            cache_hit,
+            len(raw_out or ""),
+        )
+        return
+
+    classifications = parsed.get("classifications") if isinstance(parsed, dict) else None
+    count = len(classifications) if isinstance(classifications, list) else 0
+    logger.info(
+        "[classify %s] result source=%s cache_hit=%s classifications=%s narrative=%s raw_len=%s",
+        request_id,
+        source,
+        cache_hit,
+        count,
+        bool(isinstance(parsed, dict) and parsed.get("narrative")),
+        len(raw_out or ""),
+    )
+
+
+def _load_cached_single_item_classifications(items: list[str]) -> dict[str, dict[str, Any]]:
+    """Charge les classifications unitaires déjà disponibles en cache."""
+    cached: dict[str, dict[str, Any]] = {}
+    keyed_items = [
+        (item_text, _single_item_classification_cache_key(item_text)) for item_text in items
+    ]
+    if len(keyed_items) > 1:
+        workers = min(4, len(keyed_items))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            raw_values = list(executor.map(lambda pair: cache_get(pair[1]), keyed_items))
+    else:
+        raw_values = [cache_get(pair[1]) for pair in keyed_items]
+
+    legacy_candidates: list[tuple[int, str]] = []
+    for idx, ((item_text, cache_key), raw) in enumerate(zip(keyed_items, raw_values)):
+        legacy_key = _legacy_single_item_classification_cache_key(item_text)
+        if raw is None and legacy_key != cache_key:
+            legacy_candidates.append((idx, legacy_key))
+    if legacy_candidates:
+        workers = min(4, len(legacy_candidates))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            legacy_values = list(
+                executor.map(lambda pair: cache_get(pair[1]), legacy_candidates)
+            )
+        for (idx, _legacy_key), legacy_raw in zip(legacy_candidates, legacy_values):
+            if legacy_raw is not None:
+                raw_values[idx] = legacy_raw
+
+    migrated: dict[str, dict[str, Any]] = {}
+    legacy_hit_indices: set[int] = set()
+    if legacy_candidates:
+        legacy_hit_indices = {
+            idx
+            for (idx, _legacy_key), legacy_raw in zip(legacy_candidates, legacy_values)
+            if legacy_raw is not None
+        }
+
+    for idx, ((item_text, cache_key), raw) in enumerate(zip(keyed_items, raw_values)):
+        if raw is None:
+            increment_telemetry("single_item_classification_cache_load_miss")
+            logger.debug(
+                "[item-cache] MISS version=%s key=%s",
+                cache_key.split(":")[2],
+                cache_key[-12:],
+            )
+            continue
+        try:
+            decoded = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            increment_telemetry("single_item_classification_cache_invalid")
+            logger.warning(
+                "[item-cache] invalid JSON key=%s value_type=%s value_len=%s",
+                cache_key[-12:],
+                type(raw).__name__,
+                len(raw) if isinstance(raw, str) else 0,
+            )
+            continue
+        if _is_cacheable_single_item_classification(decoded):
+            cached[item_text] = dict(decoded)
+            increment_telemetry("single_item_classification_cache_load_hit")
+            logger.debug(
+                "[item-cache] HIT version=%s key=%s",
+                cache_key.split(":")[2],
+                cache_key[-12:],
+            )
+            if idx in legacy_hit_indices:
+                increment_telemetry("single_item_classification_cache_legacy_hit")
+                migrated[item_text] = dict(decoded)
+        else:
+            increment_telemetry("single_item_classification_cache_invalid")
+            logger.warning(
+                "[item-cache] invalid classification key=%s value_type=%s",
+                cache_key[-12:],
+                type(decoded).__name__,
+            )
+    if migrated:
+        _store_cached_single_item_classifications(migrated)
+    return cached
+
+
+def _is_cacheable_single_item_classification(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    hs_code = str(value.get("hs_code") or "").strip().lower()
+    return bool(hs_code and hs_code not in {"non renseigne", "non renseigné", "n/a"})
+
+
+def _store_cached_single_item_classification(
+    item_text: str,
+    classification: dict[str, Any],
+    *,
+    ttl_seconds: int = 86400,
+) -> bool:
+    if not item_text or not _is_cacheable_single_item_classification(classification):
+        increment_telemetry("single_item_classification_cache_store_skipped")
+        return False
+    cache_key = _single_item_classification_cache_key(item_text)
+    stored = cache_set(
+        cache_key,
+        json.dumps(classification, ensure_ascii=False),
+        ex=ttl_seconds,
+    )
+    if stored:
+        increment_telemetry("single_item_classification_cache_store")
+        logger.debug(
+            "[item-cache] STORE version=%s key=%s",
+            cache_key.split(":")[2],
+            cache_key[-12:],
+        )
+    else:
+        increment_telemetry("single_item_classification_cache_store_failed")
+        logger.warning("[item-cache] STORE failed key=%s", cache_key[-12:])
+    return stored
+
+
+def _store_cached_single_item_classifications(
+    entries: dict[str, dict[str, Any]],
+) -> None:
+    """Store several item results with bounded cache I/O concurrency."""
+    cacheable = [
+        (item_text, classification)
+        for item_text, classification in entries.items()
+        if _is_cacheable_single_item_classification(classification)
+    ]
+    if not cacheable:
+        return
+    if len(cacheable) == 1:
+        _store_cached_single_item_classification(*cacheable[0])
+        return
+
+    workers = min(4, len(cacheable))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = []
+        for item_text, classification in cacheable:
+            ctx = contextvars.copy_context()
+            futures.append(
+                executor.submit(
+                    ctx.run,
+                    _store_cached_single_item_classification,
+                    item_text,
+                    classification,
+                )
+            )
+        for future in futures:
+            future.result()
+
+
+def _build_placeholder_classification(item_text: str, reason: str) -> dict[str, Any]:
+    return {
+        "description": item_text[:200],
+        "hs_code": "Non renseigné",
+        "section": "N/A",
+        "section_name": "",
+        "chapter": "N/A",
+        "chapter_name": "",
+        "dd_rate": "N/R",
+        "rs_rate": "N/R",
+        "us_unit": "",
+        "other_taxes": "",
+        "justification": reason,
+        "excerpt": "",
+        "origin": "Non renseigné",
+        "value": "Non renseigné",
+        "confidence": 0,
+    }
+
+
+def _classification_provider_failure_code(exc: BaseException) -> str:
+    """Return a stable code only for recoverable external AI-provider failures."""
+    current: BaseException | None = exc
+    messages: list[str] = []
+    status_codes: set[int] = set()
+    class_names: set[str] = set()
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        messages.append(str(current).casefold())
+        class_names.add(type(current).__name__.casefold())
+        status = getattr(current, "status_code", None)
+        if isinstance(status, int):
+            status_codes.add(status)
+        current = current.__cause__ or current.__context__
+
+    combined = " ".join(messages)
+    if "insufficient_quota" in combined or "exceeded your current quota" in combined:
+        return "openai_quota_exhausted"
+    if 429 in status_codes or "ratelimiterror" in class_names:
+        return "openai_rate_limited"
+    if (
+        status_codes.intersection({408, 502, 503, 504})
+        or class_names.intersection({"apiconnectionerror", "apitimeouterror", "timeout"})
+    ):
+        return "ai_provider_temporarily_unavailable"
+    return ""
+
+
+def _build_provider_failure_placeholder(
+    item_text: str,
+    failure_code: str,
+) -> dict[str, Any]:
+    messages = {
+        "openai_quota_exhausted": (
+            "Service IA indisponible: quota OpenAI epuise. "
+            "Cet article peut etre relance sans retraiter les articles deja mis en cache."
+        ),
+        "openai_rate_limited": (
+            "Service IA temporairement limite. Cet article peut etre relance."
+        ),
+        "ai_provider_temporarily_unavailable": (
+            "Service IA temporairement indisponible. Cet article peut etre relance."
+        ),
+    }
+    placeholder = _build_placeholder_classification(
+        item_text,
+        messages.get(failure_code, "Service IA temporairement indisponible."),
+    )
+    placeholder.update({
+        "classification_status": "provisoire",
+        "retryable": True,
+        "error_code": failure_code or "ai_provider_temporarily_unavailable",
+    })
+    return placeholder
+
+
+def _classify_items_individually_with_cache(
+    items: list[str],
+    *,
+    request_id: str,
+    chunks: list[Any],
+    index: Any,
+    progress: ClassificationProgressReporter | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Classifie des items un par un seulement si necessaire, avec cache persistant."""
+    single_item_cache = _load_cached_single_item_classifications(items)
+    pending_items = [item for item in items if item not in single_item_cache]
+    increment_telemetry("single_item_cache_hit", len(single_item_cache))
+    increment_telemetry("fallback_items_pending", len(pending_items))
+
+    logger.info(
+        "[classify %s] per-item recovery cache_hits=%s pending=%s",
+        request_id,
+        len(single_item_cache),
+        len(pending_items),
+    )
+    if progress and single_item_cache:
+        progress.detail(
+            f"Cache utilise pour {len(single_item_cache)} article(s); "
+            f"{len(pending_items)} article(s) a classifier"
+        )
+
+    for item_idx, item_text in enumerate(pending_items, start=1):
+        if progress:
+            progress.detail(f"Fallback individuel {item_idx}/{len(pending_items)}")
+        single_input = f"- {item_text}"
+        single_pipeline = _unwrap_pipeline_result(
+            process_user_input(
+                single_input,
+                chunks,
+                index,
+                validated_index=getattr(app.state, "classifications_index", None),
+                validated_meta=getattr(app.state, "classifications_meta", None),
+            )
+        )
+        normalized_single = _finalize_classification_response(
+            single_pipeline.llm_raw,
+            single_pipeline.product_identifications,
+        )
+        single_raw_out = _ensure_json_raw(normalized_single)
+        _inspect_raw_json(
+            single_raw_out,
+            request_id,
+            f"STRUCTURED_FALLBACK_ITEM_{item_idx}",
+        )
+        try:
+            decoded_single = json.loads(single_raw_out)
+        except Exception:
+            decoded_single = None
+
+        if isinstance(decoded_single, dict):
+            single_classes = decoded_single.get("classifications") or []
+            if isinstance(single_classes, list) and single_classes:
+                first = single_classes[0]
+                if isinstance(first, dict):
+                    single_item_cache[item_text] = dict(first)
+                    _store_cached_single_item_classification(item_text, dict(first))
+                    continue
+
+        single_item_cache[item_text] = _build_placeholder_classification(
+            item_text,
+            "fallback: classification individuelle non exploitable",
+        )
+
+    return single_item_cache
+
 # Dependency FastAPI pour endpoints admin.
 # (La fonction `_require_admin` est définie plus bas ; ici on ne fait que
 # déléguer, le nom est résolu au moment de l'appel.)
@@ -298,6 +801,15 @@ class ClassifyFileResponse(BaseModel):
     items_count: int
 
 
+class ImportMerchandiseResponse(BaseModel):
+    """Réponse pour import de lignes marchandise vers le tableau frontend."""
+
+    items: list[MerchandiseItem]
+    items_count: int
+    detected_columns: list[str] = []
+    source_type: str
+
+
 class ValidateClassificationRequest(BaseModel):
     """
     Données envoyées par le frontend lorsqu'un agent
@@ -333,6 +845,17 @@ class ValidateClassificationRequest(BaseModel):
     identification_confidence: float | None = None
     product_identification: dict[str, Any] | None = None
     source_query: str | None = None
+
+
+def _normalized_hs_code_for_storage(hs_code: str) -> str:
+    code = (hs_code or "").strip()
+    normalized = _strip_accents_ascii(code).casefold()
+    if not code or normalized in {"n/a", "na", "non renseigne", "non determine"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Un code tarifaire est requis avant validation.",
+        )
+    return code
 
 
 _CLASSIFICATION_ENRICHMENT_SELECT = """
@@ -500,9 +1023,20 @@ def _normalize_classifications_response(
     if not isinstance(classifications, list):
         return raw_text
 
-    from .candidate_set_enforcer import attach_candidates_to_classifications
+    from .candidate_set_enforcer import (
+        attach_candidates_to_classifications,
+        recover_missing_heading_from_candidates,
+    )
 
     attach_candidates_to_classifications(classifications, product_identifications)
+
+    for item in classifications:
+        if isinstance(item, dict):
+            candidates = item.get("tec_position_candidates")
+            recover_missing_heading_from_candidates(
+                item,
+                candidates if isinstance(candidates, list) else None,
+            )
 
     for item in classifications:
         if not isinstance(item, dict):
@@ -593,7 +1127,8 @@ def _normalize_classifications_response(
                 })
                 break
 
-    from .functional_coherence import apply_functional_coherence_gate
+    from .functional_coherence import apply_functional_coherence_gate, enforce_functional_coherence_cap
+    from .candidate_set_enforcer import enforce_candidate_evidence_cap
 
     for idx, item in enumerate(data["classifications"]):
         if not isinstance(item, dict):
@@ -648,6 +1183,8 @@ def _normalize_classifications_response(
             source = item.get("source_query") or item.get("description")
             enrich_item_description_quality(item, source_text=source)
             apply_completeness_adjustments(item, source_text=source)
+            enforce_candidate_evidence_cap(item)
+            enforce_functional_coherence_cap(item)
             hs = item.get("hs_code")
             if hs:
                 normalized = _normalize_section_chapter_from_hs(str(hs))
@@ -916,6 +1453,23 @@ def _ensure_json_raw(raw: Any) -> str:
         return json.dumps({"error": "json_serialize_failed", "raw_preview": s[:200]}, ensure_ascii=False)
 
 
+def _validated_cached_response_raw(raw: Any) -> str | None:
+    """Return cached JSON unchanged only when its classification shape is valid."""
+    raw_text = _ensure_json_raw(raw)
+    try:
+        parsed = json.loads(raw_text)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    classifications = parsed.get("classifications")
+    if not isinstance(classifications, list):
+        return None
+    if any(not isinstance(item, dict) for item in classifications):
+        return None
+    return raw_text
+
+
 def _unwrap_pipeline_result(
     result: ClassificationPipelineResult | str,
 ) -> ClassificationPipelineResult:
@@ -933,7 +1487,8 @@ def _attach_product_identification(
     active = [
         entry
         for entry in product_identifications
-        if isinstance(entry, dict) and not entry.get("skipped")
+        if isinstance(entry, dict)
+        and (not entry.get("skipped") or isinstance(entry.get("product_evidence"), dict))
     ]
     if not active:
         return
@@ -945,7 +1500,9 @@ def _attach_product_identification(
         if not isinstance(item, dict) or index >= len(product_identifications):
             continue
         entry = product_identifications[index]
-        if isinstance(entry, dict) and not entry.get("skipped"):
+        if isinstance(entry, dict) and (
+            not entry.get("skipped") or isinstance(entry.get("product_evidence"), dict)
+        ):
             item["product_identification"] = entry
             web_sources = entry.get("web_sources") or []
             if isinstance(web_sources, list) and web_sources:
@@ -1927,6 +2484,17 @@ def startup_event() -> None:
     chapter_titles_index = build_chapter_titles_index(chunks)
     set_chapter_titles_index(chapter_titles_index)
     app.state.chapter_titles_index = chapter_titles_index
+    tariff_hierarchy = build_tariff_hierarchy(
+        tariff_label_index,
+        get_position_label_index(),
+        chapter_titles_index,
+        tariff_rate_index,
+    )
+    set_tariff_hierarchy(tariff_hierarchy)
+    app.state.tariff_hierarchy = tariff_hierarchy
+    structured_tariff_retriever = StructuredTariffRetriever(tariff_hierarchy)
+    set_structured_tariff_retriever(structured_tariff_retriever)
+    app.state.structured_tariff_retriever = structured_tariff_retriever
     surface_sensitive_positions = build_surface_sensitive_positions(tariff_label_index)
     set_surface_sensitive_positions(surface_sensitive_positions)
     app.state.surface_sensitive_positions = surface_sensitive_positions
@@ -1934,6 +2502,17 @@ def startup_event() -> None:
     logger.info("%s grilles de taux TEC indexees depuis les chunks", len(tariff_rate_index))
     logger.info("%s chapitres avec notes TEC indexes", len(chapter_notes_index))
     logger.info("%s titres de chapitres indexes depuis les chunks TEC", len(chapter_titles_index))
+    logger.info(
+        "%s noeuds TEC structures (source=%s, synthetiques=%s, orphelins=%s)",
+        tariff_hierarchy.validation.node_count,
+        tariff_hierarchy.validation.source_node_count,
+        tariff_hierarchy.validation.synthetic_node_count,
+        tariff_hierarchy.validation.orphan_count,
+    )
+    logger.info(
+        "%s positions TEC indexees pour la recherche lexicale structuree",
+        structured_tariff_retriever.document_count,
+    )
     logger.info("%s positions sensibles a la surface exterieure (TEC)", len(surface_sensitive_positions))
     if product_identification_enabled():
         logger.info("Agent d'identification produit active (OpenAI)")
@@ -2060,15 +2639,25 @@ def _ensure_classification_schema() -> None:
             db.execute(
                 text(
                     """
-                    alter table public.classification_dossiers
-                    add constraint classification_dossiers_owner_user_id_fkey
-                    foreign key (owner_user_id) references public.users(id)
-                    on delete cascade
+                    do $$
+                    begin
+                      if not exists (
+                        select 1
+                        from pg_constraint
+                        where conname = 'classification_dossiers_owner_user_id_fkey'
+                          and conrelid = 'public.classification_dossiers'::regclass
+                      ) then
+                        alter table public.classification_dossiers
+                        add constraint classification_dossiers_owner_user_id_fkey
+                        foreign key (owner_user_id) references public.users(id)
+                        on delete cascade;
+                      end if;
+                    end $$;
                     """
                 )
             )
         except Exception:
-            logger.debug("[schema] FK classification_dossiers.owner_user_id deja presente", exc_info=True)
+            logger.debug("[schema] FK classification_dossiers.owner_user_id indisponible", exc_info=True)
         db.commit()
 
 
@@ -3604,13 +4193,13 @@ _TABULAR_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "nom",
         "details",
     ),
-    "material": ("matiere", "composition", "matiere principale"),
+    "material": ("material", "matiere", "composition", "matiere principale"),
     "usage": ("usage", "fonction", "utilisation", "emploi"),
-    "characteristics": ("caracteristique", "specification", "spec"),
+    "characteristics": ("characteristics", "caracteristique", "specification", "spec"),
     "quantity": ("qte", "quantite", "qty", "quantity", "nombre"),
-    "unit": ("unite", "unite de mesure", "u.s.", "us"),
-    "origin": ("origine", "pays d'origine", "pays origine", "provenance", "pays"),
-    "value": ("valeur", "montant", "prix"),
+    "unit": ("unit", "unite", "unite de mesure", "u.s.", "us"),
+    "origin": ("origin", "origine", "pays d'origine", "pays origine", "provenance", "pays"),
+    "value": ("value", "valeur", "montant", "prix"),
     "currency": ("devise", "monnaie", "currency"),
 }
 
@@ -3740,6 +4329,60 @@ def _item_text_from_tabular_row(
     return item or None
 
 
+def _structured_row_from_tabular_row(
+    row: list[str],
+    col_map: dict[str, int | None] | None,
+) -> MerchandiseItem | None:
+    non_empty = [c for c in row if c.strip()]
+    if not non_empty:
+        return None
+
+    def cell_at(field: str) -> str:
+        if not col_map:
+            return ""
+        idx = col_map.get(field)
+        if idx is None or idx >= len(row):
+            return ""
+        return row[idx].strip()
+
+    if col_map:
+        designation = cell_at("designation") or next((c for c in row if c.strip()), "")
+        material = cell_at("material")
+        usage = cell_at("usage")
+        characteristics = cell_at("characteristics")
+        quantity = cell_at("quantity")
+        unit = cell_at("unit")
+        origin = cell_at("origin")
+        value = cell_at("value")
+        currency = cell_at("currency")
+    else:
+        designation = non_empty[0]
+        material = row[1].strip() if len(row) > 1 else ""
+        usage = row[2].strip() if len(row) > 2 else ""
+        characteristics = row[3].strip() if len(row) > 3 else ""
+        quantity = row[4].strip() if len(row) > 4 else ""
+        unit = row[5].strip() if len(row) > 5 else ""
+        origin = row[6].strip() if len(row) > 6 else ""
+        value = row[7].strip() if len(row) > 7 else ""
+        currency = row[8].strip() if len(row) > 8 else ""
+
+    designation = _clean_text_line(designation)
+    if not designation:
+        return None
+
+    return MerchandiseItem(
+        designation=designation,
+        material=_clean_text_line(material),
+        usage=_clean_text_line(usage),
+        characteristics=_clean_text_line(characteristics),
+        quantity=_clean_text_line(quantity),
+        unit=_clean_text_line(unit),
+        origin=_clean_text_line(origin),
+        value=_clean_text_line(value),
+        currency=_clean_text_line(currency),
+    )
+
+
 def _extract_items_from_tabular_rows(
     rows: list[list[Any]],
     max_items: int,
@@ -3769,6 +4412,37 @@ def _extract_items_from_tabular_rows(
     return effective_query, items
 
 
+def _extract_structured_rows_from_tabular_rows(
+    rows: list[list[Any]],
+    max_items: int,
+) -> tuple[list[MerchandiseItem], list[str]]:
+    str_rows: list[list[str]] = []
+    for row in rows:
+        cells = [_clean_text_line(_cell_to_str(c)) for c in row]
+        if any(cells):
+            str_rows.append(cells)
+    if not str_rows:
+        return [], []
+
+    first = str_rows[0]
+    header_detected = _tabular_header_detected(first)
+    col_map = _detect_tabular_columns(first) if header_detected else None
+    data_rows = str_rows[1:] if header_detected else str_rows
+    detected_columns = [
+        field for field, idx in (col_map or {}).items() if idx is not None
+    ]
+
+    items: list[MerchandiseItem] = []
+    for row in data_rows:
+        item = _structured_row_from_tabular_row(row, col_map)
+        if item:
+            items.append(item)
+        if len(items) >= max_items:
+            break
+
+    return items, detected_columns
+
+
 def _extract_items_from_xlsx(xlsx_bytes: bytes, max_items: int) -> tuple[str, list[str]]:
     from openpyxl import load_workbook
 
@@ -3793,6 +4467,36 @@ def _extract_items_from_xlsx(xlsx_bytes: bytes, max_items: int) -> tuple[str, li
     return effective_query, items
 
 
+def _extract_structured_rows_from_xlsx(
+    xlsx_bytes: bytes,
+    max_items: int,
+) -> tuple[list[MerchandiseItem], list[str]]:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+    items: list[MerchandiseItem] = []
+    detected_columns: list[str] = []
+    try:
+        for sheet in wb.worksheets:
+            rows: list[list[Any]] = []
+            for row in sheet.iter_rows(values_only=True):
+                rows.append(list(row))
+            if not rows:
+                continue
+            sheet_items, sheet_columns = _extract_structured_rows_from_tabular_rows(
+                rows, max_items - len(items)
+            )
+            if sheet_columns and not detected_columns:
+                detected_columns = sheet_columns
+            items.extend(sheet_items)
+            if len(items) >= max_items:
+                break
+    finally:
+        wb.close()
+
+    return items[:max_items], detected_columns
+
+
 def _extract_items_from_xls(xls_bytes: bytes, max_items: int) -> tuple[str, list[str]]:
     import xlrd
 
@@ -3812,6 +4516,33 @@ def _extract_items_from_xls(xls_bytes: bytes, max_items: int) -> tuple[str, list
     items = items[:max_items]
     effective_query = "\n".join([f"- {it}" for it in items]) if items else ""
     return effective_query, items
+
+
+def _extract_structured_rows_from_xls(
+    xls_bytes: bytes,
+    max_items: int,
+) -> tuple[list[MerchandiseItem], list[str]]:
+    import xlrd
+
+    book = xlrd.open_workbook(file_contents=xls_bytes)
+    items: list[MerchandiseItem] = []
+    detected_columns: list[str] = []
+    for sheet in book.sheets():
+        rows: list[list[Any]] = []
+        for rx in range(sheet.nrows):
+            rows.append([sheet.cell_value(rx, cx) for cx in range(sheet.ncols)])
+        if not rows:
+            continue
+        sheet_items, sheet_columns = _extract_structured_rows_from_tabular_rows(
+            rows, max_items - len(items)
+        )
+        if sheet_columns and not detected_columns:
+            detected_columns = sheet_columns
+        items.extend(sheet_items)
+        if len(items) >= max_items:
+            break
+
+    return items[:max_items], detected_columns
 
 
 def _extract_items_from_docx(docx_bytes: bytes, max_items: int) -> tuple[str, list[str]]:
@@ -3875,6 +4606,26 @@ def _extract_items_from_csv(csv_text: str, max_items: int) -> tuple[str, list[st
         return "", []
 
     return _extract_items_from_tabular_rows(rows, max_items)
+
+
+def _extract_structured_rows_from_csv(
+    csv_text: str,
+    max_items: int,
+) -> tuple[list[MerchandiseItem], list[str]]:
+    csv_text = (csv_text or "").strip()
+    if not csv_text:
+        return [], []
+
+    sample = csv_text[:4096]
+    dialect = _sniff_csv_dialect(sample)
+
+    f = io.StringIO(csv_text)
+    reader = csv.reader(f, dialect)
+    rows = list(reader)
+    if not rows:
+        return [], []
+
+    return _extract_structured_rows_from_tabular_rows(rows, max_items)
 
 
 def _extract_items_from_json(json_text: str, max_items: int) -> tuple[str, list[str]]:
@@ -3945,6 +4696,76 @@ def _extract_items_from_json(json_text: str, max_items: int) -> tuple[str, list[
 
     effective_query = "\n".join(items)
     return effective_query, items
+
+
+@app.post(
+    "/import/merchandise",
+    response_model=ImportMerchandiseResponse,
+    tags=["classification"],
+)
+async def import_merchandise_file(
+    file: UploadFile = File(...),
+    max_items: int = 500,
+) -> ImportMerchandiseResponse:
+    """Importe des lignes marchandise structurees depuis Excel/CSV vers le formulaire frontend."""
+    request_id = uuid.uuid4().hex[:8]
+
+    if max_items < 1 or max_items > 500:
+        raise HTTPException(status_code=400, detail="max_items doit etre entre 1 et 500")
+
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Fichier vide")
+    if len(raw_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 10MB)")
+
+    filename = (file.filename or "").strip()
+    ext = _resolve_upload_extension(filename, file.content_type)
+    logger.info(
+        "[import-merchandise %s] filename=%r content_type=%r ext=%r",
+        request_id,
+        filename,
+        file.content_type,
+        ext,
+    )
+
+    try:
+        if ext in {"xlsx", "xlsm"}:
+            items, detected_columns = _extract_structured_rows_from_xlsx(raw_bytes, max_items)
+        elif ext == "xls":
+            items, detected_columns = _extract_structured_rows_from_xls(raw_bytes, max_items)
+        elif ext == "csv":
+            text_content = raw_bytes.decode("utf-8", errors="ignore")
+            items, detected_columns = _extract_structured_rows_from_csv(text_content, max_items)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Import tableau supporte uniquement: csv, xlsx, xls, xlsm",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("[import-merchandise %s] import echoue", request_id)
+        raise HTTPException(status_code=500, detail=f"Import fichier echoue: {type(exc).__name__}") from exc
+
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail="Aucune ligne marchandise exploitable detectee dans le fichier.",
+        )
+
+    logger.info(
+        "[import-merchandise %s] imported_rows=%s detected_columns=%s",
+        request_id,
+        len(items),
+        ",".join(detected_columns) if detected_columns else "none",
+    )
+    return ImportMerchandiseResponse(
+        items=items,
+        items_count=len(items),
+        detected_columns=detected_columns,
+        source_type=ext,
+    )
 
 
 @app.post(
@@ -4110,20 +4931,31 @@ async def classify_file(
         ]
 
         narrative: str | None = None
-        merged_classifications: list[dict[str, Any]] = []
 
         # Cache in-memory pour éviter de refaire le LLM plusieurs fois
         # sur des items identiques dans le même upload (important pour les gros fichiers).
         # Key = sha256(item_text), value = premier élément de `classifications`.
-        single_item_cache: dict[str, dict[str, Any]] = {}
+        single_item_cache = _load_cached_single_item_classifications(unique_items)
+        pending_items = [it for it in unique_items if it not in single_item_cache]
 
-        for batch_idx, batch_items in enumerate(batches, start=1):
+        logger.debug(
+            "[classify-file %s] single-item cache hits=%s pending=%s",
+            request_id,
+            len(single_item_cache),
+            len(pending_items),
+        )
+
+        pending_batches: list[list[str]] = [
+            pending_items[i : i + batch_size] for i in range(0, len(pending_items), batch_size)
+        ]
+
+        for batch_idx, batch_items in enumerate(pending_batches, start=1):
             batch_input = "\n".join([f"- {it}" for it in batch_items])
             logger.debug(
                 "[classify-file %s] batch %s/%s size=%s",
                 request_id,
                 batch_idx,
-                len(batches),
+                len(pending_batches),
                 len(batch_items),
             )
 
@@ -4179,14 +5011,9 @@ async def classify_file(
                         returned_n,
                         expected_n,
                     )
-                    merged_classifications.extend([])
                     for it_idx, it in enumerate(batch_items, start=1):
-                        item_hash = hashlib.sha256(
-                            (it or "").encode("utf-8", errors="ignore")
-                        ).hexdigest()
-                        cached_single = single_item_cache.get(item_hash)
+                        cached_single = single_item_cache.get(it)
                         if cached_single:
-                            merged_classifications.append(cached_single)
                             continue
 
                         single_input = f"- {it}"
@@ -4219,32 +5046,10 @@ async def classify_file(
                             if isinstance(single_classes, list) and single_classes:
                                 first = single_classes[0]
                                 if isinstance(first, dict):
-                                    single_item_cache[item_hash] = first
-                                    merged_classifications.append(first)
+                                    single_item_cache[it] = dict(first)
+                                    _store_cached_single_item_classification(it, dict(first))
                                 else:
-                                    merged_classifications.append(
-                                        {
-                                            "description": it[:200],
-                                            "hs_code": "Non renseigné",
-                                            "section": "N/A",
-                                            "section_name": "",
-                                            "chapter": "N/A",
-                                            "chapter_name": "",
-                                            "dd_rate": "N/R",
-                                            "rs_rate": "N/R",
-                                            "us_unit": "",
-                                            "other_taxes": "",
-                                            "justification": "fallback: format classification inattendu",
-                                            "excerpt": "",
-                                            "origin": "Non renseigné",
-                                            "value": "Non renseigné",
-                                            "confidence": 0,
-                                        }
-                                    )
-                            else:
-                                # fallback vide : on pousse quand même un objet placeholder
-                                merged_classifications.append(
-                                    {
+                                    single_item_cache[it] = {
                                         "description": it[:200],
                                         "hs_code": "Non renseigné",
                                         "section": "N/A",
@@ -4255,16 +5060,15 @@ async def classify_file(
                                         "rs_rate": "N/R",
                                         "us_unit": "",
                                         "other_taxes": "",
-                                        "justification": "fallback: modèle n'a pas renvoyé de classification",
+                                        "justification": "fallback: format classification inattendu",
                                         "excerpt": "",
                                         "origin": "Non renseigné",
                                         "value": "Non renseigné",
                                         "confidence": 0,
                                     }
-                                )
-                        else:
-                            merged_classifications.append(
-                                {
+                            else:
+                                # fallback vide : on pousse quand même un objet placeholder
+                                single_item_cache[it] = {
                                     "description": it[:200],
                                     "hs_code": "Non renseigné",
                                     "section": "N/A",
@@ -4275,15 +5079,61 @@ async def classify_file(
                                     "rs_rate": "N/R",
                                     "us_unit": "",
                                     "other_taxes": "",
-                                    "justification": "fallback: réponse non parsable",
+                                    "justification": "fallback: modèle n'a pas renvoyé de classification",
                                     "excerpt": "",
                                     "origin": "Non renseigné",
                                     "value": "Non renseigné",
                                     "confidence": 0,
                                 }
-                            )
+                        else:
+                            single_item_cache[it] = {
+                                "description": it[:200],
+                                "hs_code": "Non renseigné",
+                                "section": "N/A",
+                                "section_name": "",
+                                "chapter": "N/A",
+                                "chapter_name": "",
+                                "dd_rate": "N/R",
+                                "rs_rate": "N/R",
+                                "us_unit": "",
+                                "other_taxes": "",
+                                "justification": "fallback: réponse non parsable",
+                                "excerpt": "",
+                                "origin": "Non renseigné",
+                                "value": "Non renseigné",
+                                "confidence": 0,
+                            }
                 else:
-                    merged_classifications.extend(batch_classes)
+                    for src_text, cls in zip(batch_items, batch_classes):
+                        if isinstance(cls, dict):
+                            single_item_cache[src_text] = dict(cls)
+                            _store_cached_single_item_classification(src_text, dict(cls))
+
+        merged_classifications: list[dict[str, Any]] = []
+        for src_text in unique_items:
+            cached_cls = single_item_cache.get(src_text)
+            if isinstance(cached_cls, dict):
+                merged_classifications.append(dict(cached_cls))
+            else:
+                merged_classifications.append(
+                    {
+                        "description": src_text[:200],
+                        "hs_code": "Non renseigné",
+                        "section": "N/A",
+                        "section_name": "",
+                        "chapter": "N/A",
+                        "chapter_name": "",
+                        "dd_rate": "N/R",
+                        "rs_rate": "N/R",
+                        "us_unit": "",
+                        "other_taxes": "",
+                        "justification": "cache/build: classification manquante",
+                        "excerpt": "",
+                        "origin": "Non renseigné",
+                        "value": "Non renseigné",
+                        "confidence": 0,
+                    }
+                )
 
         # À ce stade, `merged_classifications` est aligné sur `unique_items` :
         # une classification par description distincte. On ajoute donc un champ
@@ -4331,7 +5181,7 @@ async def classify_file(
         request_id,
         len(raw_out),
         raw_out[:80],
-        (len(unique_items) + batch_size - 1) // batch_size,
+        (len(pending_items) + batch_size - 1) // batch_size if pending_items else 0,
         len(unique_items),
         total_quantity,
     )
@@ -4362,16 +5212,15 @@ def _should_skip_identification_for_structured(items: list[MerchandiseItem]) -> 
         return True
     if any(_structured_item_lacks_product_detail(mi) for mi in active):
         return False
-    for mi in active:
-        dossier = _structured_item_to_dossier(mi)
-        if should_run_product_identification(dossier):
-            return False
     return True
 
 
 def _structured_item_to_dossier(item: MerchandiseItem) -> str:
     """Convertit un MerchandiseItem structuré en texte de dossier pour le pipeline."""
-    lines: list[str] = [f"Produit : {item.designation.strip()}"]
+    designation = item.designation.strip()
+    lines: list[str] = [f"Produit : {designation}"]
+    if detect_input_type(designation) == InputType.MANUFACTURER_REF:
+        lines.append(f"Reference fabricant : {designation}")
     if item.material.strip():
         lines.append(f"Composition :\n- {item.material.strip()}")
     if item.usage.strip():
@@ -4441,6 +5290,14 @@ def _build_structured_inputs(
             "quantity_source": "explicit",
             "quantity_raw": qty_str,
             "quantity_confidence": 95,
+            "designation": designation,
+            "material": mi.material.strip(),
+            "usage": mi.usage.strip(),
+            "characteristics": mi.characteristics.strip(),
+            "unit": mi.unit.strip(),
+            "origin": mi.origin.strip(),
+            "value": mi.value.strip(),
+            "currency": mi.currency.strip(),
         }
 
     if len(unique_items) == 1:
@@ -4452,6 +5309,415 @@ def _build_structured_inputs(
     return classify_input, unique_items, item_counts, item_meta
 
 
+def _merge_item_metadata_into_classifications(
+    classifications: list[Any],
+    unique_items: list[str],
+    item_counts: dict[str, int],
+    item_meta: dict[str, dict[str, Any]],
+    classify_input: str,
+    query: str,
+) -> list[dict[str, Any]]:
+    """Reinjecte les metadonnees formulaire dans la reponse finale."""
+    merged: list[dict[str, Any]] = []
+    for idx, raw_item in enumerate(classifications):
+        if not isinstance(raw_item, dict):
+            continue
+        item = dict(raw_item)
+        src = unique_items[idx] if idx < len(unique_items) else ""
+        qty = int(item_counts.get(src, 1))
+        if qty < 1:
+            qty = 1
+        meta = item_meta.get(src, {}) if src else {}
+
+        # Commercial fields belong to the current request, not to a cached
+        # tariff decision for the same manufacturer reference.
+        item["quantity"] = qty
+        item["quantity_source"] = meta.get("quantity_source", "explicit")
+        item["quantity_raw"] = meta.get("quantity_raw", "")
+        item["quantity_confidence"] = meta.get("quantity_confidence", 60)
+        item.setdefault("description_quality", meta.get("description_quality"))
+        if item.get("description_quality") is None:
+            enrich_item_description_quality(item, source_text=src or classify_input or query)
+
+        # The user's structured designation is authoritative display data. The
+        # model may abbreviate names at punctuation (for example, 3.84TB).
+        if meta.get("designation"):
+            model_description = str(item.get("description") or "").strip()
+            if model_description and model_description != meta["designation"]:
+                item.setdefault("classified_product_type", model_description)
+            item["description"] = meta["designation"]
+        origin = str(meta.get("origin") or "").strip()
+        value = str(meta.get("value") or "").strip()
+        currency = str(meta.get("currency") or "").strip()
+        item["origin"] = origin or "Non renseigné"
+        item["value"] = (
+            f"{value} {currency}".strip() if value and currency else value or "Non renseigné"
+        )
+
+        item["source_query"] = src or classify_input or (query or "")
+        merged.append(item)
+    return merged
+
+
+def _structured_form_batch_size() -> int:
+    try:
+        configured = int(getattr(Config, "MOSAM_STRUCTURED_FORM_BATCH_SIZE", 3))
+    except Exception:
+        configured = 3
+    return max(1, min(10, configured))
+
+
+def _reference_parallelism() -> int:
+    try:
+        configured = int(getattr(Config, "MOSAM_REFERENCE_PARALLELISM", 2))
+    except Exception:
+        configured = 2
+    return max(1, min(4, configured))
+
+
+def _classify_single_structured_item(
+    item_text: str,
+    *,
+    request_id: str,
+    item_idx: int,
+    chunks: list[Any],
+    index: Any,
+) -> dict[str, Any]:
+    single_pipeline = _unwrap_pipeline_result(
+        process_user_input(
+            item_text,
+            chunks,
+            index,
+            validated_index=getattr(app.state, "classifications_index", None),
+            validated_meta=getattr(app.state, "classifications_meta", None),
+            progress=None,
+            skip_identification=False,
+        )
+    )
+    normalized_single = _finalize_classification_response(
+        single_pipeline.llm_raw,
+        single_pipeline.product_identifications,
+        progress=None,
+    )
+    single_raw_out = _ensure_json_raw(normalized_single)
+    _inspect_raw_json(single_raw_out, request_id, f"STRUCTURED_PARALLEL_ITEM_{item_idx}")
+    try:
+        decoded_single = json.loads(single_raw_out)
+    except Exception:
+        decoded_single = None
+    if isinstance(decoded_single, dict):
+        single_classes = decoded_single.get("classifications") or []
+        if isinstance(single_classes, list) and single_classes:
+            first = single_classes[0]
+            if isinstance(first, dict):
+                return dict(first)
+    return _build_placeholder_classification(
+        item_text,
+        "parallel: classification individuelle non exploitable",
+    )
+
+
+def _classify_reference_items_parallel(
+    pending_items: list[str],
+    *,
+    request_id: str,
+    chunks: list[Any],
+    index: Any,
+    progress: ClassificationProgressReporter | None,
+) -> dict[str, dict[str, Any]]:
+    max_workers = min(_reference_parallelism(), len(pending_items))
+    if max_workers <= 1:
+        return {}
+
+    increment_telemetry("structured_reference_parallel_mode")
+    increment_telemetry("structured_reference_parallel_workers", max_workers)
+    logger.info(
+        "[classify %s] reference parallel mode pending=%s workers=%s",
+        request_id,
+        len(pending_items),
+        max_workers,
+    )
+    if progress:
+        progress.detail(
+            f"Classification reference en parallele ({max_workers} a la fois)"
+        )
+
+    results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {}
+        for item_idx, item_text in enumerate(pending_items, start=1):
+            ctx = contextvars.copy_context()
+            future = executor.submit(
+                ctx.run,
+                _classify_single_structured_item,
+                item_text,
+                request_id=request_id,
+                item_idx=item_idx,
+                chunks=chunks,
+                index=index,
+            )
+            future_map[future] = (item_idx, item_text)
+
+        completed = 0
+        for future in as_completed(future_map):
+            item_idx, item_text = future_map[future]
+            completed += 1
+            try:
+                classification = future.result()
+            except Exception as exc:
+                logger.warning(
+                    "[classify %s] reference parallel item %s failed: %s",
+                    request_id,
+                    item_idx,
+                    exc,
+                )
+                failure_code = _classification_provider_failure_code(exc)
+                if failure_code:
+                    increment_telemetry("structured_reference_provider_failure")
+                    increment_telemetry(f"structured_reference_{failure_code}")
+                    classification = _build_provider_failure_placeholder(
+                        item_text,
+                        failure_code,
+                    )
+                else:
+                    classification = _build_placeholder_classification(
+                        item_text,
+                        f"parallel: erreur classification individuelle ({type(exc).__name__})",
+                    )
+            results[item_text] = dict(classification)
+            if progress:
+                progress.detail(
+                    f"Reference {completed}/{len(pending_items)} classifiee"
+                )
+
+    _store_cached_single_item_classifications(results)
+    return results
+
+
+def _classify_structured_items_in_batches(
+    unique_items: list[str],
+    item_counts: dict[str, int],
+    item_meta: dict[str, dict[str, Any]],
+    *,
+    query: str,
+    chunks: list[Any],
+    index: Any,
+    request_id: str,
+    progress: ClassificationProgressReporter | None,
+    skip_identification: bool,
+) -> str:
+    """Classifie les lignes du formulaire en petits lots pour limiter cout/latence."""
+    batch_size = _structured_form_batch_size()
+    if not skip_identification and any(should_run_product_identification(it) for it in unique_items):
+        batch_size = 1
+        increment_telemetry("structured_reference_per_item_mode")
+    single_item_cache = _load_cached_single_item_classifications(unique_items)
+    pending_items = [it for it in unique_items if it not in single_item_cache]
+    all_items_cached = bool(unique_items) and not pending_items
+    pending_batches = [
+        pending_items[i : i + batch_size] for i in range(0, len(pending_items), batch_size)
+    ]
+    narrative: str | None = None
+    increment_telemetry("structured_small_batch_mode")
+    increment_telemetry("structured_items", len(unique_items))
+    increment_telemetry("structured_batches", len(pending_batches))
+    increment_telemetry("structured_item_cache_hit", len(single_item_cache))
+
+    logger.info(
+        "[classify %s] structured small-batch mode items=%s batch_size=%s cache_hits=%s pending=%s batches=%s",
+        request_id,
+        len(unique_items),
+        batch_size,
+        len(single_item_cache),
+        len(pending_items),
+        len(pending_batches),
+    )
+    if progress:
+        progress.detail(
+            f"Preparation de {len(unique_items)} article(s) en lots de {batch_size}"
+        )
+
+    if batch_size == 1 and len(pending_items) > 1 and _reference_parallelism() > 1:
+        parallel_results = _classify_reference_items_parallel(
+            pending_items,
+            request_id=request_id,
+            chunks=chunks,
+            index=index,
+            progress=progress,
+        )
+        if parallel_results:
+            single_item_cache.update(parallel_results)
+            pending_batches = []
+
+    provider_failure_code = ""
+    for batch_idx, batch_items in enumerate(pending_batches, start=1):
+        if provider_failure_code:
+            increment_telemetry("structured_batches_skipped_provider_unavailable")
+            for item_text in batch_items:
+                single_item_cache[item_text] = _build_provider_failure_placeholder(
+                    item_text,
+                    provider_failure_code,
+                )
+            continue
+        if progress:
+            progress.detail(
+                f"Classification du lot {batch_idx}/{len(pending_batches)} "
+                f"({len(batch_items)} article(s))"
+            )
+        batch_input = "\n\n".join(batch_items)
+        logger.debug(
+            "[classify %s] structured batch %s/%s size=%s",
+            request_id,
+            batch_idx,
+            len(pending_batches),
+            len(batch_items),
+        )
+        try:
+            batch_pipeline = _unwrap_pipeline_result(
+                process_user_input(
+                    batch_input,
+                    chunks,
+                    index,
+                    validated_index=getattr(app.state, "classifications_index", None),
+                    validated_meta=getattr(app.state, "classifications_meta", None),
+                    progress=progress,
+                    skip_identification=skip_identification,
+                )
+            )
+            normalized_batch = _finalize_classification_response(
+                batch_pipeline.llm_raw,
+                batch_pipeline.product_identifications,
+                progress=progress,
+            )
+        except Exception as exc:
+            failure_code = _classification_provider_failure_code(exc)
+            if not failure_code:
+                raise
+            provider_failure_code = failure_code
+            increment_telemetry("structured_batch_provider_failure")
+            increment_telemetry(f"structured_batch_{failure_code}")
+            logger.warning(
+                "[classify %s] structured batch %s stopped by provider failure code=%s; "
+                "remaining batches will not call the provider",
+                request_id,
+                batch_idx,
+                failure_code,
+            )
+            if progress:
+                progress.detail(
+                    "Service IA temporairement indisponible; "
+                    "les resultats deja calcules sont conserves"
+                )
+            for item_text in batch_items:
+                single_item_cache[item_text] = _build_provider_failure_placeholder(
+                    item_text,
+                    failure_code,
+                )
+            continue
+        batch_raw_out = _ensure_json_raw(normalized_batch)
+        _inspect_raw_json(batch_raw_out, request_id, f"STRUCTURED_BATCH_{batch_idx}")
+
+        try:
+            parsed_batch = json.loads(batch_raw_out)
+        except Exception:
+            parsed_batch = None
+
+        if isinstance(parsed_batch, dict) and isinstance(parsed_batch.get("narrative"), str):
+            narrative = narrative or parsed_batch["narrative"]
+
+        batch_classes = (
+            parsed_batch.get("classifications")
+            if isinstance(parsed_batch, dict)
+            else None
+        )
+        if not isinstance(batch_classes, list) or len(batch_classes) != len(batch_items):
+            increment_telemetry("structured_batches_incomplete")
+            returned_n = len(batch_classes) if isinstance(batch_classes, list) else 0
+            logger.warning(
+                "[classify %s] structured batch %s incomplete (%s/%s). Fallback per-item.",
+                request_id,
+                batch_idx,
+                returned_n,
+                len(batch_items),
+            )
+            if progress:
+                progress.detail(
+                    f"Fallback individuel pour le lot {batch_idx}/{len(pending_batches)}"
+                )
+            recovered = _classify_items_individually_with_cache(
+                batch_items,
+                request_id=request_id,
+                chunks=chunks,
+                index=index,
+                progress=progress,
+            )
+            for item_text in batch_items:
+                single_item_cache[item_text] = dict(
+                    recovered.get(item_text)
+                    or _build_placeholder_classification(
+                        item_text,
+                        "fallback: classification structuree manquante",
+                    )
+                )
+            continue
+
+        for item_text, cls in zip(batch_items, batch_classes):
+            if isinstance(cls, dict):
+                single_item_cache[item_text] = dict(cls)
+                _store_cached_single_item_classification(item_text, dict(cls))
+            else:
+                single_item_cache[item_text] = _build_placeholder_classification(
+                    item_text,
+                    "fallback: format classification inattendu",
+                )
+
+    classifications = [
+        dict(
+            single_item_cache.get(src)
+            or _build_placeholder_classification(
+                src,
+                "cache/build: classification manquante",
+            )
+        )
+        for src in unique_items
+    ]
+    classifications = _merge_item_metadata_into_classifications(
+        classifications,
+        unique_items,
+        item_counts,
+        item_meta,
+        "\n\n".join(unique_items),
+        query,
+    )
+    for item in classifications:
+        if isinstance(item, dict) and not item.get("source_query"):
+            item["source_query"] = query or ""
+
+    if progress:
+        progress.detail("Fusion et controle final des resultats")
+    merged = {
+        "narrative": narrative or INDICATIVE_DISCLAIMER_FR,
+        "classifications": classifications,
+    }
+    if all_items_cached:
+        increment_telemetry("structured_item_cache_fast_path")
+        if progress:
+            progress.detail("Resultats charges depuis le cache des articles")
+            for step_id in (
+                "identification",
+                "tec_context",
+                "position_hypothesis",
+                "subposition",
+                "rgi",
+                "duties",
+            ):
+                progress.skip(step_id)
+            progress.start("report")
+            progress.complete("report")
+        return _ensure_json_raw(merged)
+    return _normalize_classifications_response(_ensure_json_raw(merged), progress=progress)
+
+
 def _classify_text_query(
     query: str,
     *,
@@ -4461,7 +5727,16 @@ def _classify_text_query(
 ) -> str:
     """Exécute le pipeline de classification texte et retourne le JSON brut final."""
 
-    if is_assistant_meta_query(query or ""):
+    _log_classification_request_summary(
+        request_id,
+        query=query,
+        structured_items=structured_items,
+        source="structured" if structured_items else "text",
+    )
+
+    # A structured merchandise payload cannot be an assistant FAQ. Running the
+    # fuzzy meta matcher on a long 10-row product list can take about a minute.
+    if not structured_items and is_assistant_meta_query(query or ""):
         if progress:
             progress.start("merchandise")
             progress.complete("merchandise")
@@ -4470,6 +5745,12 @@ def _classify_text_query(
         raw_out = _normalize_classifications_response(
             build_assistant_meta_response_json(query or ""),
             progress=progress,
+        )
+        _log_classification_result_summary(
+            request_id,
+            raw_out=raw_out,
+            source="assistant_meta",
+            cache_hit=False,
         )
         return _ensure_json_raw(raw_out)
 
@@ -4488,23 +5769,42 @@ def _classify_text_query(
     if not cache_disabled:
         cached_raw = cache_get(cache_key)
         if cached_raw is not None:
-            if progress:
-                progress.start("merchandise")
-                progress.complete("merchandise")
-                progress.skip("identification")
-                progress.skip("tec_context")
-            raw_out = _normalize_classifications_response(
-                _ensure_json_raw(cached_raw),
-                progress=progress,
-            )
-            logger.debug(
-                "[classify %s] cache HIT raw_len=%s raw_preview=%r",
-                request_id,
-                len(raw_out),
-                raw_out[:80],
-            )
-            _inspect_raw_json(raw_out, request_id, "HIT")
-            return raw_out
+            raw_out = _validated_cached_response_raw(cached_raw)
+            if raw_out is None:
+                increment_telemetry("classify_cache_invalid")
+                logger.warning("[classify %s] cache HIT payload invalid; regenerating", request_id)
+            else:
+                increment_telemetry("classify_cache_hit")
+                increment_telemetry("classify_cache_fast_path")
+                if progress:
+                    progress.start("merchandise")
+                    progress.complete("merchandise")
+                    for step_id in (
+                        "identification",
+                        "tec_context",
+                        "position_hypothesis",
+                        "subposition",
+                        "rgi",
+                        "duties",
+                    ):
+                        progress.skip(step_id)
+                    progress.start("report")
+                    progress.complete("report")
+                logger.debug(
+                    "[classify %s] cache HIT raw_len=%s raw_preview=%r",
+                    request_id,
+                    len(raw_out),
+                    raw_out[:80],
+                )
+                _inspect_raw_json(raw_out, request_id, "HIT")
+                _log_classification_result_summary(
+                    request_id,
+                    raw_out=raw_out,
+                    source="cache",
+                    cache_hit=True,
+                )
+                return raw_out
+        increment_telemetry("classify_cache_miss")
         logger.debug("[classify %s] cache MISS", request_id)
 
     try:
@@ -4546,6 +5846,43 @@ def _classify_text_query(
     if progress:
         progress.complete("merchandise")
 
+    skip_identification_for_structured = (
+        structured_form_mode
+        and _should_skip_identification_for_structured(structured_items or [])
+    )
+    if structured_form_mode and unique_items and len(unique_items) > _structured_form_batch_size():
+        try:
+            raw_out = _classify_structured_items_in_batches(
+                unique_items,
+                item_counts,
+                item_meta,
+                query=query,
+                chunks=chunks,
+                index=index,
+                request_id=request_id,
+                progress=progress,
+                skip_identification=skip_identification_for_structured,
+            )
+        except Exception as exc:  # pragma: no cover - garde-fou
+            logger.exception("[classify %s] structured batch classification failed", request_id)
+            detail = f"{type(exc).__name__}: {exc}" if str(exc) else f"{type(exc).__name__}"
+            raise HTTPException(status_code=500, detail=detail) from exc
+
+        logger.debug(
+            "[classify %s] structured small-batch done raw_len=%s raw_preview=%r",
+            request_id,
+            len(raw_out),
+            raw_out[:80],
+        )
+        _inspect_raw_json(raw_out, request_id, "STRUCTURED_BATCHED")
+        _log_classification_result_summary(
+            request_id,
+            raw_out=raw_out,
+            source="structured_batched",
+            cache_hit=False,
+        )
+        return raw_out
+
     try:
         pipeline = _unwrap_pipeline_result(
             process_user_input(
@@ -4555,10 +5892,7 @@ def _classify_text_query(
                 validated_index=getattr(app.state, "classifications_index", None),
                 validated_meta=getattr(app.state, "classifications_meta", None),
                 progress=progress,
-                skip_identification=(
-                    structured_form_mode
-                    and _should_skip_identification_for_structured(structured_items or [])
-                ),
+                skip_identification=skip_identification_for_structured,
             )
         )
     except Exception as exc:  # pragma: no cover - garde-fou
@@ -4587,25 +5921,39 @@ def _classify_text_query(
             if isinstance(parsed, dict):
                 cls = parsed.get("classifications")
                 if isinstance(cls, list):
-                    for idx, item in enumerate(cls):
-                        if not isinstance(item, dict):
-                            continue
-                        if idx >= len(unique_items):
-                            break
-                        src = unique_items[idx]
-                        qty = int(item_counts.get(src, 1))
-                        if qty < 1:
-                            qty = 1
-                        item.setdefault("quantity", qty)
-                        meta = item_meta.get(src, {})
-                        item.setdefault("quantity_source", meta.get("quantity_source", "explicit"))
-                        item.setdefault("quantity_raw", meta.get("quantity_raw", ""))
-                        item.setdefault("quantity_confidence", meta.get("quantity_confidence", 60))
-                        item.setdefault("description_quality", meta.get("description_quality"))
-                        if item.get("description_quality") is None:
-                            enrich_item_description_quality(item, source_text=src)
-                        item["source_query"] = src
-                    parsed["classifications"] = _merge_duplicate_classifications(cls)
+                    if structured_form_mode and len(unique_items) > 1 and len(cls) != len(unique_items):
+                        logger.warning(
+                            "[classify %s] structured batch incomplete (%s/%s). Fallback per-item.",
+                            request_id,
+                            len(cls),
+                            len(unique_items),
+                        )
+                        recovered = _classify_items_individually_with_cache(
+                            unique_items,
+                            request_id=request_id,
+                            chunks=chunks,
+                            index=index,
+                            progress=progress,
+                        )
+                        cls = [
+                            dict(recovered.get(src) or _build_placeholder_classification(
+                                src,
+                                "fallback: classification structuree manquante",
+                            ))
+                            for src in unique_items
+                        ]
+                    cls = _merge_item_metadata_into_classifications(
+                        cls,
+                        unique_items,
+                        item_counts,
+                        item_meta,
+                        classify_input,
+                        query,
+                    )
+                    parsed["classifications"] = (
+                        cls if structured_form_mode
+                        else _merge_duplicate_classifications(cls)
+                    )
                     for item in parsed["classifications"]:
                         if isinstance(item, dict) and not item.get("source_query"):
                             item["source_query"] = classify_input or (query or "")
@@ -4624,6 +5972,12 @@ def _classify_text_query(
         raw_out[:80],
     )
     _inspect_raw_json(raw_out, request_id, "FRESH")
+    _log_classification_result_summary(
+        request_id,
+        raw_out=raw_out,
+        source="fresh",
+        cache_hit=False,
+    )
     return raw_out
 
 
@@ -4687,6 +6041,20 @@ def _resolve_classify_query(payload: ClassifyRequest) -> str:
     return ""
 
 
+def _run_with_request_telemetry(request_id: str, operation: str, fn):
+    telemetry, token = start_request_telemetry(request_id)
+    try:
+        return fn()
+    finally:
+        logger.info(
+            "[classify %s] telemetry operation=%s summary=%s",
+            request_id,
+            operation,
+            json.dumps(telemetry.summary(), ensure_ascii=False),
+        )
+        reset_request_telemetry(token)
+
+
 @app.post("/classify", response_model=ClassifyResponse, tags=["classification"])
 def classify(payload: ClassifyRequest) -> ClassifyResponse:
     """
@@ -4697,8 +6065,18 @@ def classify(payload: ClassifyRequest) -> ClassifyResponse:
     """
     request_id = uuid.uuid4().hex[:8]
     query = _resolve_classify_query(payload)
-    raw_out = _classify_text_query(
-        query, request_id=request_id, structured_items=payload.items,
+    logger.info(
+        "[classify %s] endpoint=/classify user_id_present=%s items_payload=%s",
+        request_id,
+        bool(payload.user_id),
+        len(payload.items or []),
+    )
+    raw_out = _run_with_request_telemetry(
+        request_id,
+        "classify",
+        lambda: _classify_text_query(
+            query, request_id=request_id, structured_items=payload.items,
+        ),
     )
     return ClassifyResponse(raw=raw_out)
 
@@ -4708,13 +6086,23 @@ def classify_stream(payload: ClassifyRequest) -> StreamingResponse:
     """Classification avec progression SSE alignée sur le pipeline Mosam."""
     request_id = uuid.uuid4().hex[:8]
     query = _resolve_classify_query(payload)
+    logger.info(
+        "[classify %s] endpoint=/classify/stream user_id_present=%s items_payload=%s",
+        request_id,
+        bool(payload.user_id),
+        len(payload.items or []),
+    )
 
     def worker(progress: ClassificationProgressReporter) -> dict[str, str]:
-        raw_out = _classify_text_query(
-            query,
-            request_id=request_id,
-            structured_items=payload.items,
-            progress=progress,
+        raw_out = _run_with_request_telemetry(
+            request_id,
+            "classify_stream",
+            lambda: _classify_text_query(
+                query,
+                request_id=request_id,
+                structured_items=payload.items,
+                progress=progress,
+            ),
         )
         return {"raw": raw_out}
 
@@ -4741,6 +6129,13 @@ def validate_classification(
 
     cache_query = payload.query
     cache_raw = payload.raw_response
+    logger.info(
+        "[classifications/validate] actor=%s hs_code=%s quantity=%s dossier=%s",
+        actor_user_id,
+        payload.hs_code,
+        payload.quantity if payload.quantity is not None else 1,
+        bool(payload.dossier_name),
+    )
 
     dossier_id = None
     try:
@@ -4792,6 +6187,7 @@ def _validate_classification_one(
             detail="Le champ user_id ne correspond pas au compte connecté",
         )
 
+    hs_code = _normalized_hs_code_for_storage(payload.hs_code)
     now = datetime.now(timezone.utc)
 
     # On stocke déjà section et chapitre sous forme "numéro - libellé" côté frontend
@@ -4884,7 +6280,7 @@ def _validate_classification_one(
                 "description": payload.description,
                 "section": section_label,
                 "chapitre": chapter_label,
-                "code": payload.hs_code,
+                "code": hs_code,
                 "confidence": payload.confidence,
                 "quantity": payload.quantity if payload.quantity is not None else 1,
                 "dd_rate": payload.dd_rate,
@@ -4903,6 +6299,14 @@ def _validate_classification_one(
         db.commit()
 
     result = dict(row)
+    logger.info(
+        "[classifications/validate] saved id=%s actor=%s hs_code=%s quantity=%s dossier=%s",
+        result.get("id"),
+        actor_user_id,
+        hs_code,
+        payload.quantity if payload.quantity is not None else 1,
+        bool(dossier_id),
+    )
 
     # Apprentissage (RAG étendu) :
     try:
@@ -4933,7 +6337,7 @@ def _validate_classification_one(
         entity_type="classification",
         entity_id=str(result.get("id", "")),
         details={
-            "hs_code": payload.hs_code,
+            "hs_code": hs_code,
             "section": payload.section,
             "chapter": payload.chapter,
             "statut_validation": "validé",
@@ -4960,6 +6364,12 @@ def validate_classifications_bulk(
 
     if not payload.items:
         raise HTTPException(status_code=400, detail="items est requis")
+    logger.info(
+        "[classifications/validate/bulk] actor=%s items=%s dossier=%s",
+        actor_user_id,
+        len(payload.items),
+        bool(payload.dossier_name),
+    )
 
     # Cache : on le fait max 1 fois par bulk.
     cache_query = payload.query
@@ -5007,12 +6417,22 @@ def validate_classifications_bulk(
                     "Vérifiez Supabase et la variable SUPABASE_DB_URL (ports 6543 / 5432)."
                 ),
             ) from None
-        except HTTPException:
+        except HTTPException as exc:
+            if exc.status_code == 400:
+                errors.append({"index": idx, "error": str(exc.detail)})
+                continue
             raise
         except Exception as e:
             errors.append({"index": idx, "error": f"{type(e).__name__}: {e}"})
             continue
 
+    logger.info(
+        "[classifications/validate/bulk] completed actor=%s validated=%s errors=%s total=%s",
+        actor_user_id,
+        len(results),
+        len(errors),
+        len(payload.items),
+    )
     return {
         "ok": len(errors) == 0,
         "total": len(payload.items),
@@ -5030,7 +6450,7 @@ def get_classify_cache_status(
     """Retourne l'état du cache des classifications (activé / désactivé). Réservé aux admins."""
     _rate_limit(request, "admin.cache.classify.status.get")
     _ = admin_id
-    return {"disabled": cache_classify_is_disabled()}
+    return {"disabled": cache_classify_is_disabled(force_refresh=True)}
 
 
 class CacheStatusUpdate(BaseModel):

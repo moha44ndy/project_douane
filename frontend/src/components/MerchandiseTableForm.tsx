@@ -22,7 +22,7 @@ type TextColumn = {
   label: string;
   placeholder: string;
   className?: string;
-  inputMode?: "text" | "numeric";
+  inputMode?: "text" | "numeric" | "decimal";
 };
 
 type ComboboxColumn = {
@@ -42,24 +42,28 @@ const COLUMNS: ColumnDef[] = [
   {
     kind: "text",
     key: "designation",
+    className: "min-w-[220px]",
     label: "Désignation",
     placeholder: "ex. Sac de voyage en cuir",
   },
   {
     kind: "text",
     key: "material",
+    className: "min-w-[180px]",
     label: "Matière / composition",
     placeholder: "ex. 100 % cuir",
   },
   {
     kind: "text",
     key: "usage",
+    className: "min-w-[190px]",
     label: "Usage",
     placeholder: "ex. transport effets personnels",
   },
   {
     kind: "text",
     key: "characteristics",
+    className: "min-w-[280px]",
     label: "Caractéristiques",
     placeholder: "ex. livré monté, neuf",
   },
@@ -96,7 +100,7 @@ const COLUMNS: ColumnDef[] = [
     label: "Valeur",
     placeholder: "ex. 1500",
     className: "w-24",
-    inputMode: "numeric",
+    inputMode: "decimal",
   },
   {
     kind: "combobox",
@@ -109,6 +113,30 @@ const COLUMNS: ColumnDef[] = [
     uppercase: true,
   },
 ];
+
+function sanitizeQuantityInput(value: string): string {
+  return value.replace(/[^\d]/g, "");
+}
+
+function sanitizeValueInput(value: string): string {
+  const normalized = value.replace(/,/g, ".");
+  const digitsAndDots = normalized.replace(/[^\d.]/g, "");
+  const firstDot = digitsAndDots.indexOf(".");
+  if (firstDot === -1) return digitsAndDots;
+  return (
+    digitsAndDots.slice(0, firstDot + 1) +
+    digitsAndDots.slice(firstDot + 1).replace(/\./g, "")
+  );
+}
+
+function sanitizeTextInput(
+  key: keyof MerchandiseRow,
+  value: string
+): string {
+  if (key === "quantity") return sanitizeQuantityInput(value);
+  if (key === "value") return sanitizeValueInput(value);
+  return value;
+}
 
 export function MerchandiseTableForm({
   rows,
@@ -187,7 +215,9 @@ export function MerchandiseTableForm({
                         value={row[col.key]}
                         disabled={disabled}
                         onChange={(e) =>
-                          updateRow(row.id, { [col.key]: e.target.value })
+                          updateRow(row.id, {
+                            [col.key]: sanitizeTextInput(col.key, e.target.value),
+                          })
                         }
                         placeholder={
                           col.key === "designation" && index > 0

@@ -48,6 +48,11 @@ class ClassificationProgressReporter:
             elif self.statuses.get(step["id"]) == "active":
                 self.statuses[step["id"]] = "done"
 
+    def detail(self, message: str) -> None:
+        if not self.emit or not message:
+            return
+        self.emit({"type": "detail", "message": message})
+
     def _set(self, step_id: str, status: StepStatus) -> None:
         if step_id not in self.statuses:
             return

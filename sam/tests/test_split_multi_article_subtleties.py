@@ -532,6 +532,26 @@ Valeur :
         self.assertFalse(_should_skip_identification_for_structured(items))
         self.assertTrue(should_run_product_identification("iPhone 15"))
 
+    @patch("sam.product_identification.product_identification_enabled", return_value=True)
+    def test_rich_manufacturer_reference_skips_external_identification(self, _enabled) -> None:
+        from sam.api import MerchandiseItem, _should_skip_identification_for_structured
+
+        items = [
+            MerchandiseItem(
+                designation="Cisco C9200L-48P-4X-E",
+                material="Electronic circuits, metal chassis",
+                usage="Network switching equipment",
+                characteristics="48 Ethernet ports and 4 uplink ports",
+                quantity="2",
+                unit="PCE",
+                origin="China",
+                value="2850",
+                currency="USD",
+            )
+        ]
+
+        self.assertTrue(_should_skip_identification_for_structured(items))
+
     @patch("sam.rag.use_llm", return_value='{"narrative":"","classifications":[]}')
     @patch("sam.rag.retrieve_locked_tec_context", return_value=("", []))
     @patch("sam.rag.prepare_query_for_classification")
@@ -556,6 +576,14 @@ Valeur :
         self.assertEqual(len(result.product_identifications), 1)
         self.assertTrue(result.product_identifications[0]["skipped"])
         self.assertEqual(result.product_identifications[0]["skip_reason"], "structured_form")
+        profile = result.product_identifications[0]["functional_profile"]
+        self.assertEqual(profile["designation"], "rambo magic")
+        self.assertEqual(profile["primary_function"], "insecticide")
+        evidence = result.product_identifications[0]["product_evidence"]
+        self.assertEqual(evidence["designation"], "rambo magic")
+        self.assertEqual(evidence["identification_status"], "provided")
+        self.assertGreater(evidence["evidence_completeness"], 0)
+        self.assertGreaterEqual(_tec.call_count, 1)
 
     @patch("sam.rag.use_llm", return_value='{"narrative":"","classifications":[]}')
     @patch("sam.rag.retrieve_locked_tec_context", return_value=("", []))

@@ -1,6 +1,7 @@
 import unittest
 
 from sam.classification_completeness import (
+    _extract_product_name_from_source,
     analyze_classification_completeness,
     apply_completeness_adjustments,
 )
@@ -46,6 +47,17 @@ class TestClassificationCompleteness(unittest.TestCase):
         cls.label_index = label_index
         set_tariff_label_index(label_index)
         set_surface_sensitive_positions(build_surface_sensitive_positions(label_index))
+
+    def test_decimal_capacity_is_preserved_in_product_name(self) -> None:
+        source = (
+            "Produit : Samsung PM9A3 3.84TB\n"
+            "Usage : Stockage de donnees\n"
+            "Caracteristiques : SSD NVMe 3.84TB"
+        )
+        self.assertEqual(
+            _extract_product_name_from_source(source),
+            "Samsung PM9A3 3.84TB",
+        )
 
     def test_mixed_backpack_confirms_without_surface_when_not_discriminant(self) -> None:
         """Si toutes les sous-positions candidates partagent le meme critere surface, ne pas bloquer."""

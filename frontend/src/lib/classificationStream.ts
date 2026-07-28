@@ -18,6 +18,7 @@ export type ClassifyStreamResult = {
 type StreamHandlers = {
   onInit?: (steps: ClassificationProgressStep[]) => void;
   onStep?: (step: ClassificationProgressStep) => void;
+  onDetail?: (message: string) => void;
   onResult?: (payload: ClassifyStreamResult) => void;
   onError?: (message: string) => void;
 };
@@ -106,6 +107,8 @@ async function consumeClassifyStream(
           label: String(event.label ?? event.step ?? ""),
           status: (event.status as ClassificationStepStatus) ?? "pending",
         });
+      } else if (type === "detail") {
+        handlers.onDetail?.(String(event.message ?? ""));
       } else if (type === "result" && event.payload && typeof event.payload === "object") {
         const payload = event.payload as Record<string, unknown>;
         result = {

@@ -1,0 +1,8 @@
+designation,expected_functional_family,allowed_chapters,allowed_headings,forbidden_headings,acceptance_note,label_status
+Cisco Catalyst 9300,ethernet data switch,85,8517.62,8517.13,A data switch must not be classified as a smartphone,client_feedback_non_official
+Huawei OceanStor Dorado,complete data storage system,84,8471,8523,A complete storage array must be distinguished from recording media,client_feedback_non_official
+DJI Zenmuse H30T,multispectral and thermal imaging camera,"85;90","8525;9006",8517.13,An imaging payload must not be classified as a smartphone,client_feedback_non_official
+iPad Pro M4,tablet computer,"84;85","8471;8517",8517.13,A tablet requires capability-based computer versus cellular analysis,client_feedback_conditional_non_official
+KUKA KR 16 R1610,industrial robot,84,8479.50,8714,Industrial machinery must not be classified as motorcycle or bicycle parts,client_feedback_non_official
+Omron NX102-1200,programmable industrial controller,85,8537,8471,A PLC must be evaluated as industrial control apparatus,client_feedback_non_official
+ABB ACS880-01-430A-3,variable-frequency motor drive,85,8504,blank,A frequency drive requires static-converter or electrical-equipment analysis,client_feedback_non_official

@@ -61,6 +61,46 @@ class TestFindBetterPosition:
 
 
 class TestApplyPositionValidation:
+    def test_reports_better_position_as_advisory_without_mutating_code(self):
+        item = {
+            "hs_code": "84.82",
+            "confidence": 55,
+            "classification_status": "provisoire",
+            "source_query": "deep groove ball bearing",
+        }
+        candidates = [
+            {"position_code": "84.82", "label": "bearings"},
+            {"position_code": "84.12", "label": "deep groove devices"},
+        ]
+        corrected = apply_position_validation(item, None, candidates)
+        assert corrected is False
+        assert item["hs_code"] == "84.82"
+        assert item["position_validation_advisory"]["better_position"] == "84.12"
+
+    def test_does_not_overwrite_confirmed_high_confidence_result(self):
+        item = {
+            "hs_code": "76.15.10.00",
+            "confidence": 95,
+            "classification_status": "confirmee",
+        }
+        candidates = [
+            {"position_code": "76.01", "label": "aluminium brut et alliages"},
+        ]
+        corrected = apply_position_validation(item, None, candidates)
+        assert corrected is False
+        assert item["hs_code"] == "76.15.10.00"
+
+    def test_does_not_overwrite_out_of_candidate_hypothesis(self):
+        item = {
+            "hs_code": "70.13",
+            "confidence": 55,
+            "classification_status": "provisoire",
+            "tec_candidate_outside_set": True,
+        }
+        corrected = apply_position_validation(item, None, [])
+        assert corrected is False
+        assert item["hs_code"] == "70.13"
+
     def test_corrects_wrong_position(self):
         item = {
             "hs_code": "85.24.10.00",

@@ -15,3 +15,5 @@ sam/indexFaiss/validated_classifications*
 
 # Rapports / artefacts locaux de test
 sam/tests/tmp_reports/
+quality_benchmark_report*.csv
+client_feedback_report*.csv

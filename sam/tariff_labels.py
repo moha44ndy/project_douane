@@ -92,6 +92,26 @@ def _extract_position_headings_from_chunk(text: str) -> dict[str, str]:
             if len(heading_text) > len(prev):
                 results[digits] = heading_text
 
+    # Some TEC pages place the position and its only full tariff code on the
+    # same line, for example: ``96.17 9617.00.00.00 Bouteilles isolantes...``.
+    # The standard parser above expects spacing before a separate heading, so
+    # recover these combined lines without relying on product-specific codes.
+    combined_pattern = re.compile(
+        r"(?:^|\n)\s*(\d{2}\.\d{2})\s+"
+        r"\d{4}\.\d{2}(?:\.\d{2}(?:\.\d{2})?)?\s*(?:-\s*)?"
+        r"(.+?)(?=\n\s*(?:\d{2}\.\d{2}\s+|\d{4}\.\d{2})|\Z)",
+        re.DOTALL,
+    )
+    for match in combined_pattern.finditer(text):
+        digits = match.group(1).replace(".", "")
+        heading_text = re.sub(r"-\s*\n\s*", "", match.group(2))
+        heading_text = re.sub(r"\s+", " ", heading_text).strip()
+        heading_text = _TARIFF_COLUMNS_RE.sub("", heading_text).strip().rstrip(".")
+        if len(heading_text) >= 10:
+            previous = results.get(digits, "")
+            if len(heading_text) > len(previous):
+                results[digits] = heading_text
+
     return results
 
 
@@ -217,9 +237,9 @@ def find_positions_by_label_keywords(
     min_matches: int = 1,
     top_n: int = 3,
 ) -> list[tuple[str, str, float]]:
-    """Find positions whose TEC heading contains industrial/customs keywords."""
+    """Find positions whose TEC heading or heading narrative contains keywords."""
     pos_idx = get_position_label_index()
-    if not pos_idx or not keywords:
+    if not keywords:
         return []
 
     normalized_keywords = [_normalize_text(k) for k in keywords if k.strip()]
@@ -227,15 +247,37 @@ def find_positions_by_label_keywords(
     if not normalized_keywords:
         return []
 
-    scored: list[tuple[str, str, float]] = []
+    best_by_position: dict[str, tuple[str, float]] = {}
+
     for pos_key, heading in pos_idx.items():
         norm_heading = _normalize_text(heading)
         matches = sum(1 for kw in normalized_keywords if kw in norm_heading)
         if matches >= min_matches:
             pos_code = f"{pos_key[:2]}.{pos_key[2:]}"
             score = matches / len(normalized_keywords)
-            scored.append((pos_code, heading, score))
+            previous = best_by_position.get(pos_code)
+            if previous is None or score > previous[1]:
+                best_by_position[pos_code] = (heading, score)
 
+    heading_narratives = get_heading_narrative_index()
+    for heading_code, narrative in heading_narratives.items():
+        norm_narrative = _normalize_text(narrative)
+        matches = sum(1 for kw in normalized_keywords if kw in norm_narrative)
+        if matches >= min_matches:
+            digits = re.sub(r"\D", "", heading_code)
+            if len(digits) < 4:
+                continue
+            pos_code = f"{digits[:2]}.{digits[2:4]}"
+            base_label = pos_idx.get(digits[:4]) or narrative
+            score = (matches / len(normalized_keywords)) + 0.02
+            previous = best_by_position.get(pos_code)
+            if previous is None or score > previous[1]:
+                best_by_position[pos_code] = (base_label, score)
+
+    scored = [
+        (position, label, score)
+        for position, (label, score) in best_by_position.items()
+    ]
     scored.sort(key=lambda x: x[2], reverse=True)
     return scored[:top_n]
 
@@ -380,7 +422,7 @@ def resolve_hs_code_to_tec(
     """Remplace un code SH invente (ex. 8471.30.00.00) par une ligne TEC existante."""
     if not hs_code:
         return ""
-    normalized = str(hs_code).strip()
+    normalized = migrate_legacy_hs2022_code(str(hs_code).strip())
     if not normalized.replace(".", "").isdigit():
         return normalized
 
@@ -419,6 +461,19 @@ def resolve_hs_code_to_tec(
         return result.matched_code
     if result.heading_code:
         return result.heading_code
+    return normalized
+
+
+def migrate_legacy_hs2022_code(hs_code: str | None) -> str:
+    """Map deleted legacy headings to their current HS 2022 position.
+
+    Heading 69.08 (glazed ceramic flags and paving tiles) was deleted and its
+    products are covered by 69.07 in the TEC/HS 2022 nomenclature.
+    """
+    normalized = str(hs_code or "").strip()
+    digits = re.sub(r"\D", "", normalized)
+    if digits.startswith("6908"):
+        return "69.07"
     return normalized
 
 

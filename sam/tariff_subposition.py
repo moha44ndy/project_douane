@@ -46,6 +46,7 @@ from .tariff_labels import (
     get_tariff_label_index,
     lookup_heading_narrative,
     lookup_position_label,
+    migrate_legacy_hs2022_code,
 )
 from .tariff_position_rules import position_code_from_hs
 
@@ -792,6 +793,9 @@ def _heading_confirmed_by_source(
     all_headings: list[str],
 ) -> bool:
     """True si la description confirme le libelle narratif TEC de la sous-position a 6 chiffres."""
+    absorption_match = _water_absorption_heading_match(heading, source)
+    if absorption_match is not None:
+        return absorption_match
     unique = _heading_unique_discriminants(heading, position_code, all_headings)
     source_norm = _normalize(source)
     if unique and any(_token_matches_source(token, source_norm) for token in unique):
@@ -802,6 +806,37 @@ def _heading_confirmed_by_source(
         return False
     matched = [token for token in discriminants if _token_matches_source(token, source_norm)]
     return len(matched) == len(discriminants)
+
+
+def _extract_water_absorption_percent(source: str) -> float | None:
+    norm = _normalize(source).replace(",", ".")
+    if not re.search(r"\b(?:water\s+absorption|absorption\s+d.?eau)\b", norm):
+        return None
+    match = re.search(
+        r"\b(?:water\s+absorption|absorption\s+d.?eau)\b[^\d]{0,45}(\d+(?:\.\d+)?)\s*(?:%|percent|pourcent)?",
+        norm,
+    )
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _water_absorption_heading_match(heading: str, source: str) -> bool | None:
+    """Compare the explicit absorption percentage with TEC 6907.21/.22/.23."""
+    heading_digits = _hs_digits(heading)[:6]
+    if heading_digits not in {"690721", "690722", "690723"}:
+        return None
+    value = _extract_water_absorption_percent(source)
+    if value is None:
+        return None
+    if heading_digits == "690721":
+        return value <= 0.5
+    if heading_digits == "690722":
+        return 0.5 < value <= 10
+    return value > 10
 
 
 def _build_heading_missing_criteria(position_code: str, headings: list[str]) -> list[str]:
@@ -1000,7 +1035,12 @@ def _evaluate_heading_level(
     evaluations: list[SubpositionEvaluation] = []
     headings = [code for code, _label in children]
     for code, label in children:
-        if _heading_confirmed_by_source(code, position_code, source, headings):
+        absorption_match = _water_absorption_heading_match(code, source)
+        if absorption_match is True:
+            status = SUBPOSITION_CONFIRMED
+        elif absorption_match is False:
+            status = SUBPOSITION_EXCLUDED
+        elif _heading_confirmed_by_source(code, position_code, source, headings):
             status = SUBPOSITION_CONFIRMED
         else:
             discriminants = _heading_discriminant_tokens(code, position_code)
@@ -1043,12 +1083,18 @@ def _evaluate_level(
 ) -> SubpositionWorkflowResult:
     parent_digits = len(_hs_digits(parent_code))
     if parent_digits == 4 and all(len(_hs_digits(code)) == 6 for code, _ in children):
-        if all(lookup_heading_narrative(code) for code, _ in children):
+        has_numeric_heading_criteria = any(
+            "absorption" in _normalize(label) for _code, label in children
+        )
+        if has_numeric_heading_criteria or all(
+            lookup_heading_narrative(code) for code, _ in children
+        ):
             return _evaluate_heading_level(children, source, position_code)
     return _run_subposition_workflow(
         children,
         source,
         trust_identification=trust_identification,
+        allow_single_unverifiable=parent_digits > 4,
     )
 
 
@@ -1482,6 +1528,8 @@ def _finalize_subposition_decision(
     evaluations: list[SubpositionEvaluation],
     candidates: list[tuple[str, str]],
     source: str = "",
+    *,
+    allow_single_unverifiable: bool = False,
 ) -> FinalSubpositionDecision:
     """Analyse finale : departage puis decision parmi les quatre issues possibles."""
     evaluated = [
@@ -1598,9 +1646,18 @@ def _finalize_subposition_decision(
         return _decision(FINAL_RETAIN_AUTRES, matched_code=matched, viable=[matched])
 
     if len(unverifiable) == 1:
-        matched = unverifiable[0][0]
-        outcome = _outcome_for_single_match(matched, excluded, candidates)
-        return _decision(outcome, matched_code=matched, viable=[matched])
+        code, label, _profile = unverifiable[0]
+        if excluded or allow_single_unverifiable:
+            outcome = _outcome_for_single_match(code, excluded, candidates)
+            return _decision(outcome, matched_code=code, viable=[code])
+        return _decision(
+            FINAL_STOP_INSUFFICIENT,
+            viable=[code],
+            missing_notes=[
+                "Le code TEC restant ne peut pas etre confirme sans preuve du critere "
+                f"discriminant correspondant au libelle ({label})."
+            ],
+        )
 
     autres_only = [
         (code, label, profile) for code, label, profile in unverifiable if profile.is_autres
@@ -1678,6 +1735,7 @@ def _run_subposition_workflow(
     source: str,
     *,
     trust_identification: bool = False,
+    allow_single_unverifiable: bool = False,
 ) -> SubpositionWorkflowResult:
     evaluations = [
         _evaluate_single_subposition(
@@ -1688,7 +1746,12 @@ def _run_subposition_workflow(
         )
         for code, label in candidates
     ]
-    final_decision = _finalize_subposition_decision(evaluations, candidates, source)
+    final_decision = _finalize_subposition_decision(
+        evaluations,
+        candidates,
+        source,
+        allow_single_unverifiable=allow_single_unverifiable,
+    )
     return SubpositionWorkflowResult(
         evaluations=evaluations,
         final_decision=final_decision,
@@ -1801,6 +1864,7 @@ def resolve_subposition_from_tec(
     incompatibles, confirmation si une seule voie reste, descente uniquement ensuite.
     """
     source = source_text or ""
+    hs_code = migrate_legacy_hs2022_code(hs_code)
     position = position_code_from_hs(hs_code)
     digits = _hs_digits(hs_code)
     if len(digits) <= 4:

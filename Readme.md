@@ -31,3 +31,10 @@ Cette application permet de classifier automatiquement les produits selon le Tar
 - **Données locales** : `sam/table_data.json`, `sam/users.json`, index FAISS `sam/indexFaiss/local_index.faiss`.
 
 L’ancienne interface Streamlit a été remplacée par cette architecture FastAPI + Next.js.
+## Documentation technique
+
+- [TECHNICAL_DOCUMENTATION.md](./TECHNICAL_DOCUMENTATION.md) : architecture, endpoints, environment variables, setup, deployment, and maintenance notes.
+- [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) : client issues, priorities, root-cause analysis, and complete implementation roadmap.
+- [IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md) : running log of implemented fixes, causes, approach, and expected outcome.
+- [CLIENT_DELIVERY_PROPOSAL.md](./CLIENT_DELIVERY_PROPOSAL.md) : client-facing summary of issues, improvement scope, expected outcome, and final deliverables.
+- [CLIENT_CHANGE_SUMMARY.md](./CLIENT_CHANGE_SUMMARY.md) : final client handover document covering delivered changes, measured outcomes, validation, and scope limitations.

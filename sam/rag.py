@@ -5,6 +5,7 @@ import pathlib
 import requests
 import os
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -36,6 +37,7 @@ from .candidate_set_enforcer import (
     limit_position_candidates,
     rerank_candidates_by_affinity,
     retrieve_locked_tec_context,
+    summarize_candidate_evidence,
 )
 from .tariff_labels import (
     find_positions_by_heading_match,
@@ -43,6 +45,10 @@ from .tariff_labels import (
     lookup_position_label,
 )
 from .classification_progress import ClassificationProgressReporter
+from .functional_profile import build_functional_profile
+from .product_evidence import build_product_evidence
+from .telemetry import increment_telemetry, record_telemetry_call
+from .structured_tariff_retrieval import search_structured_tariff_positions
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -1079,7 +1085,126 @@ def _repair_truncated_json(text: str) -> str:
         return '{"narrative":"Reponse tronquee par le modele","classifications":[]}'
 
 
+def _classification_model_routing_policy() -> str:
+    policy = (getattr(Config, "MOSAM_CLASSIFICATION_MODEL_ROUTING", "") or "off").strip().lower()
+    if policy in {"off", "auto"}:
+        return policy
+    return "off"
+
+
+def _should_use_cheap_classification_model(prompt_text: str) -> bool:
+    """Route les cas simples vers un modele moins couteux."""
+    if _classification_model_routing_policy() != "auto":
+        return False
+    cheap_model = (getattr(Config, "MOSAM_CLASSIFICATION_MODEL_CHEAP", "") or "").strip()
+    if not cheap_model:
+        return False
+
+    text = (prompt_text or "").strip()
+    if not text:
+        return False
+
+    max_chars = max(1000, int(getattr(Config, "MOSAM_CLASSIFICATION_ROUTING_MAX_PROMPT_CHARS", 20000)))
+    merchandise_blocks = len(re.findall(r"\[MARCHANDISE\s+\d+\]", text, flags=re.IGNORECASE))
+    complexity_markers = (
+        "produit 2",
+        "produit 3",
+        "marchandise 2",
+        "marchandise 3",
+    )
+
+    lowered = text.lower()
+    if len(text) > max_chars:
+        return False
+    if merchandise_blocks > 1:
+        return False
+    if any(marker in lowered for marker in complexity_markers):
+        return False
+
+    return True
+
+
+def _classification_max_tokens(prompt_text: str) -> int:
+    configured = max(800, int(getattr(Config, "MOSAM_CLASSIFICATION_MAX_OUTPUT_TOKENS", 4096)))
+    merchandise_blocks = len(re.findall(r"\[MARCHANDISE\s+\d+\]", prompt_text or "", flags=re.IGNORECASE))
+    item_count = max(1, merchandise_blocks)
+    dynamic_cap = min(configured, max(1400, item_count * 1000))
+    return max(800, dynamic_cap)
+
+
+def _select_classification_model(prompt_text: str) -> str:
+    cheap_model = (getattr(Config, "MOSAM_CLASSIFICATION_MODEL_CHEAP", "") or "").strip()
+    default_model = Config.MOSAM_CLASSIFICATION_MODEL or "gpt-5"
+    if cheap_model and _should_use_cheap_classification_model(prompt_text):
+        return cheap_model
+    return default_model
+
+
+_CLASSIFICATION_OUTPUT_CONTRACT = (
+    "Retourne exclusivement un objet JSON sans texte hors JSON. "
+    "L'objet racine contient narrative (texte indicatif avec rappel de validation officielle) "
+    "et classifications (tableau avec exactement une entree par produit). "
+    "Chaque classification contient les champs description, hs_code, section, section_name, "
+    "chapter, chapter_name, justification, excerpt, origin, value, confidence et "
+    "classification_status. hs_code doit etre un code TEC numerique justifie par les candidats "
+    "et les regles; il ne doit jamais etre vide. Si la sous-position exacte n'est pas certaine, "
+    "retourne au minimum la position a 4 chiffres (ex. 84.71) au lieu d'un champ vide. "
+    "N'utilise aucun code d'exemple ou code par defaut. confidence est un entier "
+    "de 0 a 100 et classification_status vaut confirmee ou provisoire. "
+    "narrative tient en une phrase. justification tient en trois phrases courtes (450 caracteres max) "
+    "et resume seulement les RGI appliquees, la position retenue et la principale alternative ecartee. "
+    "excerpt est limite a 160 caracteres. Le moteur local construit ensuite le rapport juridique detaille."
+)
+
+
+def _build_heading_hint_phrases(
+    product_type: str,
+    function_usage: str,
+    family: str = "",
+) -> list[str]:
+    """Generic family-to-heading hints used only for retrieval, never as final codes."""
+    combined = f"{product_type} {function_usage} {family}".lower()
+    hints: list[str] = []
+    if any(term in combined for term in ["tablet", "tablette", "portable tablet", "hybrid data processing"]):
+        hints.extend([
+            "machines automatiques de traitement de l information portatives",
+            "machines automatiques de traitement de l information et leurs unites",
+        ])
+    if any(term in combined for term in ["storage array", "baie de stockage", "storage system", "unite de stockage"]):
+        hints.extend([
+            "machines automatiques de traitement de l information et leurs unites",
+            "unites de memoire et de stockage de donnees",
+        ])
+    if any(term in combined for term in ["server computer", "serveur informatique", "rack server", "compute server"]):
+        hints.extend([
+            "machines automatiques de traitement de l information et leurs unites",
+            "autres unites de machines automatiques de traitement de l information",
+        ])
+    if any(term in combined for term in ["accelerator", "gpu pcie", "pcie card", "expansion card", "carte acceleratrice"]):
+        hints.extend([
+            "parties et accessoires des machines du numero 84 71",
+            "autres unites de machines automatiques de traitement de l information",
+        ])
+    if any(term in combined for term in ["ip camera", "camera thermique", "camera numerique", "multispectral", "imaging camera"]):
+        hints.extend([
+            "cameras de television appareils photographiques numeriques et camescopes",
+            "appareils d emission pour la radiodiffusion ou la television",
+        ])
+    if any(term in combined for term in ["variateur", "frequency drive", "variable speed drive", "convertisseur statique", "vfd"]):
+        hints.append(
+            "transformateurs electriques convertisseurs electriques statiques redresseurs par exemple"
+        )
+    if any(term in combined for term in ["mixed reality", "realite mixte", "virtual reality", "display headset", "head mounted display"]):
+        hints.extend([
+            "moniteurs et projecteurs n incorporant pas d appareils de reception de television",
+            "autres moniteurs et appareils d affichage video",
+        ])
+    return hints
+
+
 def use_llm(prompt_text):
+    model = ""
+    started = time.perf_counter()
     try:
         system_instruction = (
             "Tu es Mosam, un assistant logiciel pour la classification tarifaire TEC/SH CEDEAO. "
@@ -1117,29 +1242,23 @@ def use_llm(prompt_text):
             "n'arreter au dernier niveau justifiable ; si une information juridiquement indispensable manque, le signaler et limiter la confiance. "
             "Ton hs_code est une HYPOTHESE : Mosam applique ensuite la discrimination TEC complete avant de confirmer ou tronquer le code. "
             "13) Positions TEC candidates : si un bloc « POSITIONS TEC CANDIDATES (VERROUILLAGE OBLIGATOIRE) » est present, "
-            "applique la METHODE D'ANALYSE PAR ELIMINATION : pour chaque position, indique compatible / incompatible / incertain "
-            "et pourquoi, puis choisis hs_code UNIQUEMENT parmi les positions compatibles. "
+            "applique la METHODE D'ANALYSE PAR ELIMINATION en raisonnement interne, puis choisis hs_code "
+            "UNIQUEMENT parmi les positions compatibles. Dans la sortie, resume seulement la position retenue "
+            "et la principale alternative ecartee; ne recopie pas toute la liste des candidats. "
             "Tu es meilleur pour eliminer que pour deviner. "
-            "Tout code hors liste sera rejete par Mosam. "
+            "Tout code hors liste sera conserve seulement comme hypothese provisoire a faible confiance. "
             "Si un bloc « Avertissement discrimination TEC » est present, respecte-le strictement. "
             "Abréviations: D.D. = droits de douane, R.S. = régime statistique, U.S. = unité de mesure. "
-            "Retourne exclusivement un objet JSON (aucun texte hors JSON) de la forme: "
-            "{\"narrative\":\"texte pour l'utilisateur (avec rappel: proposition indicative, à faire valider avant toute utilisation officielle)\",\"classifications\":[{"
-            "\"description\":\"Résumé de la marchandise\",\"hs_code\":\"8517.13.00.00\","
-            "\"section\":\"XVI\",\"section_name\":\"Machines et appareils; matériel électrique\","
-            "\"chapter\":\"85\",\"chapter_name\":\"Machines, appareils et matériel électrique\","
-            "\"justification\":\"RGI 1 : [règle appliquée] — fonction principale, caractère essentiel, chapitres envisagés/écartés, motif du code retenu\",\"excerpt\":\"Citation si pertinent\","
-            "\"origin\":\"Non renseigné\",\"value\":\"Non renseigné\",\"confidence\":90,"
-            "\"classification_status\":\"confirmee\"}]}. "
+            f"{_CLASSIFICATION_OUTPUT_CONTRACT} "
             "Les champs dd_rate, rs_rate et us_unit sont complétés automatiquement par le système depuis le TEC : "
             "mets \"N/R\" si tu n'es pas certain. Pour other_taxes, mets toujours \"N/R\" (TVA hors TEC). "
-            "Le champ \"section\" doit être le numéro romain de la section SH qui contient le chapitre (ex: code 8517 → chapitre 85 → section XVI). "
-            "\"chapter\" = les deux premiers chiffres du code (ex: 85). Utilise \"Non renseigné\" si une donnée manque. "
+            "Le champ \"section\" doit être le numéro romain de la section SH correspondant au chapitre retenu. "
+            "\"chapter\" contient les deux premiers chiffres du hs_code. Utilise \"Non renseigné\" si une donnée manque. "
             "confidence entre 0 et 100. Une seule ligne par produit demandé; pas de lignes pour composants, emballage primaire ou « poids ». "
             "Le champ \"justification\" est obligatoire pour chaque classification : il doit indiquer explicitement la ou les RGI appliquées "
-            "(ex. « RGI 1 », « RGI 3 b », « RGI 6 ») en tête de phrase, puis le raisonnement structuré "
-            "(fonction principale de la marchandise, caractère essentiel, chapitres ou positions étudiés et écartés avec motif, motif du code SH retenu). "
-            "Mentionne explicitement les chapitres ou positions écartés (ex. « chapitre 76 écarté car… ») pour alimenter l'analyse des alternatives. "
+            "(ex. « RGI 1 », « RGI 3 b », « RGI 6 ») en tête de phrase, puis un résumé structuré "
+            "(fonction principale, nature technique, motif du code retenu et principale alternative écartée). "
+            "Reste sous 450 caractères; le moteur local ajoute la trace TEC et les alternatives détaillées. "
             "Ne pas créer de champ séparé pour la RGI : tout le raisonnement juridique va dans \"justification\". "
             "Utilise \"classification_status\" = \"confirmee\" si les informations indispensables sont présentes, sinon \"provisoire\". "
             "14) PRINCIPE DE CLASSIFICATION PAR NATURE TECHNIQUE (essentiel pour les equipements industriels) : "
@@ -1155,7 +1274,14 @@ def use_llm(prompt_text):
             "retourne au minimum le chapitre le plus probable (XX.XX), confidence <= 40, classification_status = provisoire."
         )
 
-        model = Config.MOSAM_CLASSIFICATION_MODEL or "gpt-5"
+        model = _select_classification_model(prompt_text)
+        logger.info(
+            "[use_llm] classification model selected=%s routing=%s cheap_configured=%s prompt_len=%s",
+            model,
+            _classification_model_routing_policy(),
+            bool((getattr(Config, "MOSAM_CLASSIFICATION_MODEL_CHEAP", "") or "").strip()),
+            len(prompt_text or ""),
+        )
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -1163,7 +1289,21 @@ def use_llm(prompt_text):
                 {"role": "user", "content": prompt_text},
             ],
             response_format={"type": "json_object"},
-            **chat_completion_kwargs(model, max_tokens=4096, temperature=0.2),
+            **chat_completion_kwargs(
+                model,
+                max_tokens=_classification_max_tokens(prompt_text),
+                temperature=0.2,
+            ),
+        )
+        usage = getattr(response, "usage", None)
+        record_telemetry_call(
+            "classification_llm",
+            model=model,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            prompt_chars=len(prompt_text or ""),
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            success=True,
         )
 
         content = response.choices[0].message.content
@@ -1174,6 +1314,13 @@ def use_llm(prompt_text):
         return content
 
     except Exception as e:
+        record_telemetry_call(
+            "classification_llm",
+            model=model or None,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            prompt_chars=len(prompt_text or ""),
+            success=False,
+        )
         return f"Erreur lors de l'appel au modèle OpenAI : {e}"
 
 
@@ -1293,10 +1440,11 @@ def _is_single_structured_dossier(text: str) -> bool:
     normalized = _strip_leading_list_marker((text or "").replace("\r", "\n").strip())
     if not normalized:
         return False
-    if not re.search(
+    product_headers = re.findall(
         r"(?im)^(?:produit|marchandise|article|designation)\s*:\s*.+",
         normalized,
-    ):
+    )
+    if len(product_headers) != 1:
         return False
     return bool(
         re.search(
@@ -1338,8 +1486,16 @@ def _build_customs_label_keywords(
 
     if any(w in combined for w in ["automate", "programmable", "plc", "api", "simatic", "controleur", "contrôleur"]):
         keywords.update(["commande", "tableau", "panneau", "console", "armoire"])
-    if any(w in combined for w in ["variateur", "onduleur", "redresseur", "inverter", "vfd", "convertisseur"]):
-        keywords.update(["convertisseur", "statique", "transformateur"])
+    if any(w in combined for w in ["industrial control", "control equipment", "controller"]):
+        keywords.update(["commande", "tableau", "panneau", "console", "armoire"])
+    if any(
+        w in combined
+        for w in [
+            "variateur", "onduleur", "redresseur", "inverter", "vfd", "convertisseur",
+            "power converter", "variable speed drive", "motor drive", "frequency drive",
+        ]
+    ):
+        keywords.update(["convertisseur", "statique", "redresseur", "commande", "moteur"])
     if any(w in combined for w in ["connecteur", "connector", "fiche", "douille", "jack"]):
         keywords.update(["connecteur", "fiche", "douille"])
     if any(w in combined for w in ["transceiver", "sfp", "gbic", "optique", "fibre"]):
@@ -1348,14 +1504,92 @@ def _build_customs_label_keywords(
         keywords.update(["disjoncteur", "fusible", "coupure", "sectionnement"])
     if any(w in combined for w in ["switch", "commut", "routeur", "router", "ethernet"]):
         keywords.update(["commutation", "transmission", "reception", "telecommunication"])
-    if any(w in combined for w in ["smartphone", "telephone", "mobile", "cellulaire"]):
+    if any(phrase in combined for phrase in [
+        "data storage system", "storage unit", "baie de stockage",
+        "storage array", "unite de stockage",
+    ]):
+        keywords.update(["unites", "memoire", "traitement", "information", "stockage", "machines", "automatiques"])
+    if any(phrase in combined for phrase in [
+        "accelerator", "expansion card", "carte acceleratrice", "gpu pcie",
+    ]):
+        keywords.update(["parties", "accessoires", "machines", "traitement", "information", "cartes", "modules"])
+    if any(phrase in combined for phrase in [
+        "server automatic data processing", "serveur informatique", "serveur rack",
+    ]):
+        keywords.update(["machines", "automatiques", "traitement", "information", "unites", "serveur"])
+    if any(phrase in combined for phrase in [
+        "rugged mobile data", "terminal mobile", "terminal durci", "data collection terminal",
+    ]):
+        keywords.update(["portatives", "traitement", "information", "entree", "sortie", "unites"])
+    if any(phrase in combined for phrase in [
+        "industrial robot", "robot industriel", "operations robotisees", "bras robotise",
+    ]):
+        keywords.update(["robots", "industriels", "machines", "fonction", "propre"])
+    is_tablet = any(w in combined for w in ["tablet", "tablette"])
+    if is_tablet:
+        keywords.update(["traitement", "information", "portatives", "ordinateur", "machines", "automatiques", "unites"])
+    elif any(w in combined for w in ["smartphone", "telephone", "cellulaire"]):
         keywords.update(["telephone", "intelligent", "cellulaire"])
+    if any(
+        w in combined
+        for w in [
+            "digital camera", "camera numerique", "camera video", "ip camera",
+            "network camera", "thermal camera", "camera thermique", "multispectral",
+            "surveillance camera", "camera de surveillance", "imaging camera",
+            "thermal imaging camera", "video or thermal imaging",
+        ]
+    ):
+        keywords.update(["cameras", "photographiques", "numeriques", "camescopes", "television", "video"])
+    if any(
+        w in combined
+        for w in [
+            "mixed reality", "realite mixte", "virtual reality", "realite virtuelle",
+            "immersive headset", "display headset", "wearable display",
+        ]
+    ):
+        keywords.update(["moniteurs", "projecteurs", "affichage", "video", "ecrans", "casques"])
     if any(w in combined for w in ["excavat", "pelle", "bulldozer", "chargeuse", "engin", "terrassement"]):
         keywords.update(["excavateur", "pelle", "chenille", "terrassement"])
     if any(w in combined for w in ["capteur", "sensor", "sonde", "transducteur"]):
         keywords.update(["transducteur", "capteur", "instrument", "mesure"])
     if any(w in combined for w in ["cable", "fil", "conducteur", "rj45"]):
         keywords.update(["fil", "cable", "conducteur", "cuivre"])
+    if any(
+        phrase in combined
+        for phrase in [
+            "vacuum flask", "vacuum bottle", "insulated flask", "insulated bottle",
+            "thermos", "recipient isotherme", "récipient isotherme", "bouteille isolante",
+        ]
+    ):
+        keywords.update(["bouteilles isolantes", "recipients isothermiques", "sous vide"])
+    if (
+        re.search(r"\bled\b", combined)
+        or any(
+            phrase in combined
+            for phrase in [
+                "light bulb", "ampoule", "diode lamp", "household bulb",
+                "lampe a diode", "lampe à diode",
+            ]
+        )
+    ):
+        keywords.update(["lampes", "diodes", "emettrices", "lumiere"])
+    if any(
+        phrase in combined
+        for phrase in [
+            "woven sack", "woven bag", "packing sack", "packaging sack",
+            "polypropylene sack", "polypropylene bag", "sac tisse", "sac tissé",
+        ]
+    ):
+        keywords.update(["sacs", "sachets", "emballage"])
+
+    if any(
+        phrase in combined
+        for phrase in [
+            "syringe", "seringue", "medical syringe", "disposable syringe",
+            "hypodermic", "injector", "injection", "aiguille", "needle",
+        ]
+    ):
+        keywords.update(["seringues", "aiguilles", "catheters", "instruments", "medicaux"])
 
     return sorted(keywords)
 
@@ -1475,13 +1709,167 @@ def process_user_input(
     for i, (query, classification_query, identification) in enumerate(prepared, start=1):
         unstable = getattr(identification, "identification_unstable", False)
         primary_query = query.strip() if unstable else classification_query
+        identification_dict = identification.to_dict()
+        functional_profile = build_functional_profile(
+            classification_query,
+            identification_dict,
+        )
+        product_evidence = build_product_evidence(
+            query,
+            identification_dict,
+            functional_profile,
+        )
+        increment_telemetry("functional_profiles_built")
+        increment_telemetry("product_evidence_records_built")
+        if i - 1 < len(product_identifications):
+            product_identifications[i - 1]["functional_profile"] = functional_profile.to_dict()
+            product_identifications[i - 1]["product_evidence"] = product_evidence.to_dict()
+
+        retrieval_primary_query = primary_query
+        evidence_query = product_evidence.retrieval_query()
+        evidence_driven_primary = bool(
+            identification.skipped
+            and product_evidence.technical_nature_confidence >= 70
+            and evidence_query
+        )
+        if evidence_driven_primary:
+            retrieval_primary_query = evidence_query
+            increment_telemetry("evidence_driven_primary_retrievals")
 
         locked_context, candidate_dicts = retrieve_locked_tec_context(
-            primary_query,
+            retrieval_primary_query,
             chunks,
             index,
             search_fn=search_faiss_index,
         )
+
+        structured_query = product_evidence.retrieval_query() or classification_query
+        structured_candidates = search_structured_tariff_positions(
+            structured_query,
+            top_n=6,
+        )
+        if structured_candidates:
+            candidate_dicts.extend(structured_candidates)
+            increment_telemetry("structured_lexical_retrievals")
+
+        # Detailed structured rows skip paid product identification. Preserve
+        # that cost saving while still applying local customs vocabulary and
+        # direct TEC heading matching to the complete source description.
+        if identification.skipped and bool(
+            getattr(Config, "MOSAM_RAG_HEADING_MATCH_ENABLED", True)
+        ):
+            structured_keywords = _build_customs_label_keywords(
+                functional_profile.product_type,
+                functional_profile.primary_function,
+                functional_profile.family,
+            )
+            if structured_keywords:
+                min_matches = 2 if len(structured_keywords) >= 3 else 1
+                direct_matches = find_positions_by_label_keywords(
+                    structured_keywords,
+                    min_matches=min_matches,
+                    top_n=4,
+                )
+                promoted: list[dict[str, Any]] = []
+                promoted_positions: set[str] = set()
+                for pos_code, heading_label, score in direct_matches:
+                    promoted.append({
+                        "position_code": pos_code,
+                        "label": heading_label,
+                        "score": 10.0 + float(score),
+                        "chapter": pos_code.replace(".", "")[:2],
+                        "excerpt": "",
+                        "matched_codes": [],
+                        "affinity_note": "Correspondance directe avec le type de produit structure",
+                        "candidate_sources": ["direct_label_keywords"],
+                    })
+                    promoted_positions.add(pos_code)
+                candidate_dicts = promoted + [
+                    entry
+                    for entry in candidate_dicts
+                    if entry.get("position_code") not in promoted_positions
+                ]
+
+            existing_positions = {d.get("position_code") for d in candidate_dicts}
+            functional_query = functional_profile.functional_query()
+            extra_searches_enabled = bool(
+                getattr(Config, "MOSAM_RAG_EXTRA_SEARCHES_ENABLED", True)
+            )
+            if (
+                extra_searches_enabled
+                and not evidence_driven_primary
+                and functional_query
+                and functional_query.casefold() != retrieval_primary_query.casefold()
+            ):
+                increment_telemetry("functional_profile_retrievals")
+                _, functional_candidates = retrieve_locked_tec_context(
+                    functional_query,
+                    chunks,
+                    index,
+                    search_fn=search_faiss_index,
+                )
+                for candidate in functional_candidates:
+                    position = candidate.get("position_code")
+                    if position not in existing_positions:
+                        candidate_dicts.append(candidate)
+                        existing_positions.add(position)
+
+            direct_function_matches = find_positions_by_heading_match(
+                classification_query,
+                product_type=functional_profile.product_type,
+                function_usage=functional_profile.primary_function,
+                family=functional_profile.family,
+            )
+            for pos_code, heading_label, score in direct_function_matches:
+                if pos_code not in existing_positions:
+                    candidate_dicts.append({
+                        "position_code": pos_code,
+                        "label": heading_label,
+                        "score": 5.0 + float(score),
+                        "chapter": pos_code.replace(".", "")[:2],
+                        "excerpt": "",
+                        "matched_codes": [],
+                        "affinity_note": "Correspondance avec le profil fonctionnel structure",
+                        "candidate_sources": ["functional_heading_match"],
+                    })
+                    existing_positions.add(pos_code)
+
+            for hint_phrase in _build_heading_hint_phrases(
+                functional_profile.product_type,
+                functional_profile.primary_function,
+                functional_profile.family,
+            ):
+                hinted_matches = find_positions_by_heading_match(
+                    hint_phrase,
+                    product_type=functional_profile.product_type,
+                    function_usage=functional_profile.primary_function,
+                    family=functional_profile.family,
+                    top_n=2,
+                    min_score=0.2,
+                )
+                for pos_code, heading_label, score in hinted_matches:
+                    if pos_code not in existing_positions:
+                        candidate_dicts.append({
+                            "position_code": pos_code,
+                            "label": heading_label,
+                            "score": 6.0 + float(score),
+                            "chapter": pos_code.replace(".", "")[:2],
+                            "excerpt": "",
+                            "matched_codes": [],
+                            "affinity_note": "Correspondance avec un libelle generique de famille technique",
+                            "candidate_sources": ["generic_heading_hint"],
+                        })
+                        existing_positions.add(pos_code)
+
+            if candidate_dicts:
+                candidate_dicts = rerank_candidates_by_affinity(
+                    candidate_dicts,
+                    product_type=functional_profile.product_type,
+                    function_usage=functional_profile.primary_function,
+                    family=functional_profile.family,
+                )
+                candidate_dicts = limit_position_candidates(candidate_dicts)
+                locked_context = format_merged_candidates_prompt(candidate_dicts)
 
         if unstable and primary_query.casefold() != classification_query.casefold():
             _, enriched_candidates = retrieve_locked_tec_context(
@@ -1495,13 +1883,15 @@ def process_user_input(
 
         if not identification.skipped:
             existing_positions = {d.get("position_code") for d in candidate_dicts}
+            extra_searches_enabled = bool(getattr(Config, "MOSAM_RAG_EXTRA_SEARCHES_ENABLED", True))
+            heading_match_enabled = bool(getattr(Config, "MOSAM_RAG_HEADING_MATCH_ENABLED", True))
 
             # 2nd FAISS query: product_type + function_usage
             func_query = " ".join(filter(None, [
                 (identification.product_type or "").strip(),
                 (identification.function_usage or "").strip(),
             ]))
-            if func_query and func_query.casefold() != classification_query.casefold():
+            if extra_searches_enabled and func_query and func_query.casefold() != classification_query.casefold():
                 _, func_candidates = retrieve_locked_tec_context(
                     func_query, chunks, index, search_fn=search_faiss_index,
                 )
@@ -1513,7 +1903,7 @@ def process_user_input(
             # 3rd FAISS query: family (product family/category)
             family = getattr(identification, "family", "") or ""
             family = family.strip()
-            if family and family.casefold() != func_query.casefold() and family.casefold() != classification_query.casefold():
+            if extra_searches_enabled and family and family.casefold() != func_query.casefold() and family.casefold() != classification_query.casefold():
                 _, family_candidates = retrieve_locked_tec_context(
                     family, chunks, index, search_fn=search_faiss_index,
                 )
@@ -1525,27 +1915,29 @@ def process_user_input(
             # 4th source: text matching against position headings
             ptype = (identification.product_type or "").strip()
             fusage = (identification.function_usage or "").strip()
-            heading_matches = find_positions_by_heading_match(
-                classification_query,
-                product_type=ptype,
-                function_usage=fusage,
-                family=family,
-            )
-            for pos_code, heading_label, _score in heading_matches:
-                if pos_code not in existing_positions:
-                    candidate_dicts.append({
-                        "position_code": pos_code,
-                        "label": heading_label,
-                        "score": 0.0,
-                        "chapter": pos_code.replace(".", "")[:2],
-                        "excerpt": "",
-                        "matched_codes": [],
-                    })
-                    existing_positions.add(pos_code)
+            if heading_match_enabled:
+                heading_matches = find_positions_by_heading_match(
+                    classification_query,
+                    product_type=ptype,
+                    function_usage=fusage,
+                    family=family,
+                )
+                for pos_code, heading_label, _score in heading_matches:
+                    if pos_code not in existing_positions:
+                        candidate_dicts.append({
+                            "position_code": pos_code,
+                            "label": heading_label,
+                            "score": 0.0,
+                            "chapter": pos_code.replace(".", "")[:2],
+                            "excerpt": "",
+                            "matched_codes": [],
+                            "candidate_sources": ["identified_heading_match"],
+                        })
+                        existing_positions.add(pos_code)
 
             # 5th source: FAISS with customs-oriented vocabulary
             customs_terms = _build_customs_search_terms(ptype, fusage, family)
-            if customs_terms and customs_terms.casefold() not in {
+            if extra_searches_enabled and customs_terms and customs_terms.casefold() not in {
                 classification_query.casefold(),
                 func_query.casefold(),
                 family.casefold() if family else "",
@@ -1561,7 +1953,7 @@ def process_user_input(
 
             # 6th source: direct match against TEC position headings via customs keywords
             label_keywords = _build_customs_label_keywords(ptype, fusage, family)
-            if label_keywords:
+            if heading_match_enabled and label_keywords:
                 min_matches = 2 if len(label_keywords) >= 3 else 1
                 keyword_matches = find_positions_by_label_keywords(
                     label_keywords,
@@ -1577,6 +1969,7 @@ def process_user_input(
                             "chapter": pos_code.replace(".", "")[:2],
                             "excerpt": "",
                             "matched_codes": [],
+                            "candidate_sources": ["identified_label_keywords"],
                         })
                         existing_positions.add(pos_code)
 
@@ -1590,14 +1983,43 @@ def process_user_input(
                 candidate_dicts = limit_position_candidates(candidate_dicts)
                 locked_context = format_merged_candidates_prompt(candidate_dicts)
 
+        candidate_dicts = limit_position_candidates(candidate_dicts)
+        candidate_summary = summarize_candidate_evidence(candidate_dicts)
+        increment_telemetry("candidate_sets_built")
+        increment_telemetry("candidate_positions_total", candidate_summary["candidate_count"])
+        increment_telemetry("candidate_chapters_total", candidate_summary["chapter_count"])
+        if candidate_summary["candidate_count"] == 0:
+            increment_telemetry("candidate_sets_empty")
+        elif candidate_summary["chapter_count"] <= 1:
+            increment_telemetry("candidate_sets_single_chapter")
+        if candidate_summary["max_affinity"] < 0.12:
+            increment_telemetry("candidate_sets_low_affinity")
+        logger.info(
+            "[candidate-recall] item=%s positions=%s chapters=%s max_affinity=%.3f sources=%s",
+            i,
+            candidate_summary["positions"],
+            candidate_summary["chapters"],
+            candidate_summary["max_affinity"],
+            candidate_summary["sources"],
+        )
+        locked_context = format_merged_candidates_prompt(candidate_dicts)
         if i - 1 < len(product_identifications):
             product_identifications[i - 1]["tec_position_candidates"] = candidate_dicts
+            product_identifications[i - 1]["candidate_retrieval"] = candidate_summary
 
-        examples_context = build_validated_examples_context(
-            classification_query,
-            validated_index,
-            validated_meta,
-        )
+        # Rich structured rows already have an official TEC candidate set. Re-embedding
+        # the row only to retrieve historical examples adds cost and can re-introduce
+        # stale human decisions into an otherwise official-document-driven decision.
+        # Keep examples as a fallback when official retrieval found no candidates.
+        if identification.skipped and candidate_dicts:
+            examples_context = ""
+            increment_telemetry("structured_validated_examples_skipped")
+        else:
+            examples_context = build_validated_examples_context(
+                classification_query,
+                validated_index,
+                validated_meta,
+            )
         examples_block = f"\n{examples_context}" if examples_context else ""
 
         original_note = ""
@@ -1655,6 +2077,8 @@ def process_user_input(
                 )
                 id_function_block = "\n" + "\n".join(lines) + "\n"
 
+        product_evidence_block = "\n" + product_evidence.prompt_block() + "\n"
+
         web_block = ""
         if getattr(identification, "web_search_used", False):
             source_lines = [
@@ -1676,7 +2100,8 @@ def process_user_input(
 
         prompt_sections.append(
             f"[MARCHANDISE {i}]\nDescription enrichie pour classification :\n{classification_query}"
-            f"{original_note}{id_function_block}{web_block}{tec_hint}\n{locked_context}{examples_block}"
+            f"{original_note}{id_function_block}{product_evidence_block}"
+            f"{web_block}{tec_hint}\n{locked_context}{examples_block}"
         )
 
     combined_context = "\n\n".join(prompt_sections)

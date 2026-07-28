@@ -12,18 +12,91 @@ import unicodedata
 from .tariff_labels import lookup_position_label, list_subpositions_for_position
 from .tariff_metadata import get_position_heading
 from .tariff_position_rules import position_code_from_hs
+from .telemetry import increment_telemetry
 
 try:
     from .config.settings import Config
 except ImportError:  # pragma: no cover
     class Config:  # type: ignore[no-redef]
-        MOSAM_FAISS_TOP_K = 20
-        MOSAM_MAX_CANDIDATE_POSITIONS = 15
+        MOSAM_FAISS_TOP_K = 16
+        MOSAM_MAX_CANDIDATE_POSITIONS = 8
+        MOSAM_TEC_EXCERPT_MAX_CHARS = 180
+        MOSAM_TEC_SUBPOSITIONS_MAX_ITEMS = 8
+        MOSAM_TEC_CONTEXT_COMPACT = True
 
 _TARIFF_CODE_RE = re.compile(r"\b(\d{4}\.\d{2}(?:\.\d{2}(?:\.\d{2})?)?)\b")
-_DEFAULT_MAX_POSITIONS = max(1, int(getattr(Config, "MOSAM_MAX_CANDIDATE_POSITIONS", 15)))
-_DEFAULT_FAISS_K = max(1, int(getattr(Config, "MOSAM_FAISS_TOP_K", 20)))
-_EXCERPT_MAX_LEN = 320
+_DEFAULT_MAX_POSITIONS = max(1, int(getattr(Config, "MOSAM_MAX_CANDIDATE_POSITIONS", 8)))
+_DEFAULT_FAISS_K = max(1, int(getattr(Config, "MOSAM_FAISS_TOP_K", 16)))
+_EXCERPT_MAX_LEN = max(0, int(getattr(Config, "MOSAM_TEC_EXCERPT_MAX_CHARS", 180)))
+_SUBPOSITIONS_MAX_ITEMS = max(0, int(getattr(Config, "MOSAM_TEC_SUBPOSITIONS_MAX_ITEMS", 8)))
+_COMPACT_CONTEXT = bool(getattr(Config, "MOSAM_TEC_CONTEXT_COMPACT", True))
+
+_PHONE_FAMILY_TERMS = {"telephone", "telephones", "smartphone", "smartphones", "cellulaire"}
+_TABLET_FAMILY_TERMS = {
+    "tablette", "tablettes", "tablet", "tablets", "ordinateur", "ordinateurs",
+    "traitement", "information", "portatives", "portable",
+}
+_NETWORK_FAMILY_TERMS = {
+    "transmission", "reception", "regeneration", "commutation", "telecommunication",
+    "reseau", "reseaux", "donnees", "ethernet",
+}
+_CAMERA_FAMILY_TERMS = {
+    "camera", "cameras", "television", "video", "numeriques", "numerique",
+    "imagerie", "thermique", "optique", "surveillance",
+}
+_CINEMA_FAMILY_TERMS = {"cinematographiques", "cinematographique", "film", "pellicule"}
+_STORAGE_SYSTEM_TERMS = {
+    "traitement", "information", "stockage", "donnees", "unites", "unite",
+    "memoire", "serveurs", "serveur", "systeme", "systemes",
+}
+_STORAGE_MEDIA_TERMS = {
+    "supports", "support", "disques", "disque", "bandes", "bande", "cartes",
+    "carte", "enregistrement", "recording", "media",
+}
+_SERVER_SYSTEM_TERMS = {
+    "serveurs", "serveur", "unites", "unite", "traitement", "information",
+    "donnees", "machines", "automatiques", "systeme", "systemes",
+}
+_ACCELERATOR_CARD_TERMS = {
+    "parties", "accessoires", "machines", "traitement", "information",
+    "cartes", "carte", "modules", "module",
+}
+_PLC_FAMILY_TERMS = {
+    "commande", "controle", "panneaux", "panneau", "tableaux", "tableau",
+    "consoles", "console", "armoires", "armoire",
+}
+_GENERIC_ADP_TERMS = {
+    "machines", "automatiques", "traitement", "information", "portatives",
+}
+_VFD_FAMILY_TERMS = {
+    "convertisseurs", "convertisseur", "statiques", "statique", "variateurs",
+    "variateur", "redresseurs", "redresseur", "moteurs", "moteur", "electrique",
+}
+_HOUSEHOLD_APPLIANCE_TERMS = {
+    "aspirateurs", "aspirateur", "reservoir", "reservoirs", "balais", "domestiques",
+    "menagers", "menageres", "poussiere",
+}
+_ROBOT_FAMILY_TERMS = {"robots", "robot", "industriels", "industriel"}
+_BICYCLE_PARTS_TERMS = {
+    "cycles", "bicyclettes", "motocycles", "motocyclettes", "accessoires",
+}
+_MEDICAL_DEVICE_TERMS = {
+    "seringue", "seringues", "aiguille", "aiguilles", "medical", "medicale",
+    "medicaux", "medicales", "sterile", "steriles", "injection", "injecter",
+    "perfusion", "chirurgical", "veterinaire",
+}
+_RADIOLOGY_TERMS = {
+    "rayons", "radiations", "radiographie", "radiotherapie", "tomographie",
+    "radiophotographie", "ionisantes", "x",
+}
+_DISPLAY_HEADSET_TERMS = {
+    "moniteurs", "moniteur", "projecteurs", "projecteur", "affichage",
+    "casques", "casque", "video", "ecran", "ecrans", "optique",
+}
+_TELEPHONE_TERMS = {
+    "telephone", "telephones", "smartphone", "smartphones", "cellulaire",
+    "cellulaires",
+}
 
 
 @dataclass
@@ -78,6 +151,8 @@ def _position_label(position_code: str, matched_codes: list[str]) -> str:
 
 
 def _build_excerpt(text: str, matched_codes: list[str]) -> str:
+    if _EXCERPT_MAX_LEN <= 0:
+        return ""
     if not text:
         return ""
     focus = matched_codes[0] if matched_codes else ""
@@ -164,7 +239,7 @@ def build_position_candidates(
     return candidates
 
 
-def _format_subpositions_block(position_code: str, max_items: int = 15) -> str:
+def _format_subpositions_block(position_code: str, max_items: int | None = None) -> str:
     """Build a compact list of sub-positions for a given 4-digit position.
 
     Groups by 6-digit heading (XXXX.XX) to avoid showing every 8/10-digit
@@ -173,6 +248,10 @@ def _format_subpositions_block(position_code: str, max_items: int = 15) -> str:
     """
     subpos = list_subpositions_for_position(position_code)
     if not subpos:
+        return ""
+    if max_items is None:
+        max_items = _SUBPOSITIONS_MAX_ITEMS
+    if max_items <= 0:
         return ""
 
     headings_seen: dict[str, str] = {}
@@ -196,6 +275,14 @@ def _format_subpositions_block(position_code: str, max_items: int = 15) -> str:
 
 def _elimination_methodology_lines(candidate_count: int) -> list[str]:
     """Instructions d'analyse par elimination (compatible / incompatible / pourquoi)."""
+    if _COMPACT_CONTEXT:
+        return [
+            "METHODE D'ELIMINATION : evalue chaque position candidate "
+            "(compatible / incompatible / incertain), "
+            "choisis une position compatible; si aucune ne convient, propose une hypothese hors liste "
+            "avec confidence <= 55.",
+            "",
+        ]
     return [
         "METHODE D'ANALYSE PAR ELIMINATION (OBLIGATOIRE) :",
         "Tu es meilleur pour ELIMINER que pour deviner. Ne choisis pas immediatement « le meilleur code ».",
@@ -205,10 +292,10 @@ def _elimination_methodology_lines(candidate_count: int) -> list[str]:
         "   - incertain : information manquante pour trancher.",
         "2. Dans la justification, liste chaque position avec son verdict (compatible / incompatible / incertain) "
         "et le motif en une phrase.",
-        "3. Choisis hs_code UNIQUEMENT parmi les positions compatibles.",
+        "3. Choisis hs_code parmi les positions compatibles lorsqu'il en existe une.",
         "4. S'il reste plusieurs compatibles, prefere la plus specifique (RGI 3 a).",
-        "5. Si aucune n'est clairement compatible, retiens la moins inadequate, "
-        "confidence <= 55, classification_status = provisoire.",
+        "5. Si aucune n'est clairement compatible, propose le code TEC le plus plausible hors liste, "
+        "confidence <= 55, classification_status = provisoire, avec justification explicite.",
         "",
     ]
 
@@ -218,16 +305,146 @@ def limit_position_candidates(
     *,
     max_positions: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Limite le nombre de positions envoyees au LLM apres fusion multi-sources."""
+    """Keep the strongest candidates while preserving credible chapter diversity."""
     cap = max(1, int(max_positions or _DEFAULT_MAX_POSITIONS))
-    if len(candidate_dicts) <= cap:
-        return candidate_dicts
+    deduplicated: list[dict[str, Any]] = []
+    by_position: dict[str, dict[str, Any]] = {}
+    for raw in candidate_dicts:
+        if not isinstance(raw, dict):
+            continue
+        candidate = dict(raw)
+        position = str(candidate.get("position_code") or "").strip()
+        if not position:
+            continue
+        candidate.setdefault("chapter", re.sub(r"\D", "", position)[:2])
+        sources = candidate.get("candidate_sources")
+        if not isinstance(sources, list):
+            candidate["candidate_sources"] = ["unknown"]
+        existing = by_position.get(position)
+        if existing is None:
+            by_position[position] = candidate
+            deduplicated.append(candidate)
+            continue
+        existing["score"] = max(
+            float(existing.get("score") or 0),
+            float(candidate.get("score") or 0),
+        )
+        existing["affinity_score"] = max(
+            float(existing.get("affinity_score") or 0),
+            float(candidate.get("affinity_score") or 0),
+        )
+        existing["candidate_sources"] = list(dict.fromkeys(
+            [str(source) for source in existing.get("candidate_sources") or []]
+            + [str(source) for source in candidate.get("candidate_sources") or []]
+        ))
+        existing["matched_codes"] = list(dict.fromkeys(
+            [str(code) for code in existing.get("matched_codes") or []]
+            + [str(code) for code in candidate.get("matched_codes") or []]
+        ))[:8]
+        for field in ("label", "excerpt", "affinity_note"):
+            if not existing.get(field) and candidate.get(field):
+                existing[field] = candidate[field]
+
+    def rank_score(candidate: dict[str, Any]) -> float:
+        score = float(candidate.get("score") or 0)
+        affinity = float(candidate.get("affinity_score") or 0)
+        compatibility = float(candidate.get("compatibility_score") or 0)
+        combined = score + (4.0 * affinity) + (5.0 * compatibility)
+        candidate["candidate_rank_score"] = round(combined, 4)
+        return combined
+
     ranked = sorted(
-        candidate_dicts,
-        key=lambda item: float(item.get("score") or 0),
+        deduplicated,
+        key=rank_score,
         reverse=True,
     )
-    return ranked[:cap]
+    if len(ranked) <= cap:
+        return ranked
+
+    selected: list[dict[str, Any]] = [ranked[0]]
+    selected_positions = {str(ranked[0].get("position_code") or "")}
+    selected_chapters = {str(ranked[0].get("chapter") or "")}
+    best_rank = max(float(ranked[0].get("candidate_rank_score") or 0), 0.001)
+    diversity_target = min(3, cap)
+
+    for candidate in ranked[1:]:
+        chapter = str(candidate.get("chapter") or "")
+        candidate_rank = float(candidate.get("candidate_rank_score") or 0)
+        affinity = float(candidate.get("affinity_score") or 0)
+        credible = candidate_rank >= best_rank * 0.15 or affinity >= 0.15
+        if chapter and chapter not in selected_chapters and credible:
+            selected.append(candidate)
+            selected_positions.add(str(candidate.get("position_code") or ""))
+            selected_chapters.add(chapter)
+            if len(selected_chapters) >= diversity_target or len(selected) >= cap:
+                break
+
+    for candidate in ranked:
+        position = str(candidate.get("position_code") or "")
+        if position in selected_positions:
+            continue
+        selected.append(candidate)
+        selected_positions.add(position)
+        if len(selected) >= cap:
+            break
+    return selected[:cap]
+
+
+def summarize_candidate_evidence(candidate_dicts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return tariff-neutral diagnostics for candidate-recall monitoring."""
+    positions = [
+        str(candidate.get("position_code") or "").strip()
+        for candidate in candidate_dicts
+        if isinstance(candidate, dict) and str(candidate.get("position_code") or "").strip()
+    ]
+    chapters = sorted({re.sub(r"\D", "", position)[:2] for position in positions})
+    affinities = [
+        float(candidate.get("affinity_score") or 0)
+        for candidate in candidate_dicts
+        if isinstance(candidate, dict)
+    ]
+    sources = sorted({
+        str(source)
+        for candidate in candidate_dicts
+        if isinstance(candidate, dict)
+        for source in (candidate.get("candidate_sources") or [])
+    })
+    chapter_scores: dict[str, float] = defaultdict(float)
+    chapter_positions: dict[str, list[str]] = defaultdict(list)
+    for candidate in candidate_dicts:
+        if not isinstance(candidate, dict):
+            continue
+        position = str(candidate.get("position_code") or "").strip()
+        chapter = re.sub(r"\D", "", position)[:2]
+        if not chapter:
+            continue
+        rank_score = float(candidate.get("candidate_rank_score") or 0)
+        if rank_score <= 0:
+            rank_score = float(candidate.get("score") or 0) + 4.0 * float(
+                candidate.get("affinity_score") or 0
+            )
+        chapter_scores[chapter] += max(rank_score, 0.0)
+        if position and position not in chapter_positions[chapter]:
+            chapter_positions[chapter].append(position)
+    chapter_ranking = [
+        {
+            "chapter": chapter,
+            "score": round(score, 4),
+            "positions": chapter_positions[chapter],
+        }
+        for chapter, score in sorted(
+            chapter_scores.items(), key=lambda entry: (-entry[1], entry[0])
+        )
+    ]
+    return {
+        "candidate_count": len(positions),
+        "positions": positions,
+        "chapters": chapters,
+        "chapter_count": len(chapters),
+        "max_affinity": round(max(affinities, default=0.0), 3),
+        "sources": sources,
+        "chapter_ranking": chapter_ranking,
+    }
 
 
 def format_candidate_set_prompt(
@@ -247,18 +464,20 @@ def format_candidate_set_prompt(
 
     lines = [
         "POSITIONS TEC CANDIDATES (VERROUILLAGE OBLIGATOIRE) :",
-        "Le contexte TEC local contient les positions suivantes a analyser.",
+        "Prioriser ces positions candidates lorsqu'elles sont compatibles avec le produit.",
+        "Si aucune position n'est compatible, proposer le code TEC le plus plausible hors liste, "
+        "avec classification_status = provisoire et confidence <= 55.",
         *_elimination_methodology_lines(len(candidates)),
     ]
     for index, candidate in enumerate(candidates, start=1):
         lines.append(f"{index}. Position {candidate.position_code} — {candidate.label}")
         subpos_block = _format_subpositions_block(candidate.position_code)
         if subpos_block:
-            lines.append(f"   Sous-positions TEC :")
+            lines.append("   Sous-positions TEC :")
             lines.append(subpos_block)
         if candidate.matched_codes:
-            lines.append(f"   Codes TEC voisins : {', '.join(candidate.matched_codes[:4])}")
-        if candidate.excerpt:
+            lines.append(f"   Codes voisins : {', '.join(candidate.matched_codes[:3])}")
+        if candidate.excerpt and not _COMPACT_CONTEXT:
             lines.append(f"   Extrait TEC : {candidate.excerpt}")
         lines.append("")
 
@@ -268,9 +487,9 @@ def format_candidate_set_prompt(
 
     others = len(candidates)
     lines.append(
-        f"INTERDIT : hs_code en dehors de ces {others} position(s). "
-        "Format hs_code : XX.XX ou sous-code appartenant a l'une des positions compatibles. "
-        "La justification DOIT contenir l'analyse compatible/incompatible de chaque position."
+        f"GARDE-FOU : evaluer d'abord ces {others} position(s). "
+        "Format hs_code : XX.XX ou sous-code TEC. "
+        "Tout choix hors liste doit rester provisoire et expliquer pourquoi chaque candidat est incompatible."
     )
     return "\n".join(lines)
 
@@ -281,6 +500,179 @@ def _normalize_for_match(text: str) -> str:
     text = "".join(c for c in text if not unicodedata.combining(c))
     text = re.sub(r"[^\w\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _matching_terms(label_terms: set[str], expected_terms: set[str]) -> int:
+    score = 0
+    for term in expected_terms:
+        if term in label_terms:
+            score += 1
+    return score
+
+
+def _compatibility_from_product_family(
+    label: str,
+    product_type: str,
+    function_usage: str,
+    family: str = "",
+) -> tuple[float, str]:
+    """Estimate whether a TEC heading family matches the product's technical nature."""
+    combined = _normalize_for_match(" ".join([product_type, function_usage, family]))
+    label_norm = _normalize_for_match(label)
+    if not combined or not label_norm:
+        return 0.0, ""
+
+    descriptor_terms = set(combined.split())
+    label_terms = set(label_norm.split())
+    notes: list[str] = []
+    score = 0.0
+
+    is_tablet = bool(descriptor_terms & {"tablette", "tablet"})
+    is_network = bool(descriptor_terms & {"switching", "switch", "commutation", "routeur", "router", "ethernet"})
+    is_camera = bool(descriptor_terms & {"camera", "imagerie", "video", "thermique", "multisenseur", "multispectral"})
+    is_storage_system = "storage" in descriptor_terms or "stockage" in descriptor_terms or "baie" in descriptor_terms
+    is_storage_media = bool(
+        descriptor_terms & {"ssd", "nvme", "disque", "disques", "hard", "drive", "stockage"}
+    ) and not is_storage_system
+    is_server_system = bool(
+        descriptor_terms & {"serveur", "server", "rack", "compute"}
+    )
+    is_accelerator_card = bool(
+        descriptor_terms & {"accelerateur", "accelerator", "gpu", "pcie", "expansion"}
+    )
+    is_plc = bool(descriptor_terms & {"plc", "automate", "programmable", "controleur", "controller"})
+    is_vfd = bool(descriptor_terms & {"variateur", "convertisseur", "inverter", "vfd", "drive", "frequence", "moteur"})
+    is_robot = bool(descriptor_terms & {"robot", "robotique", "robotise", "robotisee"})
+    is_mixed_reality_display = bool(
+        descriptor_terms
+        & {"realite", "virtuelle", "mixte", "headset", "casque", "affichage", "immersif", "spatial"}
+    )
+    is_medical_device = bool(
+        descriptor_terms & {"seringue", "seringues", "syringe", "medical", "medicale", "injection", "aiguille"}
+    )
+
+    if is_tablet:
+        positive = _matching_terms(label_terms, _TABLET_FAMILY_TERMS)
+        negative = _matching_terms(label_terms, _PHONE_FAMILY_TERMS)
+        score += 0.14 * positive
+        score -= 0.35 * negative
+        if positive:
+            notes.append("famille ordinateur/tablette")
+        if negative:
+            notes.append("famille telephone incompatible")
+
+    if is_network:
+        positive = _matching_terms(label_terms, _NETWORK_FAMILY_TERMS)
+        negative = _matching_terms(label_terms, _PHONE_FAMILY_TERMS)
+        score += 0.14 * positive
+        score -= 0.35 * negative
+        if positive:
+            notes.append("equipement reseau compatible")
+        if negative:
+            notes.append("famille smartphone incompatible")
+
+    if is_camera:
+        positive = _matching_terms(label_terms, _CAMERA_FAMILY_TERMS)
+        negative = _matching_terms(label_terms, _CINEMA_FAMILY_TERMS | _PHONE_FAMILY_TERMS)
+        score += 0.14 * positive
+        score -= 0.35 * negative
+        if positive:
+            notes.append("famille camera compatible")
+        if negative:
+            notes.append("famille cinema/telephone incompatible")
+
+    if is_storage_system:
+        positive = _matching_terms(label_terms, _STORAGE_SYSTEM_TERMS)
+        negative = _matching_terms(label_terms, _STORAGE_MEDIA_TERMS)
+        score += 0.12 * positive
+        score -= 0.28 * negative
+        if positive:
+            notes.append("systeme de stockage compatible")
+        if negative:
+            notes.append("support media incompatible")
+
+    if is_storage_media:
+        positive = _matching_terms(label_terms, _STORAGE_SYSTEM_TERMS)
+        negative = _matching_terms(label_terms, _PHONE_FAMILY_TERMS)
+        score += 0.08 * positive
+        score -= 0.18 * negative
+        if positive:
+            notes.append("support ou unite de stockage compatible")
+        if negative:
+            notes.append("famille telephone incompatible")
+
+    if is_server_system:
+        positive = _matching_terms(label_terms, _SERVER_SYSTEM_TERMS)
+        negative = _matching_terms(label_terms, _PHONE_FAMILY_TERMS | _DISPLAY_HEADSET_TERMS)
+        score += 0.14 * positive
+        score -= 0.24 * negative
+        if positive:
+            notes.append("serveur ou unite ADP compatible")
+        if negative:
+            notes.append("famille telephone/affichage seule incompatible")
+
+    if is_accelerator_card:
+        positive = _matching_terms(label_terms, _ACCELERATOR_CARD_TERMS)
+        negative = _matching_terms(label_terms, _PHONE_FAMILY_TERMS | _CAMERA_FAMILY_TERMS)
+        score += 0.13 * positive
+        score -= 0.24 * negative
+        if positive:
+            notes.append("carte ou accessoire ADP compatible")
+        if negative:
+            notes.append("famille telephone/camera incompatible")
+
+    if is_plc:
+        positive = _matching_terms(label_terms, _PLC_FAMILY_TERMS)
+        negative = _matching_terms(label_terms, _GENERIC_ADP_TERMS - {"traitement", "information"})
+        score += 0.14 * positive
+        score -= 0.12 * negative
+        if positive:
+            notes.append("commande industrielle compatible")
+        if negative:
+            notes.append("machine ADP generique moins probable")
+
+    if is_vfd:
+        positive = _matching_terms(label_terms, _VFD_FAMILY_TERMS)
+        negative = _matching_terms(label_terms, _HOUSEHOLD_APPLIANCE_TERMS)
+        score += 0.15 * positive
+        score -= 0.4 * negative
+        if positive:
+            notes.append("convertisseur/variateur compatible")
+        if negative:
+            notes.append("appareil menager incompatible")
+
+    if is_robot:
+        positive = _matching_terms(label_terms, _ROBOT_FAMILY_TERMS)
+        negative = _matching_terms(label_terms, _BICYCLE_PARTS_TERMS)
+        score += 0.16 * positive
+        score -= 0.4 * negative
+        if positive:
+            notes.append("robot industriel compatible")
+        if negative:
+            notes.append("pieces de cycles incompatibles")
+
+    if is_medical_device:
+        positive = _matching_terms(label_terms, _MEDICAL_DEVICE_TERMS)
+        negative = _matching_terms(label_terms, _RADIOLOGY_TERMS)
+        score += 0.14 * positive
+        score -= 0.45 * negative
+        if positive:
+            notes.append("dispositif medical compatible")
+        if negative:
+            notes.append("radiologie/imagerie incompatible")
+
+    if is_mixed_reality_display:
+        positive = _matching_terms(label_terms, _DISPLAY_HEADSET_TERMS)
+        negative = _matching_terms(label_terms, _TELEPHONE_TERMS)
+        score += 0.14 * positive
+        score -= 0.22 * negative
+        if positive:
+            notes.append("appareil d affichage immersif compatible")
+        if negative:
+            notes.append("famille telephone incompatible")
+
+    score = max(-1.0, min(1.0, score))
+    return score, "; ".join(dict.fromkeys(notes))
 
 
 def _compute_subposition_affinity(
@@ -365,25 +757,42 @@ def rerank_candidates_by_affinity(
             pos, product_type, function_usage, family,
         )
         cd_copy = dict(cd)
+        cd_copy["affinity_score"] = round(aff_score, 4)
+        compatibility_score, compatibility_note = _compatibility_from_product_family(
+            f"{cd.get('label', '')} {cd.get('excerpt', '')}",
+            product_type,
+            function_usage,
+            family,
+        )
+        cd_copy["compatibility_score"] = round(compatibility_score, 4)
         if aff_score > 0.15 and aff_label:
             cd_copy["affinity_note"] = (
                 f"Correspondance avec le produit : '{aff_label}'"
             )
+        if compatibility_score >= 0.2 and compatibility_note:
+            cd_copy["compatibility_note"] = compatibility_note
+        elif compatibility_score <= -0.2 and compatibility_note:
+            cd_copy["compatibility_warning"] = compatibility_note
         scored.append((cd_copy, aff_score, aff_label))
 
     if len(scored) < 2:
         return [s[0] for s in scored]
 
-    first_score = scored[0][1]
+    def combined_rank(entry: tuple[dict[str, Any], float, str]) -> float:
+        candidate, score, _ = entry
+        compatibility = float(candidate.get("compatibility_score") or 0)
+        return score + (5.0 * compatibility)
+
+    first_rank = combined_rank(scored[0])
     best_idx = 0
-    best_score = first_score
-    for idx, (_, score, _) in enumerate(scored[1:], 1):
-        if score > best_score:
-            best_score = score
+    best_rank = first_rank
+    for idx, entry in enumerate(scored[1:], 1):
+        entry_rank = combined_rank(entry)
+        if entry_rank > best_rank:
+            best_rank = entry_rank
             best_idx = idx
 
-    # Only promote if the best match is significantly better than the first
-    if best_idx > 0 and best_score >= 0.3 and best_score > first_score + 0.15:
+    if best_idx > 0 and best_rank > first_rank + 0.2:
         promoted = scored.pop(best_idx)
         scored.insert(0, promoted)
 
@@ -402,29 +811,49 @@ def format_merged_candidates_prompt(candidate_dicts: list[dict[str, Any]]) -> st
         )
     lines = [
         "POSITIONS TEC CANDIDATES (VERROUILLAGE OBLIGATOIRE) :",
-        "Le contexte TEC local contient les positions suivantes a analyser.",
+        "Prioriser ces positions candidates lorsqu'elles sont compatibles avec le produit.",
+        "Si aucune position n'est compatible, proposer le code TEC le plus plausible hors liste, "
+        "avec classification_status = provisoire et confidence <= 55.",
         *_elimination_methodology_lines(len(candidate_dicts)),
     ]
+    hierarchy = summarize_candidate_evidence(candidate_dicts).get("chapter_ranking") or []
+    if hierarchy:
+        chapter_line = "; ".join(
+            f"chapitre {entry['chapter']} -> {', '.join(entry['positions'])}"
+            for entry in hierarchy[:4]
+        )
+        lines.extend([
+            "DECISION HIERARCHIQUE : valider d'abord le chapitre par nature technique, "
+            "puis comparer les positions de ce chapitre.",
+            f"Chapitres et positions candidates : {chapter_line}",
+            "",
+        ])
     for idx, cd in enumerate(candidate_dicts, start=1):
         pos = cd.get("position_code", "?")
         label = cd.get("label", "")
         affinity = cd.get("affinity_note", "")
+        compatibility = cd.get("compatibility_note", "")
+        warning = cd.get("compatibility_warning", "")
         marker = " *** MEILLEURE CORRESPONDANCE ***" if idx == 1 and affinity else ""
         lines.append(f"{idx}. Position {pos} — {label}{marker}")
         if affinity:
             lines.append(f"   >> {affinity}")
+        if compatibility:
+            lines.append(f"   >> Compatibilite fonctionnelle : {compatibility}")
+        if warning:
+            lines.append(f"   >> Alerte fonctionnelle : {warning}")
         subpos_block = _format_subpositions_block(pos)
         if subpos_block:
-            lines.append(f"   Sous-positions TEC :")
+            lines.append("   Sous-positions TEC :")
             lines.append(subpos_block)
         excerpt = cd.get("excerpt", "")
-        if excerpt:
-            lines.append(f"   Extrait TEC : {excerpt[:320]}")
+        if excerpt and not _COMPACT_CONTEXT:
+            lines.append(f"   Extrait TEC : {excerpt[:_EXCERPT_MAX_LEN]}")
         lines.append("")
     lines.append(
-        f"INTERDIT : hs_code en dehors de ces {len(candidate_dicts)} position(s). "
-        "Format hs_code : XX.XX ou sous-code appartenant a l'une des positions compatibles. "
-        "La justification DOIT contenir l'analyse compatible/incompatible de chaque position."
+        f"GARDE-FOU : evaluer d'abord ces {len(candidate_dicts)} position(s). "
+        "Format hs_code : XX.XX ou sous-code TEC. "
+        "Tout choix hors liste doit rester provisoire et expliquer pourquoi chaque candidat est incompatible."
     )
     if candidate_dicts and candidate_dicts[0].get("affinity_note"):
         lines.append(
@@ -466,7 +895,10 @@ def retrieve_locked_tec_context(
         row_distances,
         max_positions=position_cap,
     )
-    return format_candidate_set_prompt(candidates), [item.to_dict() for item in candidates]
+    candidate_dicts = [item.to_dict() for item in candidates]
+    for candidate in candidate_dicts:
+        candidate["candidate_sources"] = ["faiss"]
+    return format_candidate_set_prompt(candidates), candidate_dicts
 
 
 def _hs_matches_candidate(hs_code: str, candidate: dict[str, Any]) -> bool:
@@ -493,8 +925,9 @@ def enforce_candidate_set_on_item(
     candidates: list[dict[str, Any]] | None,
 ) -> bool:
     """
-    Ramène hs_code dans l'ensemble des positions candidates si le LLM a divergé.
-    Retourne True si une correction a été appliquée.
+    Conserve le code du LLM lorsqu'il sort du jeu de candidats, mais le marque
+    provisoire. La recherche vectorielle peut manquer la bonne position et ne
+    doit pas transformer automatiquement un produit fini en matière première.
     """
     if not isinstance(item, dict) or not candidates:
         return False
@@ -507,38 +940,171 @@ def enforce_candidate_set_on_item(
         if _hs_matches_candidate(hs, candidate):
             item["tec_position_candidates"] = candidates
             item["tec_candidate_locked"] = True
+            selected_affinity = float(candidate.get("affinity_score") or 0)
+            strongest = max(
+                candidates,
+                key=lambda entry: float(entry.get("affinity_score") or 0),
+            )
+            strongest_affinity = float(strongest.get("affinity_score") or 0)
+            strongest_position = str(strongest.get("position_code") or "")
+            selected_position = str(candidate.get("position_code") or "")
+            if (
+                strongest_position != selected_position
+                and strongest_affinity >= 0.25
+                and strongest_affinity >= selected_affinity + 0.15
+            ):
+                item["classification_status"] = "provisoire"
+                try:
+                    current = int(round(float(item.get("confidence") or 90)))
+                except (TypeError, ValueError):
+                    current = 90
+                item["confidence"] = min(current, 55)
+                try:
+                    classification_confidence = int(round(float(
+                        item.get("classification_confidence") or current
+                    )))
+                except (TypeError, ValueError):
+                    classification_confidence = current
+                item["classification_confidence"] = min(classification_confidence, 55)
+                warning = (
+                    f"La position {selected_position} appartient aux candidats TEC, mais son affinite "
+                    f"fonctionnelle ({selected_affinity:.2f}) est inferieure a l'alternative "
+                    f"{strongest_position} ({strongest_affinity:.2f}); validation humaine requise."
+                )
+                item["candidate_evidence_weak"] = True
+                item["candidate_evidence_warning"] = warning
+                justification = str(item.get("justification") or "").strip()
+                if warning not in justification:
+                    item["justification"] = f"[Controle candidats] {warning} {justification}".strip()
+                increment_telemetry("candidate_weak_selections")
             return False
 
-    top = candidates[0]
-    target = str(top.get("position_code") or "").strip()
-    if not target:
-        return False
-
-    item.setdefault("hs_code_suggested", hs)
-    item["hs_code"] = target
     item["classification_status"] = "provisoire"
     try:
         current = int(round(float(item.get("confidence") or 90)))
     except (TypeError, ValueError):
         current = 90
     item["confidence"] = min(current, 55)
+    try:
+        classification_confidence = int(round(float(
+            item.get("classification_confidence") or current
+        )))
+    except (TypeError, ValueError):
+        classification_confidence = current
+    item["classification_confidence"] = min(classification_confidence, 55)
 
     allowed = ", ".join(str(c.get("position_code") or "") for c in candidates[:3])
-    correction = (
-        f"Hypothese LLM {hs} hors positions TEC candidates ({allowed}); "
-        f"ramenee a {target}."
+    warning = (
+        f"Hypothese {hs} hors positions TEC candidates ({allowed}); "
+        "code conserve provisoirement car aucun candidat ne doit etre impose sans compatibilite produit."
     )
-    item["tec_candidate_correction"] = correction
+    item["tec_candidate_warning"] = warning
+    item["tec_candidate_outside_set"] = True
+    item["candidate_evidence_weak"] = True
+    item["candidate_evidence_warning"] = warning
     item["tec_position_candidates"] = candidates
-    item["tec_candidate_locked"] = True
+    item["tec_candidate_locked"] = False
 
     justification = str(item.get("justification") or "").strip()
-    if correction not in justification:
-        item["justification"] = f"{correction} {justification}".strip()
+    if warning not in justification:
+        item["justification"] = f"{warning} {justification}".strip()
+    increment_telemetry("candidate_outside_set_selections")
+    return False
 
-    label = str(top.get("label") or "").strip()
-    if label:
-        item["position_label"] = label
+
+def recover_missing_heading_from_candidates(
+    item: dict[str, Any],
+    candidates: list[dict[str, Any]] | None,
+) -> bool:
+    """Recover only a strongly matched heading when the model omitted hs_code."""
+    if not isinstance(item, dict) or not candidates:
+        return False
+    if re.sub(r"\D", "", str(item.get("hs_code") or "")):
+        return False
+
+    direct = [
+        candidate
+        for candidate in candidates
+        if "direct_label_keywords" in (candidate.get("candidate_sources") or [])
+        and float(candidate.get("score") or 0) >= 10.0
+    ]
+    positions = {
+        str(candidate.get("position_code") or "").strip()
+        for candidate in direct
+        if str(candidate.get("position_code") or "").strip()
+    }
+    if len(positions) != 1:
+        compatibility_candidates = sorted(
+            [
+                candidate
+                for candidate in candidates
+                if str(candidate.get("position_code") or "").strip()
+            ],
+            key=lambda candidate: (
+                float(candidate.get("compatibility_score") or 0),
+                float(candidate.get("affinity_score") or 0),
+                float(candidate.get("score") or 0),
+            ),
+            reverse=True,
+        )
+        if not compatibility_candidates:
+            return False
+        strongest = compatibility_candidates[0]
+        strongest_position = str(strongest.get("position_code") or "").strip()
+        strongest_compatibility = float(strongest.get("compatibility_score") or 0)
+        second_compatibility = (
+            float(compatibility_candidates[1].get("compatibility_score") or 0)
+            if len(compatibility_candidates) > 1
+            else -1.0
+        )
+        if (
+            strongest_position
+            and strongest_compatibility >= 0.25
+            and strongest_compatibility >= second_compatibility + 0.15
+        ):
+            position = strongest_position
+        else:
+            return False
+    else:
+        position = next(iter(positions))
+    item["hs_code"] = position
+    item["classification_status"] = "provisoire"
+    try:
+        current = int(round(float(item.get("confidence") or 40)))
+    except (TypeError, ValueError):
+        current = 40
+    item["confidence"] = min(current, 40)
+    try:
+        classification_confidence = int(round(float(
+            item.get("classification_confidence") or current
+        )))
+    except (TypeError, ValueError):
+        classification_confidence = current
+    item["classification_confidence"] = min(classification_confidence, 40)
+    warning = (
+        f"Le modele n'a pas fourni de code exploitable; la position {position} est conservee "
+        "provisoirement car elle est l'unique correspondance directe avec les libelles TEC."
+    )
+    item["missing_code_recovered"] = True
+    item["missing_code_recovery_warning"] = warning
+    justification = str(item.get("justification") or "").strip()
+    if warning not in justification:
+        item["justification"] = f"[Recuperation position] {warning} {justification}".strip()
+    increment_telemetry("missing_code_heading_recovered")
+    return True
+
+
+def enforce_candidate_evidence_cap(item: dict[str, Any]) -> bool:
+    """Preserve a weak-candidate warning after completeness normalization."""
+    if not isinstance(item, dict) or not item.get("candidate_evidence_weak"):
+        return False
+    item["classification_status"] = "provisoire"
+    for field in ("confidence", "classification_confidence"):
+        try:
+            current = int(round(float(item.get(field) or 90)))
+        except (TypeError, ValueError):
+            current = 90
+        item[field] = min(current, 55)
     return True
 
 

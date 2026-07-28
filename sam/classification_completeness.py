@@ -469,7 +469,9 @@ def _truncate_product_label(text: str) -> str:
             return cleaned[:pos].strip().rstrip(".")
     if " — " in cleaned:
         return cleaned.split(" — ", 1)[0].strip()
-    return cleaned.split(".", 1)[0].strip()
+    # Split only on sentence punctuation. Decimal capacities/model identifiers
+    # such as 3.84TB must remain intact.
+    return re.split(r"\.(?=\s|$)", cleaned, maxsplit=1)[0].strip().rstrip(".")
 
 
 def _append_materials_from_line(line: str, dossier: dict[str, Any]) -> bool:

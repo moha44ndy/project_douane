@@ -27,6 +27,8 @@ class TestWebSearchPipelineOrder(unittest.TestCase):
             call_log.append("web_search")
             return (
                 '{"product_name":"Siemens HMI","product_type":"panneau operateur",'
+                '"manufacturer":"Siemens",'
+                '"manufacturer_part_number":"6AV2124-0QC02-0AX",'
                 '"function_usage":"interface homme-machine industrielle",'
                 '"materials":["plastique","verre"],'
                 '"technical_characteristics":["ecran tactile"],'
